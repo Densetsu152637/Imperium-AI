@@ -2,7 +2,8 @@
 
 export type AutofixEventParams = { repo: string, pull_request: number, 
 /**
- * `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, or `stopped`.
+ * `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`, or
+ * for a reply to a review thread `replied`, `reply_declined` or `held` (over the hourly cap).
  */
 status: string, session_id: string | null, summary: string, 
 /**

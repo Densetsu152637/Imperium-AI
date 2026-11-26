@@ -1,6 +1,7 @@
 //! The review-comment wake: new reviews, review comments and conversation comments on a pull
-//! request whose session has its auto-fix switch on wake the session that owns it. The text
-//! comes from other people, so:
+//! request whose session has its auto-fix switch on wake the session that owns it, and so does a
+//! new failing commit (with `fix_ci` among the responders). The text comes from other people,
+//! so:
 //!
 //! - only a user with write access to the repository wakes anything (the permission endpoint,
 //!   cached for five minutes); everyone else's comments are counted on the card and wake nothing;
@@ -9,21 +10,27 @@
 //! - the woken turn runs capped: the mode is the stricter of the session's and `ask`, and every
 //!   call that is not a read asks (`Permissions::cap`), nothing is pre-approved, and the
 //!   session's own mode comes back when the turn and its subagents end; a replacement session
-//!   is capped for its whole life (`SessionOptions::capped`);
+//!   for review comments is capped for its whole life (`SessionOptions::capped`), and one for a
+//!   failing commit runs as Fix CI does;
 //! - the owning checkout is checked first (on the pull request's branch, not behind or diverged
 //!   from `origin/<branch>`, clean); when it fails, or the session is deleted or archived, a new
 //!   unattended session works in the pull request's own worktree instead;
 //! - the daemon, not the model, commits, and a push always waits for the user's approval, even
-//!   with `push = "auto"`.
+//!   with `push = "auto"`;
+//! - a reply to a review thread is posted only after the user approved its exact text (unless
+//!   `github.autofix.comment = "auto"`), defanged, with a footer, and at most
+//!   `comment_replies_per_hour` per pull request;
+//! - wakes stop for the day once `github.autofix.budget_usd_per_day` is spent.
 //!
-//! What stays across restarts (the comment cursors, the attempt count, the notice that
-//! untrusted text was handled) lives in the [`Ledger`], a file in the data folder, because the
-//! session's own record is gone when the session is archived or deleted.
+//! What stays across restarts (the comment cursors, the failing commit handled last, the attempt
+//! count, the notice that untrusted text was handled, the replies posted) lives in the
+//! [`Ledger`], a file in the data folder, because the session's own record is gone when the
+//! session is archived or deleted.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use imperium_engine::Session;
 use imperium_github::{GitHub, ReviewComment, git};
@@ -35,12 +42,20 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use super::{
-    DATA_MARK, announce_with, ci_config_paths, neutralise, nonce, push_approval, worktree_path,
+    DATA_MARK, Delivered, Delivery, announce_with, ci_prompt, deliver, fix_ci_options, neutralise,
+    nonce, tail, worktree_path,
 };
 use crate::DaemonState;
+use crate::budgets::SOURCE_AUTOFIX;
 
-/// Carried by every reply the daemon posts (stage 8), so it never wakes a session.
+/// Carried by every reply the daemon posts, so it never wakes a session.
 pub(crate) const REPLY_MARKER: &str = "<!-- imperium-auto-fix -->";
+/// Ends every reply: says who wrote it, then the marker.
+const REPLY_FOOTER: &str = "\n\n---\n_Posted by Imperium auto-fix from the session's summary of its work._\n<!-- imperium-auto-fix -->";
+/// The longest reply text (the footer comes on top).
+const REPLY_CHARS: usize = 3000;
+/// How many reply ids the ledger keeps per pull request.
+const REPLIES_KEPT: usize = 200;
 
 const LEDGER_FILE: &str = "pr-review.json";
 /// How long an answer of the collaborator-permission endpoint is kept.
@@ -50,7 +65,8 @@ const WAKE_TIMEOUT: Duration = Duration::from_secs(1800);
 const PER_KIND: usize = 10;
 const BODY_CHARS: usize = 2000;
 const NAME_CHARS: usize = 64;
-const TRIGGER: &str = "review";
+/// The longest failure log a CI wake hands the session.
+const LOG_CHARS: usize = 6000;
 
 /// The newest id seen of each kind of comment. The three kinds have ids of their own.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,7 +76,7 @@ pub(crate) struct Cursor {
     pub issue_comments: u64,
 }
 
-/// What the daemon keeps about one pull request's review wakes.
+/// What the daemon keeps about one pull request's wakes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Entry {
     /// As it was bound (`owner/name`).
@@ -75,24 +91,82 @@ pub(crate) struct Entry {
     /// The cursors hold the comments that were there when the switch went on.
     pub baselined: bool,
     pub cursor: Cursor,
-    /// Wakes since the last push the user accepted.
+    /// Wakes (of any trigger) since the last push the user accepted.
     pub attempts: u32,
     /// A session handled text written by others and the user has not acknowledged it.
     pub untrusted_handled: bool,
     /// Comments from people without write access, since the user last acknowledged.
     pub ignored: u32,
+    /// The head commit whose failing checks were last taken by a wake or by Fix CI.
+    #[serde(default)]
+    pub ci_sha: Option<String>,
+    /// Ids of the replies the daemon posted; they never wake anything.
+    #[serde(default)]
+    pub replies: Vec<u64>,
+    /// When the replies of the last hour were posted (seconds since the Unix epoch).
+    #[serde(default)]
+    pub reply_times: Vec<u64>,
 }
 
 impl Entry {
     fn is(&self, repo: &str, number: u64) -> bool {
         self.number == number && self.repo.eq_ignore_ascii_case(repo)
     }
+
+    /// Whether the entry still holds something: the switch, the card's notices, the failing
+    /// commit handled last (until a push the user accepts), or the replies that count toward
+    /// the hourly cap.
+    fn keeps(&self) -> bool {
+        self.active
+            || self.untrusted_handled
+            || self.ignored > 0
+            || self.ci_sha.is_some()
+            || self
+                .reply_times
+                .iter()
+                .any(|at| now_secs().saturating_sub(*at) < 3600)
+    }
+
+    fn new(repo: &str, number: u64, project: PathBuf) -> Self {
+        Entry {
+            repo: repo.to_string(),
+            number,
+            active: false,
+            owner: None,
+            project,
+            baselined: false,
+            cursor: Cursor::default(),
+            attempts: 0,
+            untrusted_handled: false,
+            ignored: 0,
+            ci_sha: None,
+            replies: Vec::new(),
+            reply_times: Vec::new(),
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 type Key = (String, u64);
 
 fn key_of(repo: &str, number: u64) -> Key {
     (repo.to_ascii_lowercase(), number)
+}
+
+/// What Fix CI may do with a failing commit of a watched pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CiTake {
+    /// It is the commit's first time: Fix CI runs, and the attempt counts.
+    Taken,
+    /// Handled already.
+    Seen,
+    /// A new failing commit, but the attempts are used up.
+    Spent,
 }
 
 #[derive(Debug, Default)]
@@ -106,11 +180,13 @@ struct Inner {
     next_check: HashMap<Key, Instant>,
     /// Pull requests whose "stopped" notice was sent in this run.
     stopped: HashSet<Key>,
+    /// Pull requests told that the daily budget is spent, with the day.
+    budget_stopped: HashSet<(Key, String)>,
     /// How many wakes in a row ended without the session starting its turn.
     raced: HashMap<Key, u32>,
 }
 
-/// The daemon's review-wake state, kept in the data folder.
+/// The daemon's wake state, kept in the data folder.
 #[derive(Debug, Default)]
 pub(crate) struct Ledger {
     inner: Mutex<Inner>,
@@ -148,7 +224,12 @@ impl Ledger {
         inner.entries = saved;
     }
 
-    fn save(state: &DaemonState, inner: &Inner) {
+    fn save(state: &DaemonState, inner: &mut Inner) {
+        // A ledger that was never read must not overwrite the file with what little it holds.
+        if !inner.loaded {
+            return;
+        }
+        inner.entries.retain(Entry::keeps);
         let file = state.data_dir().join(LEDGER_FILE);
         let write = || -> std::io::Result<()> {
             if inner.entries.is_empty() {
@@ -181,7 +262,7 @@ impl Ledger {
         self.ensure(state);
         let mut inner = self.lock();
         let at = inner.entries.iter().position(|e| e.is(repo, number));
-        match at {
+        let entry = match at {
             Some(at) => {
                 let entry = &mut inner.entries[at];
                 if !entry.active {
@@ -189,25 +270,20 @@ impl Ledger {
                     entry.cursor = Cursor::default();
                     entry.attempts = 0;
                 }
-                entry.active = true;
-                entry.owner = Some(owner.to_string());
-                entry.project = PathBuf::from(project);
+                entry
             }
-            None => inner.entries.push(Entry {
-                repo: repo.to_string(),
-                number,
-                active: true,
-                owner: Some(owner.to_string()),
-                project: PathBuf::from(project),
-                baselined: false,
-                cursor: Cursor::default(),
-                attempts: 0,
-                untrusted_handled: false,
-                ignored: 0,
-            }),
-        }
+            None => {
+                inner
+                    .entries
+                    .push(Entry::new(repo, number, PathBuf::from(project)));
+                inner.entries.last_mut().expect("just pushed")
+            }
+        };
+        entry.active = true;
+        entry.owner = Some(owner.to_string());
+        entry.project = PathBuf::from(project);
         inner.stopped.remove(&key_of(repo, number));
-        Self::save(state, &inner);
+        Self::save(state, &mut inner);
     }
 
     /// Like [`Self::enroll`] for a binding that came back after a restart: nothing changes when
@@ -230,7 +306,7 @@ impl Ledger {
                 entry.project = PathBuf::from(project);
                 entry.active = true;
             }
-            Self::save(state, &inner);
+            Self::save(state, &mut inner);
         } else {
             self.enroll(state, repo, number, owner, project);
         }
@@ -243,10 +319,7 @@ impl Ledger {
         if let Some(entry) = inner.entries.iter_mut().find(|e| e.is(repo, number)) {
             entry.active = false;
         }
-        inner
-            .entries
-            .retain(|e| e.active || e.untrusted_handled || e.ignored > 0);
-        Self::save(state, &inner);
+        Self::save(state, &mut inner);
     }
 
     /// The user saw that untrusted text was handled.
@@ -257,10 +330,7 @@ impl Ledger {
             entry.untrusted_handled = false;
             entry.ignored = 0;
         }
-        inner
-            .entries
-            .retain(|e| e.active || e.untrusted_handled || e.ignored > 0);
-        Self::save(state, &inner);
+        Self::save(state, &mut inner);
     }
 
     /// What the card shows besides the switch: whether untrusted text was handled and how many
@@ -271,6 +341,98 @@ impl Ledger {
             .iter()
             .find(|e| e.is(repo, number))
             .map_or((false, 0), |e| (e.untrusted_handled, e.ignored))
+    }
+
+    /// Whether the pull request's auto-fix switch is on in a bound session, whose wake then
+    /// handles its failing commits instead of Fix CI.
+    pub(crate) fn is_bound(&self, repo: &str, number: u64) -> bool {
+        self.lock()
+            .entries
+            .iter()
+            .any(|e| e.is(repo, number) && e.active)
+    }
+
+    /// Fix CI's claim on a failing commit of a watched pull request: each commit is handled
+    /// once, and every attempt counts toward `max` until a push the user accepts.
+    pub(crate) fn take_ci(
+        &self,
+        state: &DaemonState,
+        repo: &str,
+        number: u64,
+        sha: &str,
+        project: &Path,
+        max: u32,
+    ) -> CiTake {
+        let mut inner = self.lock();
+        let at = match inner.entries.iter().position(|e| e.is(repo, number)) {
+            Some(at) => at,
+            None => {
+                inner
+                    .entries
+                    .push(Entry::new(repo, number, project.to_path_buf()));
+                inner.entries.len() - 1
+            }
+        };
+        let entry = &mut inner.entries[at];
+        if entry.ci_sha.as_deref() == Some(sha) {
+            return CiTake::Seen;
+        }
+        entry.ci_sha = Some(sha.to_string());
+        let taken = if entry.attempts >= max {
+            CiTake::Spent
+        } else {
+            entry.attempts += 1;
+            CiTake::Taken
+        };
+        Self::save(state, &mut inner);
+        taken
+    }
+
+    /// A push the user accepted: the attempt count starts again. The failing commit it
+    /// answered stays recorded, so a status read before the push landed does not wake again.
+    pub(crate) fn accepted_push(&self, state: &DaemonState, repo: &str, number: u64) {
+        self.ensure(state);
+        self.update(state, repo, number, |e| e.attempts = 0);
+    }
+
+    /// True the first time today the daily budget stops a pull request.
+    pub(crate) fn first_budget_stop(&self, repo: &str, number: u64) -> bool {
+        let today = chrono::Local::now().date_naive().to_string();
+        let mut inner = self.lock();
+        inner.budget_stopped.retain(|(_, day)| *day == today);
+        inner.budget_stopped.insert((key_of(repo, number), today))
+    }
+
+    /// Whether another reply may be posted on the pull request within the hourly cap.
+    fn reply_room(&self, repo: &str, number: u64, per_hour: u32) -> bool {
+        let now = now_secs();
+        let mut inner = self.lock();
+        let Some(entry) = inner.entries.iter_mut().find(|e| e.is(repo, number)) else {
+            return per_hour > 0;
+        };
+        entry
+            .reply_times
+            .retain(|at| now.saturating_sub(*at) < 3600);
+        entry.reply_times.len() < per_hour as usize
+    }
+
+    /// Records a reply the daemon posted: its id never wakes anything, and it counts toward the
+    /// hourly cap.
+    fn record_reply(&self, state: &DaemonState, repo: &str, number: u64, id: u64) {
+        let mut inner = self.lock();
+        let at = match inner.entries.iter().position(|e| e.is(repo, number)) {
+            Some(at) => at,
+            None => {
+                inner.entries.push(Entry::new(repo, number, PathBuf::new()));
+                inner.entries.len() - 1
+            }
+        };
+        let entry = &mut inner.entries[at];
+        entry.replies.push(id);
+        let extra = entry.replies.len().saturating_sub(REPLIES_KEPT);
+        entry.replies = entry.replies.split_off(extra);
+        entry.reply_times.push(now_secs());
+        Self::save(state, &mut inner);
     }
 
     fn entry(&self, repo: &str, number: u64) -> Option<Entry> {
@@ -292,19 +454,12 @@ impl Ledger {
         if let Some(entry) = inner.entries.iter_mut().find(|e| e.is(repo, number)) {
             change(entry);
         }
-        Self::save(state, &inner);
+        Self::save(state, &mut inner);
     }
 
     /// The pull request is over: nothing more is woken for it.
     fn finish(&self, state: &DaemonState, repo: &str, number: u64) {
-        let mut inner = self.lock();
-        if let Some(entry) = inner.entries.iter_mut().find(|e| e.is(repo, number)) {
-            entry.active = false;
-        }
-        inner
-            .entries
-            .retain(|e| e.active || e.untrusted_handled || e.ignored > 0);
-        Self::save(state, &inner);
+        self.update(state, repo, number, |e| e.active = false);
     }
 
     /// The active pull requests that are due and not being worked on, marked as running.
@@ -353,9 +508,9 @@ impl Ledger {
         inner.permissions.insert(key, (Instant::now(), allowed));
     }
 
-    /// Hands comments back after a wake that did not take them: the cursor, the attempt and
-    /// the counts return to what `before` held, and the pull request is looked at again at the
-    /// next pass.
+    /// Hands work back after a wake that did not take it: the cursor, the failing commit, the
+    /// attempt and the counts return to what `before` held, and the pull request is looked at
+    /// again at the next pass.
     fn give_back(&self, state: &DaemonState, before: &Entry) {
         let mut inner = self.lock();
         if let Some(entry) = inner
@@ -364,6 +519,7 @@ impl Ledger {
             .find(|e| e.is(&before.repo, before.number))
         {
             entry.cursor = before.cursor.clone();
+            entry.ci_sha = before.ci_sha.clone();
             entry.attempts = before.attempts;
             entry.ignored = before.ignored;
             entry.untrusted_handled = before.untrusted_handled;
@@ -371,10 +527,10 @@ impl Ledger {
         inner
             .next_check
             .remove(&key_of(&before.repo, before.number));
-        Self::save(state, &inner);
+        Self::save(state, &mut inner);
     }
 
-    /// Counts a wake that did not start its turn; returns the count in a row.
+    /// Counts a wake that could not start its turn; returns the count in a row.
     fn note_raced(&self, repo: &str, number: u64) -> u32 {
         let mut inner = self.lock();
         let count = inner.raced.entry(key_of(repo, number)).or_insert(0);
@@ -390,6 +546,24 @@ impl Ledger {
     fn first_stop(&self, repo: &str, number: u64) -> bool {
         self.lock().stopped.insert(key_of(repo, number))
     }
+}
+
+/// Why wakes stop for today, when the auto-fix budget is spent: what the model calls of wake
+/// turns and of the sessions auto-fix started cost today (the budgets' `autofix` source), at or
+/// over `github.autofix.budget_usd_per_day`. A wake already running finishes.
+pub(crate) fn budget_spent(state: &DaemonState) -> Option<String> {
+    let limit = state.settings().github.autofix.budget_usd_per_day;
+    if limit.is_nan() || limit <= 0.0 {
+        return None;
+    }
+    let spent = state
+        .budgets()
+        .spent_today(chrono::Local::now().date_naive(), SOURCE_AUTOFIX);
+    (spent >= limit).then(|| {
+        format!(
+            "today's auto-fix budget (github.autofix.budget_usd_per_day, ${limit:.2}) is spent (${spent:.2}); nothing is woken until tomorrow"
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,6 +589,27 @@ struct Item {
     comment: ReviewComment,
 }
 
+/// What a wake answers.
+enum Work {
+    /// New review feedback from people with write access.
+    Review(Vec<Item>),
+    /// The head commit's failed checks, with the first one's details URL and log.
+    Ci {
+        checks: Vec<String>,
+        url: String,
+        log: String,
+    },
+}
+
+impl Work {
+    fn trigger(&self) -> &'static str {
+        match self {
+            Work::Review(_) => "review",
+            Work::Ci { .. } => "ci",
+        }
+    }
+}
+
 /// Where a wake runs.
 enum Place {
     /// The session that owns the pull request, in its own folder.
@@ -424,19 +619,16 @@ enum Place {
 }
 
 /// One pass over the pull requests whose auto-fix switch is on: reads their new comments and
-/// wakes the owning session for those from people with write access. Does nothing unless
-/// `github.autofix.responders` has `address_review`.
+/// their head commit's checks, and wakes the owning session for comments from people with
+/// write access (with `address_review` among `github.autofix.responders`) and for a new
+/// failing commit (with `fix_ci`).
 pub(crate) async fn pass(state: &Arc<DaemonState>, github: &Arc<dyn GitHub>, force: bool) {
     let ledger = state.pr_monitor().ledger();
     ledger.ensure(state);
     let settings = state.settings();
-    if !settings
-        .github
-        .autofix
-        .responders
-        .iter()
-        .any(|responder| responder == "address_review")
-    {
+    let responders = &settings.github.autofix.responders;
+    let on = |name: &str| responders.iter().any(|responder| responder == name);
+    if !on("address_review") && !on("fix_ci") {
         return;
     }
     let every = Duration::from_secs(settings.github.autofix.poll_s.max(10));
@@ -470,6 +662,89 @@ async fn can_write(
     Ok(allowed)
 }
 
+/// The new review feedback from people with write access, with the cursor past everything read
+/// and the count of comments from others; `None` when nothing could be read (the next pass reads
+/// it again) or the cursors were only just set.
+async fn read_feedback(
+    state: &Arc<DaemonState>,
+    github: &Arc<dyn GitHub>,
+    entry: &Entry,
+) -> Option<(Vec<Item>, Cursor, u32)> {
+    let ledger = state.pr_monitor().ledger();
+    let (repo, number) = (entry.repo.as_str(), entry.number);
+    let since = |last: u64| entry.baselined.then_some(last);
+    let fetched = tokio::try_join!(
+        github.new_reviews(repo, number, since(entry.cursor.reviews)),
+        github.new_comments(repo, number, since(entry.cursor.review_comments)),
+        github.new_issue_comments(repo, number, since(entry.cursor.issue_comments)),
+    );
+    let (reviews, inline, conversation) = match fetched {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::warn!(%repo, pr = number, %error, "could not read the pull request's comments");
+            return None;
+        }
+    };
+    if !entry.baselined {
+        let cursor = Cursor {
+            reviews: last_id(&reviews),
+            review_comments: last_id(&inline),
+            issue_comments: last_id(&conversation),
+        };
+        ledger.update(state, repo, number, |e| {
+            e.cursor = cursor;
+            e.baselined = true;
+        });
+        return None;
+    }
+    // The daemon's own replies end with a footer marker and are written by its own login, or
+    // have an id it recorded when it posted them: the marker alone, in anyone else's comment,
+    // wakes nothing special.
+    let own = match github.login().await {
+        Ok(login) => Some(login),
+        Err(error) if imperium_github::is_unsupported(&error) => None,
+        Err(error) => {
+            tracing::warn!(%repo, pr = number, %error, "could not tell which comments are the daemon's own");
+            return None;
+        }
+    };
+    let mut cursor = entry.cursor.clone();
+    let mut items = Vec::new();
+    let mut ignored = 0_u32;
+    for (kind, list) in [
+        (Kind::Review, reviews),
+        (Kind::Inline, inline),
+        (Kind::Conversation, conversation),
+    ] {
+        for comment in list.into_iter().take(PER_KIND) {
+            let seen = match kind {
+                Kind::Review => &mut cursor.reviews,
+                Kind::Inline => &mut cursor.review_comments,
+                Kind::Conversation => &mut cursor.issue_comments,
+            };
+            *seen = (*seen).max(comment.id);
+            // The daemon's own replies never wake it.
+            let marked = own
+                .as_deref()
+                .is_some_and(|me| comment.author.eq_ignore_ascii_case(me))
+                && comment.body.trim_end().ends_with(REPLY_MARKER);
+            if marked || entry.replies.contains(&comment.id) {
+                continue;
+            }
+            match can_write(state, github, repo, &comment.author).await {
+                Ok(true) => items.push(Item { kind, comment }),
+                Ok(false) => ignored += 1,
+                Err(error) => {
+                    // Nothing is recorded, so the next pass reads these comments again.
+                    tracing::warn!(%repo, pr = number, %error, "could not check who may wake the session");
+                    return None;
+                }
+            }
+        }
+    }
+    Some((items, cursor, ignored))
+}
+
 async fn examine(
     state: &Arc<DaemonState>,
     github: &Arc<dyn GitHub>,
@@ -489,76 +764,31 @@ async fn examine(
         ledger.finish(state, &repo, number);
         return;
     }
-    let since = |last: u64| entry.baselined.then_some(last);
-    let fetched = tokio::try_join!(
-        github.new_reviews(&repo, number, since(entry.cursor.reviews)),
-        github.new_comments(&repo, number, since(entry.cursor.review_comments)),
-        github.new_issue_comments(&repo, number, since(entry.cursor.issue_comments)),
-    );
-    let (reviews, inline, conversation) = match fetched {
-        Ok(found) => found,
-        Err(error) => {
-            tracing::warn!(%repo, pr = number, %error, "could not read the pull request's comments");
-            return;
-        }
+    let settings = state.settings();
+    let on = |name: &str| {
+        settings
+            .github
+            .autofix
+            .responders
+            .iter()
+            .any(|responder| responder == name)
     };
-    if !entry.baselined {
-        let cursor = Cursor {
-            reviews: last_id(&reviews),
-            review_comments: last_id(&inline),
-            issue_comments: last_id(&conversation),
-        };
-        ledger.update(state, &repo, number, |e| {
-            e.cursor = cursor;
-            e.baselined = true;
-        });
-        return;
-    }
-    // The daemon's own replies end with a footer marker and are written by its own login: the
-    // marker alone, in anyone else's comment, wakes nothing special.
-    let own = match github.login().await {
-        Ok(login) => Some(login),
-        Err(error) if imperium_github::is_unsupported(&error) => None,
-        Err(error) => {
-            tracing::warn!(%repo, pr = number, %error, "could not tell which comments are the daemon's own");
-            return;
+    let (items, cursor, ignored) = if on("address_review") {
+        match read_feedback(state, github, &entry).await {
+            Some(found) => found,
+            None => return,
         }
+    } else {
+        (Vec::new(), entry.cursor.clone(), 0)
     };
-    let mut cursor = entry.cursor.clone();
-    let mut items = Vec::new();
-    let mut ignored = 0_u32;
-    for (kind, list) in [
-        (Kind::Review, reviews),
-        (Kind::Inline, inline),
-        (Kind::Conversation, conversation),
-    ] {
-        for comment in list.into_iter().take(PER_KIND) {
-            let seen = match kind {
-                Kind::Review => &mut cursor.reviews,
-                Kind::Inline => &mut cursor.review_comments,
-                Kind::Conversation => &mut cursor.issue_comments,
-            };
-            *seen = (*seen).max(comment.id);
-            // The daemon's own replies never wake it.
-            if own
-                .as_deref()
-                .is_some_and(|me| comment.author.eq_ignore_ascii_case(me))
-                && comment.body.trim_end().ends_with(REPLY_MARKER)
-            {
-                continue;
-            }
-            match can_write(state, github, &repo, &comment.author).await {
-                Ok(true) => items.push(Item { kind, comment }),
-                Ok(false) => ignored += 1,
-                Err(error) => {
-                    // Nothing is recorded, so the next pass reads these comments again.
-                    tracing::warn!(%repo, pr = number, %error, "could not check who may wake the session");
-                    return;
-                }
-            }
-        }
-    }
-    if items.is_empty() {
+    // A new failing head commit, when there is no review feedback to answer first.
+    let failed: Vec<&imperium_github::Check> =
+        pr.checks.iter().filter(|check| check.is_failed()).collect();
+    let ci_due = items.is_empty()
+        && on("fix_ci")
+        && !failed.is_empty()
+        && entry.ci_sha.as_deref() != Some(pr.head_sha.as_str());
+    if items.is_empty() && !ci_due {
         if cursor != entry.cursor {
             ledger.update(state, &repo, number, |e| {
                 e.cursor = cursor;
@@ -568,9 +798,9 @@ async fn examine(
         }
         return;
     }
+    let trigger = if ci_due { "ci" } else { "review" };
     let ids: Vec<u64> = items.iter().map(|item| item.comment.id).collect();
-    let max = state.settings().github.autofix.max_attempts_per_pr;
-    if entry.attempts >= max {
+    let stop = |text: String| {
         if ledger.first_stop(&repo, number) {
             announce_with(
                 state,
@@ -578,11 +808,35 @@ async fn examine(
                 number,
                 "stopped",
                 None,
-                format!(
-                    "new review comments are waiting, but {max} wakes did not end in a push you accepted; leaving it to you (turn auto-fix off and on to start over)"
-                ),
-                TRIGGER,
-                ids,
+                text,
+                trigger,
+                ids.clone(),
+            );
+        }
+    };
+    let max = settings.github.autofix.max_attempts_per_pr;
+    if entry.attempts >= max {
+        stop(format!(
+            "new {} waiting, but {max} wakes did not end in a push you accepted; leaving it to you (turn auto-fix off and on to start over)",
+            if ci_due {
+                "failing checks are"
+            } else {
+                "review comments are"
+            }
+        ));
+        return;
+    }
+    if let Some(reason) = budget_spent(state) {
+        if ledger.first_budget_stop(&repo, number) {
+            announce_with(
+                state,
+                &repo,
+                number,
+                "stopped",
+                None,
+                reason,
+                trigger,
+                ids.clone(),
             );
         }
         return;
@@ -592,18 +846,7 @@ async fn examine(
     match github.pr_head_repo(&repo, number).await {
         Ok(Some(head)) if head.eq_ignore_ascii_case(&repo) => {}
         Ok(_) => {
-            if ledger.first_stop(&repo, number) {
-                announce_with(
-                    state,
-                    &repo,
-                    number,
-                    "stopped",
-                    None,
-                    "this pull request comes from a fork, whose branch auto-fix cannot push to; leaving it to you".to_string(),
-                    TRIGGER,
-                    ids,
-                );
-            }
+            stop("this pull request comes from a fork, whose branch auto-fix cannot push to; leaving it to you".to_string());
             return;
         }
         Err(error) if imperium_github::is_unsupported(&error) => {}
@@ -627,7 +870,9 @@ async fn examine(
         ),
         Some(session) => {
             if !ready(&session) {
-                // Busy with the user's own turn: the comments are read again on the next pass.
+                // Busy with the user's own turn, or with subagents (working or paused): the work
+                // is looked at again on the next pass, and the user hears when that goes on.
+                not_woken(state, &repo, number, session.id(), trigger, &ids);
                 return;
             }
             match checkout_problem(Path::new(session.project_dir()), &pr.head_ref).await {
@@ -636,10 +881,28 @@ async fn examine(
             }
         }
     };
-    // From here the comments are taken: the cursor passes them and the attempt counts, so a
-    // restart or a failed wake does not handle them twice.
+    let work = if ci_due {
+        let url = failed[0].details_url.clone();
+        let log = match github.failure_log(&repo, &url).await {
+            Ok(log) => tail(&log, LOG_CHARS),
+            Err(error) => format!("(the log could not be read: {error})"),
+        };
+        Work::Ci {
+            checks: failed.iter().map(|check| check.name.clone()).collect(),
+            url,
+            log,
+        }
+    } else {
+        Work::Review(items)
+    };
+    // From here the work is taken: the cursor passes the comments (or the failing commit is
+    // recorded) and the attempt counts, so a restart or a failed wake does not handle it twice.
+    let head = pr.head_sha.clone();
     ledger.update(state, &repo, number, |e| {
         e.cursor = cursor;
+        if ci_due {
+            e.ci_sha = Some(head);
+        }
         e.attempts += 1;
         e.untrusted_handled = true;
         e.ignored = e.ignored.saturating_add(ignored);
@@ -658,7 +921,7 @@ async fn examine(
             entry,
             before,
             branch: pr.head_ref,
-            items,
+            work,
             ids,
             place,
         },
@@ -670,6 +933,34 @@ async fn examine(
 /// told.
 const RACED_LIMIT: u32 = 5;
 
+/// Counts a pass that could not wake the owning session, and tells the user at every
+/// [`RACED_LIMIT`]th in a row: the work is not taken and is looked at again.
+fn not_woken(
+    state: &DaemonState,
+    repo: &str,
+    number: u64,
+    session_id: &str,
+    trigger: &str,
+    ids: &[u64],
+) {
+    let times = state.pr_monitor().ledger().note_raced(repo, number);
+    if times.is_multiple_of(RACED_LIMIT) {
+        tracing::warn!(%repo, pr = number, times, "the session could not be woken");
+        announce_with(
+            state,
+            repo,
+            number,
+            "failed",
+            Some(session_id.to_string()),
+            format!(
+                "the session could not be woken {times} times in a row (it was busy, had subagents working or paused, or was capped by another wake); it is tried again"
+            ),
+            trigger,
+            ids.to_vec(),
+        );
+    }
+}
+
 /// Whether the session is bound to `repo#number` and works in a checkout of `repo`.
 fn owns(state: &DaemonState, session: &Session, repo: &str, number: u64) -> bool {
     state
@@ -680,15 +971,9 @@ fn owns(state: &DaemonState, session: &Session, repo: &str, number: u64) -> bool
 }
 
 /// Whether a wake may start a turn in the session now: nothing is running, it was not stopped
-/// by the user, and no other wake holds it.
+/// by the user, no subagent is working or paused, and no other wake holds it.
 fn ready(session: &Session) -> bool {
-    matches!(
-        session.status().0,
-        SessionStatus::Idle | SessionStatus::Watching
-    ) && !session.is_stopped()
-        // The user's own background subagents are work in progress: a wake neither waits on nor
-        // stops them.
-        && !subagents_running(session)
+    ready_after_cap(session)
         // Another wake's cap on the session means it is busy; a standing cap (a replacement
         // session the user took over) is the wake's own cap.
         && !(session.workspace().permissions().is_capped()
@@ -725,10 +1010,10 @@ async fn checkout_problem(dir: &Path, branch: &str) -> Option<String> {
 
 struct Wake {
     entry: Entry,
-    /// The entry as it was before the comments were taken, for [`Ledger::give_back`].
+    /// The entry as it was before the work was taken, for [`Ledger::give_back`].
     before: Entry,
     branch: String,
-    items: Vec<Item>,
+    work: Work,
     ids: Vec<u64>,
     place: Place,
 }
@@ -737,10 +1022,10 @@ fn capped(text: &str, max: usize, multiline: bool) -> String {
     neutralise(&text.chars().take(max).collect::<String>(), multiline)
 }
 
-/// The prompt of a wake. Everything other people wrote (their logins, the file a comment is on,
-/// the comment text, the branch name) sits inside one block that says it is data. The block's
-/// markers carry a random tag chosen for this prompt, and the text has the marker's own name
-/// broken, so nothing in it can close the block.
+/// The prompt of a review wake. Everything other people wrote (their logins, the file a comment
+/// is on, the comment text, the branch name) sits inside one block that says it is data. The
+/// block's markers carry a random tag chosen for this prompt, and the text has the marker's own
+/// name broken, so nothing in it can close the block.
 fn review_prompt(number: u64, branch: &str, items: &[Item]) -> String {
     let mark = format!("{DATA_MARK}-{}", nonce());
     let mut block = String::new();
@@ -783,7 +1068,7 @@ enum Owned {
     /// The woken turn ended, with the model's final text.
     Done(String),
     /// Something else had the session (a turn of the user's started first): nothing was sent, or
-    /// the wake message was taken back out of the queue, and the comments go back.
+    /// the wake message was taken back out of the queue, and the work goes back.
     Raced,
     Failed(String),
 }
@@ -840,7 +1125,9 @@ async fn follow(
 
 /// Waits until no subagent of the session is working. A paused one is cancelled: it would run
 /// on the session's permissions again when resumed. They share the session's permissions, so
-/// the cap stays on until they are done. `None` waits without limit.
+/// the cap stays on until they are done. `None` waits without limit. A session is woken only
+/// when none of its subagents is working or paused ([`ready`]), so the paused ones cancelled
+/// here are the wake's own.
 async fn settle_agents(session: &Session, within: Option<Duration>) -> bool {
     let deadline = within.map(|within| Instant::now() + within);
     loop {
@@ -867,29 +1154,20 @@ async fn settle_agents(session: &Session, within: Option<Duration>) -> bool {
     }
 }
 
-/// Cancels the approval cards a stopped session's requests left in the queue, so a late
-/// "allow" cannot be mistaken for a live request.
-fn drop_stale_approvals(state: &DaemonState, session_id: &str) {
-    let tag = format!("in session {session_id}:");
-    for info in state.approvals().list() {
-        if info.kind == "tool" && info.summary.contains(&tag) {
-            state.approvals().respond(info.id, false);
-        }
-    }
-}
-
-/// Denies what the session still waits for, and the approval cards that stand for it.
+/// Denies what the session still waits for, and the approval cards that stand for it (found by
+/// the session id stored with each card, never by their text).
 fn deny_waiting(state: &DaemonState, session: &Session) {
     session.deny_pending_requests();
-    drop_stale_approvals(state, session.id());
+    state.approvals().deny_session(session.id(), "tool");
 }
 
-/// Whether a subagent of the session is working (the user's own, or the wake's).
-fn subagents_running(session: &Session) -> bool {
-    session
-        .agents()
-        .iter()
-        .any(|agent| agent.agent_id != ROOT_AGENT && agent.status == AgentStatus::Running)
+/// Whether a subagent of the session is working or paused (the user's own, or the wake's). A
+/// paused one resumes on the session's permissions, so it counts as busy too.
+fn subagents_active(session: &Session) -> bool {
+    session.agents().iter().any(|agent| {
+        agent.agent_id != ROOT_AGENT
+            && matches!(agent.status, AgentStatus::Running | AgentStatus::Paused)
+    })
 }
 
 fn wake_timeout(_session: &str) -> Duration {
@@ -904,6 +1182,47 @@ fn wake_timeout(_session: &str) -> Duration {
 fn announce_session(state: &DaemonState, session: &Session) {
     state.announce(SESSION_UPDATED, state.summary(session));
 }
+
+/// What a wake holds on the owning session while its turn runs: the cap, and the tag that
+/// counts the session's model calls toward the auto-fix budget. Both go when this is dropped.
+struct Hold {
+    _cap: crate::permissions::TurnCap,
+    state: Arc<DaemonState>,
+    session_id: String,
+}
+
+impl Hold {
+    fn new(state: &Arc<DaemonState>, session: &Session, cap: crate::permissions::TurnCap) -> Self {
+        state.budgets().tag_session(session.id(), SOURCE_AUTOFIX);
+        Hold {
+            _cap: cap,
+            state: Arc::clone(state),
+            session_id: session.id().to_string(),
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        // The session's model calls are recorded from its events by another task, a moment
+        // after they happen: the tag stays a little longer so the turn's last calls count.
+        let (state, id) = (Arc::downgrade(&self.state), self.session_id.clone());
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    tokio::time::sleep(UNTAG_AFTER).await;
+                    if let Some(state) = state.upgrade() {
+                        state.budgets().untag_session(&id);
+                    }
+                });
+            }
+            Err(_) => self.state.budgets().untag_session(&id),
+        }
+    }
+}
+
+/// How long a woken turn's calls keep counting toward the auto-fix budget after it ends.
+const UNTAG_AFTER: Duration = Duration::from_secs(5);
 
 /// Runs the wake as a turn of the owning session, capped from before the message is sent until
 /// the turn and its subagents are over. The cap is applied first, then the session is checked
@@ -920,23 +1239,24 @@ async fn owner_turn(
     let Some(cap) = crate::permissions::TurnCap::apply(session) else {
         return Owned::Raced;
     };
+    let hold = Hold::new(state, session, cap);
     announce_session(state, session);
     let mut events = session.subscribe();
     #[cfg(feature = "testing")]
     testing::paused(session.id()).await;
     if !ready_after_cap(session) {
-        drop(cap);
+        drop(hold);
         announce_session(state, session);
         return Owned::Raced;
     }
     if let Err(stop) = crate::budgets::check(state, session.id(), false) {
-        drop(cap);
+        drop(hold);
         announce_session(state, session);
         return Owned::Failed(stop.message);
     }
     let id = session.reserve_message_id();
     if session.send_as(id.clone(), prompt.to_string()).is_err() {
-        drop(cap);
+        drop(hold);
         announce_session(state, session);
         return Owned::Failed("the session closed before it started".to_string());
     }
@@ -958,7 +1278,7 @@ async fn owner_turn(
     .await;
     match outcome {
         Ok(Ok(true)) => {
-            drop(cap);
+            drop(hold);
             announce_session(state, session);
             Owned::Raced
         }
@@ -968,10 +1288,10 @@ async fn owner_turn(
             if !settled {
                 session.stop();
                 deny_waiting(state, session);
-                hold(
+                keep_until_done(
                     Arc::clone(state),
                     Arc::clone(session),
-                    cap,
+                    hold,
                     events,
                     (id, prompt.to_string()),
                     started,
@@ -981,7 +1301,7 @@ async fn owner_turn(
                         .to_string(),
                 );
             }
-            drop(cap);
+            drop(hold);
             announce_session(state, session);
             match result {
                 Ok(_) => Owned::Done(reply.trim().to_string()),
@@ -992,10 +1312,10 @@ async fn owner_turn(
             // Stopping pauses the turn; it would go on uncapped if the cap were lifted now.
             session.stop();
             deny_waiting(state, session);
-            hold(
+            keep_until_done(
                 Arc::clone(state),
                 Arc::clone(session),
-                cap,
+                hold,
                 events,
                 (id, prompt.to_string()),
                 started,
@@ -1014,15 +1334,15 @@ fn ready_after_cap(session: &Session) -> bool {
         session.status().0,
         SessionStatus::Idle | SessionStatus::Watching
     ) && !session.is_stopped()
-        && !subagents_running(session)
+        && !subagents_active(session)
 }
 
-/// Keeps `cap` until the woken turn has really ended (it may be paused, and runs capped when
-/// resumed) and the subagents are done, then lifts it.
-fn hold(
+/// Keeps `hold` until the woken turn has really ended (it may be paused, and runs capped when
+/// resumed) and the subagents are done, then lets go of it.
+fn keep_until_done(
     state: Arc<DaemonState>,
     session: Arc<Session>,
-    cap: crate::permissions::TurnCap,
+    hold: Hold,
     mut events: broadcast::Receiver<AgentEvent>,
     (id, prompt): (String, String),
     mut started: bool,
@@ -1045,7 +1365,7 @@ fn hold(
             .await;
         }
         settle_agents(&session, None).await;
-        drop(cap);
+        drop(hold);
         announce_session(&state, &session);
     });
 }
@@ -1056,11 +1376,12 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
         entry,
         before,
         branch,
-        items,
+        work,
         ids,
         place,
     } = wake;
     let (repo, number) = (entry.repo.clone(), entry.number);
+    let trigger = work.trigger();
     let say = |status: &str, session: Option<String>, text: String| {
         announce_with(
             &state,
@@ -1069,43 +1390,41 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
             status,
             session,
             text,
-            TRIGGER,
+            trigger,
             ids.clone(),
         );
     };
-    let prompt = review_prompt(number, &branch, &items);
+    let (prompt, doing, title) = match &work {
+        Work::Review(items) => (
+            review_prompt(number, &branch, items),
+            "answering new review comments".to_string(),
+            format!("fix: address review comments on #{number}"),
+        ),
+        Work::Ci { checks, url, log } => (
+            ci_prompt(number, &branch, checks, url, log),
+            format!("fixing {}", neutralise(&checks.join(", "), false)),
+            format!(
+                "fix: {} on #{number}",
+                neutralise(&checks.join(", "), false)
+            ),
+        ),
+    };
     let owner_checkout = matches!(place, Place::Owner(_));
     let (dir, session_id, summary) = match place {
         Place::Owner(session) => {
             let id = session.id().to_string();
-            let on_start = || {
-                say(
-                    "started",
-                    Some(id.clone()),
-                    "answering new review comments".to_string(),
-                );
-            };
+            let on_start = || say("started", Some(id.clone()), doing.clone());
             match owner_turn(&state, &session, &prompt, &on_start).await {
                 Owned::Done(summary) => {
                     state.pr_monitor().ledger().clear_raced(&repo, number);
                     (PathBuf::from(session.project_dir()), Some(id), summary)
                 }
                 Owned::Raced => {
-                    // Not woken: the comments are looked at again at the next pass.
+                    // Not woken: the work is looked at again at the next pass.
                     let ledger = state.pr_monitor().ledger();
                     ledger.give_back(&state, &before);
                     state.pr_monitor().announce_flags(&state, &repo, number);
-                    let times = ledger.note_raced(&repo, number);
-                    if times.is_multiple_of(RACED_LIMIT) {
-                        tracing::warn!(%repo, pr = number, times, "the session could not be woken");
-                        say(
-                            "failed",
-                            Some(id),
-                            format!(
-                                "the session could not be woken {times} times in a row (it was busy or capped by another wake); the comments are tried again"
-                            ),
-                        );
-                    }
+                    not_woken(&state, &repo, number, &id, trigger, &ids);
                     return;
                 }
                 Owned::Failed(message) => {
@@ -1119,7 +1438,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
             say(
                 "started",
                 None,
-                format!("{why}; a new unattended session is answering the review comments"),
+                format!("{why}; a new unattended session is {doing}"),
             );
             let settings = state.settings();
             let project = settings
@@ -1129,7 +1448,10 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 .find(|watch| watch.repo.eq_ignore_ascii_case(&repo))
                 .map_or_else(|| entry.project.clone(), |watch| watch.project.clone());
             let worktree = worktree_path(&settings, state.data_dir(), &repo, number);
-            let local_branch = format!("imperium/review-pr-{number}");
+            let local_branch = match work {
+                Work::Review(_) => format!("imperium/review-pr-{number}"),
+                Work::Ci { .. } => format!("imperium/fix-pr-{number}"),
+            };
             if let Err(error) =
                 git::prepare_worktree(&project, &worktree, &branch, &local_branch).await
             {
@@ -1138,20 +1460,26 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
             }
             let model = settings.github.autofix.model.clone();
             let replacement_timeout = wake_timeout(&format!("replacement:{repo}#{number}"));
+            let options = match work {
+                // A failing commit in the daemon's own worktree runs as Fix CI does (D8).
+                Work::Ci { .. } => fix_ci_options(),
+                Work::Review(_) => crate::SessionOptions {
+                    // `ask` ignores allow rules and session approvals; nothing is
+                    // pre-approved, so every edit and command waits for the user.
+                    permission_mode: Some(imperium_api::PermissionMode::Ask),
+                    unattended: true,
+                    // Every call that is not a read asks, for the session's whole life.
+                    capped: true,
+                    budget_source: Some(SOURCE_AUTOFIX.to_string()),
+                    ..crate::SessionOptions::default()
+                },
+            };
             let (ok, summary, session_id) = state
                 .run_prompt(
                     &worktree.display().to_string(),
                     model.as_deref(),
                     prompt,
-                    crate::SessionOptions {
-                        // `ask` ignores allow rules and session approvals; nothing is
-                        // pre-approved, so every edit and command waits for the user.
-                        permission_mode: Some(imperium_api::PermissionMode::Ask),
-                        unattended: true,
-                        // Every call that is not a read asks, for the session's whole life.
-                        capped: true,
-                        ..crate::SessionOptions::default()
-                    },
+                    options,
                     replacement_timeout,
                 )
                 .await;
@@ -1183,38 +1511,93 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
             (worktree, session_id, summary)
         }
     };
-    commit_and_push(
+    let note = match &work {
+        Work::Review(_) => format!(
+            "this change answers review comments written by other people (untrusted text; ids {}); \
+             a push for review comments always asks, whatever push is set to",
+            ids.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Work::Ci { .. } => "this change answers a failing CI log (untrusted text) in a woken \
+                            session; the push always asks, whatever push is set to"
+            .to_string(),
+    };
+    let delivered = deliver(
         &state,
-        &github,
-        &entry,
-        &branch,
-        &dir,
-        session_id,
-        &summary,
-        &ids,
-        owner_checkout,
+        github.as_ref(),
+        Delivery {
+            repo: &repo,
+            number,
+            branch: &branch,
+            dir: &dir,
+            session_id: session_id.clone(),
+            summary: &summary,
+            title,
+            trigger,
+            ids: &ids,
+            note: Some(note),
+            always_ask: true,
+            owner_checkout,
+        },
     )
     .await;
+    // The threads the comments were in get a reply saying what was done (or why not).
+    if let Work::Review(items) = &work
+        && matches!(delivered, Delivered::Pushed | Delivered::Nothing)
+    {
+        let inline: Vec<u64> = items
+            .iter()
+            .filter(|item| item.kind == Kind::Inline)
+            .map(|item| item.comment.id)
+            .collect();
+        reply_to_threads(
+            &state,
+            github.as_ref(),
+            Replies {
+                repo: &repo,
+                number,
+                inline: &inline,
+                summary: &summary,
+                session_id,
+                ids: &ids,
+            },
+        )
+        .await;
+    }
 }
 
-/// Commits what the session changed in `dir` and pushes it after the user approves, always: a
-/// change made from text other people wrote never goes out on `push = "auto"`. What is pushed
-/// is the commit the approval measured, by its hash, whatever `HEAD` is by then. Anything the
-/// session left untracked in the folder is taken with `git add -A`, and a declined push leaves
-/// the commit where it was made (on the branch, in the folder).
-#[allow(clippy::too_many_arguments)]
-async fn commit_and_push(
-    state: &Arc<DaemonState>,
-    github: &Arc<dyn GitHub>,
-    entry: &Entry,
-    branch: &str,
-    dir: &Path,
+/// The replies one wake posts.
+struct Replies<'a> {
+    repo: &'a str,
+    number: u64,
+    /// The review comments on the diff that woke the session.
+    inline: &'a [u64],
+    summary: &'a str,
     session_id: Option<String>,
-    summary: &str,
-    ids: &[u64],
-    owner_checkout: bool,
-) {
-    let (repo, number) = (entry.repo.as_str(), entry.number);
+    ids: &'a [u64],
+}
+
+/// Replies in each unresolved review thread holding a comment that woke the session, with the
+/// session's summary, defanged. With `github.autofix.comment = "ask"` (the default) each reply
+/// waits until the user approved its exact text, which they may edit; with `auto` it is posted
+/// without asking. Over `comment_replies_per_hour` on the pull request a reply is held (not
+/// posted, and not asked about). Every reply ends with the footer and its id is recorded, so it
+/// never wakes anything.
+async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Replies<'_>) {
+    let Replies {
+        repo,
+        number,
+        inline,
+        summary,
+        session_id,
+        ids,
+    } = job;
+    let proposed = defang(summary.trim());
+    if inline.is_empty() || proposed.trim().is_empty() {
+        return;
+    }
     let say = |status: &str, text: String| {
         announce_with(
             state,
@@ -1223,121 +1606,143 @@ async fn commit_and_push(
             status,
             session_id.clone(),
             text,
-            TRIGGER,
+            "review",
             ids.to_vec(),
         );
     };
-    // The folder is the pull request's branch checkout, still: if the turn (or the user) moved
-    // it elsewhere, nothing is committed on whatever branch it is on now.
-    if owner_checkout {
-        match git::current_branch(dir).await {
-            Ok(current) if current == branch => {}
-            _ => {
-                say(
-                    "failed",
-                    "the folder is no longer on the pull request's branch, so nothing was committed"
-                        .to_string(),
-                );
-                return;
+    let threads = match github.review_threads(repo, number).await {
+        Ok(threads) => threads,
+        Err(error) => {
+            say(
+                "failed",
+                format!("the review threads could not be read, so no reply was posted: {error}"),
+            );
+            return;
+        }
+    };
+    let ledger = state.pr_monitor().ledger();
+    let settings = state.settings();
+    let per_hour = settings.github.autofix.comment_replies_per_hour;
+    let ask = settings.github.autofix.comment != "auto";
+    for thread in threads.iter().filter(|thread| !thread.is_resolved) {
+        let Some(comment) = thread.comments.iter().find(|c| inline.contains(&c.id)) else {
+            continue;
+        };
+        let place = format!(
+            "the review thread on {} (comment {})",
+            neutralise(&thread.path, false),
+            comment.id
+        );
+        if !ledger.reply_room(repo, number, per_hour) {
+            say(
+                "held",
+                format!(
+                    "no reply was posted in {place}: {per_hour} replies were posted on this pull request in the last hour (github.autofix.comment_replies_per_hour)"
+                ),
+            );
+            continue;
+        }
+        let text = if ask {
+            let request = format!(
+                "Reply in {repo}#{number} to {place}. This exact text is posted, followed by an \
+                 Imperium footer, and you may edit it. The model wrote it after reading review \
+                 text other people wrote (unverified):\n{proposed}"
+            );
+            let answer = state
+                .approvals()
+                .request_text(state, "reply", request, proposed.clone())
+                .await;
+            match answer {
+                Ok(crate::approvals::Answer {
+                    approve: true,
+                    text,
+                }) => text.unwrap_or_else(|| proposed.clone()),
+                _ => {
+                    say(
+                        "reply_declined",
+                        format!("the reply in {place} was declined; nothing was posted"),
+                    );
+                    continue;
+                }
             }
-        }
-    }
-    let message = format!(
-        "fix: address review comments on #{number}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
-        summary = summary.chars().take(1500).collect::<String>(),
-        session = session_id.as_deref().unwrap_or("unknown"),
-    );
-    match git::commit_all(dir, &message).await {
-        Ok(true) => {}
-        Ok(false) => {
-            say("nothing", format!("the session changed nothing: {summary}"));
-            return;
-        }
-        Err(error) => {
-            say("failed", error);
-            return;
-        }
-    }
-    // The approval shows what the daemon measured over `origin/<branch>..<commit>`: everything
-    // that would leave the machine, including commits that were there before the wake.
-    let sha = match git::head(dir).await {
-        Ok(sha) => sha,
-        Err(error) => {
-            say("failed", error);
-            return;
-        }
-    };
-    let mut warnings = vec![format!(
-        "this change answers review comments written by other people (untrusted text; ids {}); \
-         a push for review comments always asks, whatever push is set to",
-        ids.iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )];
-    let changes = match git::changes_since_origin(dir, branch).await {
-        Ok(changes) => changes,
-        Err(error) => {
-            warnings.push(format!("the changed files could not be listed: {error}"));
-            Vec::new()
-        }
-    };
-    match git::commits_ahead(dir, branch).await {
-        Ok(1) => {}
-        Ok(count) => warnings.push(format!("the push would send {count} commits, not one")),
-        Err(error) => warnings.push(format!("the commits to push could not be counted: {error}")),
-    }
-    if git::head(dir).await.ok().as_deref() != Some(sha.as_str()) {
-        say(
-            "failed",
-            "the folder's HEAD moved while the push was being measured; nothing was pushed"
-                .to_string(),
+        } else {
+            proposed.clone()
+        };
+        let body = format!(
+            "{}{REPLY_FOOTER}",
+            text.chars().take(REPLY_CHARS).collect::<String>()
         );
-        return;
-    }
-    let paths: Vec<String> = changes.iter().map(|(_, path)| path.clone()).collect();
-    let flagged = ci_config_paths(&paths);
-    let request = push_approval(repo, number, branch, &changes, &flagged, &warnings, summary);
-    say("awaiting_approval", summary.to_string());
-    let approved = state
-        .approvals()
-        .request(state, "push", request)
-        .await
-        .unwrap_or(false);
-    if !approved {
-        say(
-            "declined",
-            "the push was declined; the commit stays where it was made".to_string(),
-        );
-        return;
-    }
-    if let Err(error) =
-        crate::pr_monitor::disable_before_push(state, github.as_ref(), repo, number).await
-    {
-        say("failed", error);
-        return;
-    }
-    match git::push_commit(dir, &sha, branch).await {
-        Ok(()) => {
-            state
-                .pr_monitor()
-                .ledger()
-                .update(state, repo, number, |e| e.attempts = 0);
-            say("pushed", summary.to_string());
+        match github.reply_to_thread(&thread.id, &body).await {
+            Ok(id) => {
+                ledger.record_reply(state, repo, number, id);
+                say("replied", format!("replied in {place}"));
+            }
+            Err(error) => say(
+                "failed",
+                format!("the reply in {place} could not be posted: {error}"),
+            ),
         }
-        Err(error) => say("failed", error),
     }
 }
 
-/// Hooks for the daemon's tests: hold a wake at the moment it re-checks the session, and
-/// shorten the time a wake turn may take.
+/// Makes the model's summary safe to post where other people read it and get notified:
+/// control and invisible characters go, backticks become apostrophes, `@mentions` (users and
+/// teams) are quoted as code so nobody is notified, URLs lose their scheme separator and
+/// `www.` its dot so nothing becomes a link, Markdown links and images are broken, `<` and `>`
+/// are escaped so no HTML (or a forged footer marker) renders, and the text is capped.
+pub(crate) fn defang(text: &str) -> String {
+    let cleaned = neutralise(&text.chars().take(REPLY_CHARS).collect::<String>(), true);
+    let chars: Vec<char> = cleaned.chars().collect();
+    let mut out = String::with_capacity(cleaned.len() + 16);
+    let mut at = 0;
+    while at < chars.len() {
+        let c = chars[at];
+        let starts_mention = c == '@'
+            && (at == 0 || !chars[at - 1].is_alphanumeric())
+            && chars
+                .get(at + 1)
+                .is_some_and(|next| next.is_alphanumeric() || *next == '-' || *next == '_');
+        if starts_mention {
+            let mut end = at + 1;
+            while end < chars.len()
+                && (chars[end].is_alphanumeric() || matches!(chars[end], '-' | '_' | '/'))
+            {
+                end += 1;
+            }
+            // `neutralise` turned every backtick into an apostrophe, so these are the only ones.
+            out.push('`');
+            out.extend(&chars[at..end]);
+            out.push('`');
+            at = end;
+            continue;
+        }
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+        at += 1;
+    }
+    let mut out = out.replace("://", "[:]//").replace("](", "] (");
+    // ASCII lowercasing keeps byte offsets, so a match in the copy is a match in the text.
+    while let Some(at) = out.to_ascii_lowercase().find("www.") {
+        out.replace_range(at + 3..at + 4, "[.]");
+    }
+    out
+}
+
+/// Hooks for the daemon's tests: hold a wake at the moment it re-checks the session, shorten
+/// the time a wake turn may take, and run one pass of Fix CI over the watched repositories.
 #[cfg(feature = "testing")]
 pub mod testing {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock, PoisonError};
     use std::time::Duration;
 
+    use imperium_github::GitHub;
     use tokio::sync::Notify;
+
+    use crate::DaemonState;
 
     type Pauses = Mutex<HashMap<String, (Arc<Notify>, Arc<Notify>)>>;
 
@@ -1368,6 +1773,13 @@ pub mod testing {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(session.to_string(), timeout);
+    }
+
+    /// One pass of Fix CI over `[[github.watch]]`, as the poll loop makes every `poll_s`: the
+    /// runs it starts go on in the background.
+    pub async fn poll_fix_ci(state: &Arc<DaemonState>, github: Arc<dyn GitHub>) {
+        let mut failures = crate::autofix::ListFailures::default();
+        crate::autofix::poll_watched(state, &github, &mut failures).await;
     }
 
     pub(super) fn timeout_for(session: &str) -> Option<Duration> {
@@ -1408,5 +1820,68 @@ mod tests {
         assert_eq!(ledger.note_raced("o/other", 7), 1);
         ledger.clear_raced("O/R", 7);
         assert_eq!(ledger.note_raced("o/r", 7), 1);
+    }
+
+    #[test]
+    fn a_reply_notifies_nobody_links_nothing_and_renders_no_html() {
+        let text = defang(
+            "Thanks @alice and @org/team! See https://evil.example/x and www.Evil.example, \
+             [click](http://x) ![img](http://y) <img src=x> <!-- imperium-auto-fix --> \
+             mail me@example.com `code` \u{202E}gnp.exe",
+        );
+        assert!(
+            text.contains("`@alice`") && text.contains("`@org/team`"),
+            "{text}"
+        );
+        assert!(text.contains("me@example.com"), "{text}");
+        assert!(!text.contains("://"), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("www."), "{text}");
+        assert!(!text.contains("]("), "{text}");
+        assert!(!text.contains('<') && !text.contains('>'), "{text}");
+        assert!(!text.contains(REPLY_MARKER), "{text}");
+        assert!(!text.contains('\u{202E}'), "{text}");
+        // The only backticks are the ones around mentions.
+        assert_eq!(text.matches('`').count(), 4, "{text}");
+        assert!(defang(&"x".repeat(REPLY_CHARS * 2)).chars().count() <= REPLY_CHARS);
+    }
+
+    #[test]
+    fn the_failing_commit_is_taken_once_and_attempts_stop_it() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap();
+        let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        let ledger = Ledger::default();
+        ledger.ensure(&state);
+        let project = Path::new("p");
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "a", project, 2),
+            CiTake::Taken
+        );
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "a", project, 2),
+            CiTake::Seen
+        );
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "b", project, 2),
+            CiTake::Taken
+        );
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "c", project, 2),
+            CiTake::Spent
+        );
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "c", project, 2),
+            CiTake::Seen
+        );
+        // An accepted push starts the count again.
+        ledger.accepted_push(&state, "o/r", 1);
+        assert_eq!(
+            ledger.take_ci(&state, "o/r", 1, "d", project, 2),
+            CiTake::Taken
+        );
+        // A bound pull request is not Fix CI's.
+        assert!(!ledger.is_bound("o/r", 1));
     }
 }

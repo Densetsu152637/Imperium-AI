@@ -69,9 +69,17 @@ impl Connection {
             }),
             ApprovalRespond::NAME => {
                 call::<ApprovalRespond>(c.params.take(), |params: ApprovalRespondParams| {
-                    Ok(ApprovalRespondResult {
-                        found: self.state.approvals().respond(params.id, params.approve),
-                    })
+                    let found = self
+                        .state
+                        .approvals()
+                        .respond_with(params.id, params.approve, params.text)
+                        .map_err(|_| {
+                            ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                "this request's text cannot be edited; answer it without text",
+                            )
+                        })?;
+                    Ok(ApprovalRespondResult { found })
                 })
             }
             ScheduleList::NAME => call::<ScheduleList>(c.params.take(), |_: ScheduleListParams| {

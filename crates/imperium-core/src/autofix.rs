@@ -5,8 +5,8 @@
 //! never force-pushed, merged, or closed.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use imperium_config::{GithubWatch, Settings};
@@ -43,63 +43,91 @@ pub(crate) fn start(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>) {
 }
 
 async fn poll_loop(daemon: Weak<DaemonState>, github: Arc<dyn GitHub>, poll: Duration) {
-    // Commits already handled, and attempts per pull request.
-    let mut handled: HashMap<(String, u64), String> = HashMap::new();
-    let attempts: Arc<Mutex<HashMap<(String, u64), u32>>> = Arc::default();
     let mut failures = ListFailures::default();
     loop {
         let Some(state) = daemon.upgrade() else {
             return;
         };
-        for watch in state.settings().github.watch.clone() {
-            let failing = match github.failing_prs(&watch.repo).await {
-                Ok(failing) => {
-                    failures.succeeded(&watch.repo);
-                    failing
-                }
-                Err(error) => {
-                    tracing::warn!(repo = %watch.repo, %error, "could not list pull requests");
-                    if let Some(reason) = failures.failed(&watch.repo, &error) {
-                        announce(&state, &watch.repo, 0, "failed", None, reason);
-                    }
-                    continue;
-                }
-            };
-            for pr in failing {
-                let key = (watch.repo.clone(), pr.number);
-                if handled.get(&key) == Some(&pr.head_sha) {
-                    continue;
-                }
-                handled.insert(key.clone(), pr.head_sha.clone());
-                let tries = {
-                    let mut attempts = attempts.lock().unwrap_or_else(PoisonError::into_inner);
-                    let tries = attempts.entry(key).or_insert(0);
-                    *tries += 1;
-                    *tries
-                };
-                let max = state.settings().github.autofix.max_attempts_per_pr;
-                if tries > max {
-                    announce(
-                        &state,
-                        &watch.repo,
-                        pr.number,
-                        "stopped",
-                        None,
-                        format!(
-                            "{} failed again after {max} fix attempts; leaving it to you",
-                            pr.checks.join(", ")
-                        ),
-                    );
-                    continue;
-                }
-                let state = Arc::clone(&state);
-                let github = Arc::clone(&github);
-                let watch = watch.clone();
-                tokio::spawn(async move { fix_ci(&state, github.as_ref(), &watch, &pr).await });
-            }
-        }
+        poll_watched(&state, &github, &mut failures).await;
         drop(state);
         tokio::time::sleep(poll).await;
+    }
+}
+
+/// One pass over the watched repositories: starts Fix CI for each pull request whose latest
+/// commit failed and was not handled yet. The handled commit and the attempt count are kept in
+/// the review ledger, so a restart does not handle a commit again. A pull request bound to a
+/// session with its auto-fix switch on is left to that session's wake.
+pub(crate) async fn poll_watched(
+    state: &Arc<DaemonState>,
+    github: &Arc<dyn GitHub>,
+    failures: &mut ListFailures,
+) {
+    for watch in state.settings().github.watch.clone() {
+        let failing = match github.failing_prs(&watch.repo).await {
+            Ok(failing) => {
+                failures.succeeded(&watch.repo);
+                failing
+            }
+            Err(error) => {
+                tracing::warn!(repo = %watch.repo, %error, "could not list pull requests");
+                if let Some(reason) = failures.failed(&watch.repo, &error) {
+                    announce(state, &watch.repo, 0, "failed", None, reason);
+                }
+                continue;
+            }
+        };
+        for pr in failing {
+            if !take_failing(state, &watch, &pr) {
+                continue;
+            }
+            let state = Arc::clone(state);
+            let github = Arc::clone(github);
+            let watch = watch.clone();
+            tokio::spawn(async move { fix_ci(&state, github.as_ref(), &watch, &pr).await });
+        }
+    }
+}
+
+/// Whether Fix CI takes this failing commit now; tells the user when it stops.
+fn take_failing(state: &Arc<DaemonState>, watch: &GithubWatch, pr: &FailingPr) -> bool {
+    let ledger = state.pr_monitor().ledger();
+    ledger.ensure(state);
+    if ledger.is_bound(&watch.repo, pr.number) {
+        // The bound session's wake handles it.
+        return false;
+    }
+    if let Some(reason) = review::budget_spent(state) {
+        if ledger.first_budget_stop(&watch.repo, pr.number) {
+            announce(state, &watch.repo, pr.number, "stopped", None, reason);
+        }
+        return false;
+    }
+    let max = state.settings().github.autofix.max_attempts_per_pr;
+    match ledger.take_ci(
+        state,
+        &watch.repo,
+        pr.number,
+        &pr.head_sha,
+        &watch.project,
+        max,
+    ) {
+        review::CiTake::Taken => true,
+        review::CiTake::Spent => {
+            announce(
+                state,
+                &watch.repo,
+                pr.number,
+                "stopped",
+                None,
+                format!(
+                    "{} failed again after {max} fix attempts; leaving it to you",
+                    pr.checks.join(", ")
+                ),
+            );
+            false
+        }
+        review::CiTake::Seen => false,
     }
 }
 
@@ -110,7 +138,7 @@ const REPORT_AFTER: u32 = 3;
 /// failure once (as an `autofix.event` with status `failed`) instead of a log line on every
 /// poll, and again only after a poll succeeded in between.
 #[derive(Debug, Default)]
-struct ListFailures {
+pub(crate) struct ListFailures {
     consecutive: HashMap<String, u32>,
     reported: HashSet<String>,
 }
@@ -138,7 +166,9 @@ impl ListFailures {
     }
 }
 
-/// The Fix CI responder for one failing pull request.
+/// The Fix CI responder for one failing pull request of a watched repository: a new session in
+/// the pull request's own worktree (`ask` mode, file edits pre-approved, commands asking), then
+/// the shared commit and push of [`deliver`].
 pub async fn fix_ci(
     state: &Arc<DaemonState>,
     github: &dyn GitHub,
@@ -168,7 +198,6 @@ pub async fn fix_ci(
         Err(error) => format!("(the log could not be read: {error})"),
     };
     let prompt = ci_prompt(pr.number, &pr.branch, &pr.checks, &pr.details_url, &log);
-    let tools = FIX_TOOLS.iter().map(|tool| tool.to_string()).collect();
     let project = worktree.display().to_string();
     let model = state.settings().github.autofix.model.clone();
     let (ok, summary, session_id) = state
@@ -176,14 +205,7 @@ pub async fn fix_ci(
             &project,
             model.as_deref(),
             prompt,
-            crate::SessionOptions {
-                pre_approved: tools,
-                // `ask` ignores allow rules and session approvals, so only the pre-approved
-                // file tools run unasked: nobody is watching this session, and its input
-                // includes third-party CI output.
-                permission_mode: Some(imperium_api::PermissionMode::Ask),
-                ..crate::SessionOptions::default()
-            },
+            fix_ci_options(),
             FIX_TIMEOUT,
         )
         .await;
@@ -191,95 +213,221 @@ pub async fn fix_ci(
         announce(state, repo, pr.number, "failed", session_id, summary);
         return;
     }
+    let delivered = deliver(
+        state,
+        github,
+        Delivery {
+            repo,
+            number: pr.number,
+            branch: &pr.branch,
+            dir: &worktree,
+            session_id: session_id.clone(),
+            summary: &summary,
+            title: format!("fix: {checks} on #{}", pr.number),
+            trigger: "ci",
+            ids: &[],
+            note: None,
+            always_ask: false,
+            owner_checkout: false,
+        },
+    )
+    .await;
+    // The fix session now watches the pull request until it merges.
+    if delivered == Delivered::Pushed
+        && let Some(session) = session_id.as_deref().and_then(|id| state.session(id))
+    {
+        state.watch(&session, Some((repo.clone(), pr.number)));
+    }
+}
+
+/// How a Fix CI session runs (D8): `ask` mode with only the file tools pre-approved, so every
+/// command asks, and its model calls count toward the auto-fix budget. Its worktree belongs to
+/// the daemon and its push is gated on the measured `origin/<branch>..HEAD` diff, which is why
+/// it is not capped like a wake of the user's own session.
+pub(crate) fn fix_ci_options() -> crate::SessionOptions {
+    crate::SessionOptions {
+        pre_approved: FIX_TOOLS.iter().map(|tool| tool.to_string()).collect(),
+        // `ask` ignores allow rules and session approvals, so only the pre-approved file tools
+        // run unasked: nobody is watching this session, and its input includes third-party CI
+        // output.
+        permission_mode: Some(imperium_api::PermissionMode::Ask),
+        budget_source: Some(crate::budgets::SOURCE_AUTOFIX.to_string()),
+        ..crate::SessionOptions::default()
+    }
+}
+
+/// What a session's work became.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivered {
+    Pushed,
+    Nothing,
+    Declined,
+    Failed,
+}
+
+/// A commit and push of what a session changed.
+pub(crate) struct Delivery<'a> {
+    pub repo: &'a str,
+    pub number: u64,
+    pub branch: &'a str,
+    pub dir: &'a Path,
+    pub session_id: Option<String>,
+    pub summary: &'a str,
+    /// The commit message's first line.
+    pub title: String,
+    /// `ci` or `review`, for the events.
+    pub trigger: &'a str,
+    pub ids: &'a [u64],
+    /// A warning the push approval starts with.
+    pub note: Option<String>,
+    /// The push asks whatever `push` is set to.
+    pub always_ask: bool,
+    /// `dir` is a session's own folder, which must still be on `branch`.
+    pub owner_checkout: bool,
+}
+
+/// Commits what the session changed in `dir` and pushes it to the pull request's branch: after
+/// the user approves, or unasked with `push = "auto"` when nothing is flagged and the job does
+/// not always ask. What is pushed is the commit the approval measured, by its hash, whatever
+/// `HEAD` is by then. Anything the session left untracked is taken with `git add -A`, and a
+/// declined push leaves the commit where it was made. An accepted push resets the pull
+/// request's attempt count. Never force-pushes.
+pub(crate) async fn deliver(
+    state: &Arc<DaemonState>,
+    github: &dyn GitHub,
+    job: Delivery<'_>,
+) -> Delivered {
+    let Delivery {
+        repo,
+        number,
+        branch,
+        dir,
+        session_id,
+        summary,
+        title,
+        trigger,
+        ids,
+        note,
+        always_ask,
+        owner_checkout,
+    } = job;
+    let say = |status: &str, text: String| {
+        announce_with(
+            state,
+            repo,
+            number,
+            status,
+            session_id.clone(),
+            text,
+            trigger,
+            ids.to_vec(),
+        );
+    };
+    // The folder is the pull request's branch checkout, still: if the turn (or the user) moved
+    // it elsewhere, nothing is committed on whatever branch it is on now.
+    if owner_checkout {
+        match git::current_branch(dir).await {
+            Ok(current) if current == branch => {}
+            _ => {
+                say(
+                    "failed",
+                    "the folder is no longer on the pull request's branch, so nothing was committed"
+                        .to_string(),
+                );
+                return Delivered::Failed;
+            }
+        }
+    }
     let message = format!(
-        "fix: {checks} on #{number}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
-        number = pr.number,
+        "{title}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
         summary = summary.chars().take(1500).collect::<String>(),
         session = session_id.as_deref().unwrap_or("unknown"),
     );
-    match git::commit_all(&worktree, &message).await {
+    match git::commit_all(dir, &message).await {
         Ok(true) => {}
         Ok(false) => {
-            announce(
-                state,
-                repo,
-                pr.number,
-                "nothing",
-                session_id,
-                format!("the session changed nothing: {summary}"),
-            );
-            return;
+            say("nothing", format!("the session changed nothing: {summary}"));
+            return Delivered::Nothing;
         }
         Err(error) => {
-            announce(state, repo, pr.number, "failed", session_id, error);
-            return;
+            say("failed", error);
+            return Delivered::Failed;
         }
     }
-    // The push is approved on what the daemon measured (everything it would add to the remote
-    // branch), not on the model's account of it. A change to CI configuration or git hooks, or
-    // anything but one commit, always asks.
-    let mut warnings = Vec::new();
-    let changes = match git::changes_since_origin(&worktree, &pr.branch).await {
+    // The approval shows what the daemon measured over `origin/<branch>..<commit>`: everything
+    // that would leave the machine, including commits that were there before the session ran.
+    let sha = match git::head(dir).await {
+        Ok(sha) => sha,
+        Err(error) => {
+            say("failed", error);
+            return Delivered::Failed;
+        }
+    };
+    let mut warnings: Vec<String> = note.into_iter().collect();
+    let changes = match git::changes_since_origin(dir, branch).await {
         Ok(changes) => changes,
         Err(error) => {
             warnings.push(format!("the changed files could not be listed: {error}"));
             Vec::new()
         }
     };
-    match git::commits_ahead(&worktree, &pr.branch).await {
+    match git::commits_ahead(dir, branch).await {
         Ok(1) => {}
         Ok(count) => warnings.push(format!("the push would send {count} commits, not one")),
         Err(error) => warnings.push(format!("the commits to push could not be counted: {error}")),
     }
+    if git::head(dir).await.ok().as_deref() != Some(sha.as_str()) {
+        say(
+            "failed",
+            "the folder's HEAD moved while the push was being measured; nothing was pushed"
+                .to_string(),
+        );
+        return Delivered::Failed;
+    }
     let paths: Vec<String> = changes.iter().map(|(_, path)| path.clone()).collect();
     let flagged = ci_config_paths(&paths);
-    if !flagged.is_empty() || !warnings.is_empty() || state.settings().github.autofix.push != "auto"
+    // CI configuration or hooks, more than one commit, or a change driven by text other people
+    // wrote: the push asks whatever `push` says.
+    if always_ask
+        || !flagged.is_empty()
+        || !warnings.is_empty()
+        || state.settings().github.autofix.push != "auto"
     {
-        let request = push_approval(
-            repo, pr.number, &pr.branch, &changes, &flagged, &warnings, &summary,
-        );
-        announce(
-            state,
-            repo,
-            pr.number,
-            "awaiting_approval",
-            session_id.clone(),
-            summary.clone(),
-        );
+        let request = push_approval(repo, number, branch, &changes, &flagged, &warnings, summary);
+        say("awaiting_approval", summary.to_string());
         let approved = state
             .approvals()
             .request(state, "push", request)
             .await
             .unwrap_or(false);
         if !approved {
-            announce(
-                state,
-                repo,
-                pr.number,
+            say(
                 "declined",
-                session_id,
-                "the push was declined; the commit stays in the worktree".into(),
+                "the push was declined; the commit stays where it was made".to_string(),
             );
-            return;
+            return Delivered::Declined;
         }
     }
     // A push changes what the user confirmed when they turned GitHub's auto-merge on, so it is
     // turned off first and stays off until they confirm it again in the desktop app. If it
     // cannot be checked or turned off, nothing is pushed.
-    if let Err(error) = crate::pr_monitor::disable_before_push(state, github, repo, pr.number).await
-    {
-        announce(state, repo, pr.number, "failed", session_id, error);
-        return;
+    if let Err(error) = crate::pr_monitor::disable_before_push(state, github, repo, number).await {
+        say("failed", error);
+        return Delivered::Failed;
     }
-    match git::push(&worktree, &pr.branch).await {
+    match git::push_commit(dir, &sha, branch).await {
         Ok(()) => {
-            // The fix session now watches the pull request until it merges.
-            if let Some(session) = session_id.as_deref().and_then(|id| state.session(id)) {
-                state.watch(&session, Some((repo.clone(), pr.number)));
-            }
-            announce(state, repo, pr.number, "pushed", session_id, summary);
+            state
+                .pr_monitor()
+                .ledger()
+                .accepted_push(state, repo, number);
+            say("pushed", summary.to_string());
+            Delivered::Pushed
         }
-        Err(error) => announce(state, repo, pr.number, "failed", session_id, error),
+        Err(error) => {
+            say("failed", error);
+            Delivered::Failed
+        }
     }
 }
 
@@ -308,7 +456,7 @@ pub(crate) fn is_invisible(c: char) -> bool {
 /// direction-changing characters go (newlines and tabs stay only when `multiline`), backticks
 /// become apostrophes so no code fence can be opened or closed, and the block's own marker is
 /// broken in any letter case.
-fn neutralise(text: &str, multiline: bool) -> String {
+pub(crate) fn neutralise(text: &str, multiline: bool) -> String {
     let mut cleaned: String = text
         .chars()
         .filter_map(|c| match c {
