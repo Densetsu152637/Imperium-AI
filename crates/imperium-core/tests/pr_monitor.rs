@@ -56,6 +56,8 @@ struct World {
     notices: broadcast::Receiver<Notification>,
     _home: tempfile::TempDir,
     folders: Vec<tempfile::TempDir>,
+    /// The config the daemon was started with, kept across a restart.
+    extra: String,
 }
 
 impl World {
@@ -78,6 +80,7 @@ impl World {
             notices,
             _home: home,
             folders: Vec::new(),
+            extra: extra.to_string(),
         }
     }
 
@@ -121,13 +124,14 @@ impl World {
             notices,
             _home,
             folders,
+            extra,
         } = self;
         drop(notices);
         drop(daemon);
         tokio::time::sleep(Duration::from_millis(100)).await;
         let daemon = DaemonState::new(
             imperium_config::Paths::under(_home.path()),
-            settings(""),
+            settings(&extra),
             None,
         );
         let github = HttpGitHub::new(&fake.url(), Arc::new(StaticToken::new(TOKEN))).unwrap();
@@ -139,6 +143,7 @@ impl World {
             notices,
             _home,
             folders,
+            extra,
         }
     }
 
@@ -579,7 +584,8 @@ async fn status_of(connection: &mut Connection, session: &str) -> Value {
 
 #[tokio::test]
 async fn a_restart_restores_the_binding_its_switches_and_the_last_status() {
-    let mut world = World::new("").await;
+    // The card alone: with `fix_ci` a failing commit would wake the session (stage 8).
+    let mut world = World::new("[github.autofix]\nresponders = [\"address_review\"]\n").await;
     world.fake.set_check(REPO, 7, "lint", Some("FAILURE"));
     let session = world.session();
     let id = session.id().to_string();

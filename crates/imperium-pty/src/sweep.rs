@@ -154,7 +154,18 @@ fn signal_member(pid: i32, _start: u64, signal: Signal, _sid: Pid) -> Delivery {
 
 /// Ends every process of session `sid`: `SIGHUP`, then freeze and `SIGKILL`. Whether none was
 /// left (a process that refuses signals, or outlasts the cap, makes it `false`).
-pub(crate) fn sweep(sid: Pid) -> bool {
+///
+/// With `spare_leader` the session's leader is neither signalled nor waited for: on Linux it is
+/// the supervisor, still ending its own tree inside its cap, and killing it would hand what it
+/// has not ended yet to init.
+pub(crate) fn sweep(sid: Pid, spare_leader: bool) -> bool {
+    let members = |sid: Pid| {
+        let mut found = members(sid);
+        if spare_leader {
+            found.retain(|member| member.pid != sid);
+        }
+        found
+    };
     let first = members(sid);
     if first.is_empty() {
         return true;

@@ -186,6 +186,9 @@ pub struct SessionOptions {
     /// a session started from text other people wrote. Kept in the session's meta and set
     /// again when it resumes.
     pub capped: bool,
+    /// The entry point the session's model calls are counted under in the budgets (`autofix`
+    /// for the sessions auto-fix starts), beside its environment and model.
+    pub budget_source: Option<String>,
     /// The caller already holds the working-folders lock (a Home session made its folder under
     /// it), so the session must not take it again.
     #[doc(hidden)]
@@ -406,6 +409,8 @@ pub struct DaemonState {
     workspaces_lock: Mutex<()>,
     /// Why the working folders are not where the configuration says (a move that failed at start).
     workspaces_warning: Mutex<Option<String>>,
+    /// The desktop app's terminals ([`crate::terminal`]).
+    terminals: crate::terminal::TerminalService,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -506,6 +511,7 @@ impl DaemonState {
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
             workspaces_lock: Mutex::new(()),
             workspaces_warning: Mutex::new(None),
+            terminals: crate::terminal::TerminalService::default(),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -797,6 +803,11 @@ impl DaemonState {
     ) -> Result<crate::initiative::Outcome, String> {
         crate::initiative::run_review(self, agent_id, crate::initiative::Trigger::User).await
     }
+    /// The desktop app's terminals.
+    pub fn terminals(&self) -> &crate::terminal::TerminalService {
+        &self.terminals
+    }
+
     pub fn approvals(&self) -> &Approvals {
         &self.approvals
     }

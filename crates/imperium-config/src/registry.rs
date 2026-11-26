@@ -197,6 +197,9 @@ pub static SETTINGS: &[SettingDef] = &[
     def("github.autofix.poll_s", "Auto-fix polling (seconds)", Integer, "How often pull requests are checked."),
     def("github.autofix.responders", "Auto-fix responders", StringList, "Which kinds of wake exist at all: fix_ci, address_review and resolve_conflicts. A pull request's own auto-fix switch then turns them on for that pull request; a wake needs both."),
     def("github.autofix.model", "Auto-fix model", STRING, "Model for fix sessions; empty uses the default model."),
+    choice("github.autofix.comment", "Auto-fix replies", &["ask", "auto"], "Ask before each reply to a review thread, showing its exact text (which you may edit), or post replies without asking. auto is risky: a reviewer with write access can steer the session into reading a file and the summary is then posted publicly; a reply that looks like a key or token still asks."),
+    def("github.autofix.comment_replies_per_hour", "Auto-fix replies per hour", Integer, "Replies to review threads per pull request per hour; more are held and not posted."),
+    def("github.autofix.budget_usd_per_day", "Auto-fix daily budget (USD)", Number, "What auto-fix wakes may spend per day on models with prices; once spent, wakes stop until the next day. 0 is no limit."),
     live(choice("permissions.mode", "Permission mode", &["ask", "default", "auto", "accept_edits", "plan", "full"], "How new sessions approve their agents' actions: ask (before anything that is not read-only, whatever the allow rules say), default (writes and commands ask unless a rule allows them), auto (like default, but a small classifier model lets routine in-scope calls run; anything it is unsure of asks you, and the safety floor, deny rules and ask rules are never put to it), accept_edits (file edits run without asking), plan (read and plan only: no writes or commands), or full (everything runs except what deny rules or the safety floor stop). Each session can change its own.")),
     live(def("permissions.auto.model", "Auto-mode classifier", STRING, "The model that classifies calls in the auto permission mode: a model table id or <endpoint>:<model> spec of a row in the model table. Empty: routing picks the cheapest basic-tier model, on this machine when the session's model runs here. A hosted row is refused for a local session (the call would leave the machine) and the call asks you instead.")),
     live(def("permissions.auto.timeout_s", "Auto-mode timeout (seconds)", Integer, "Seconds one classification may take, a local model's loading included; a late answer asks you.")),
@@ -282,6 +285,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("attachments.describe_timeout_s", "Description timeout (seconds)", Integer, "Seconds one description may take, a local model's loading included, before the image is noted as not described. A message's descriptions take twice this at most; a model that timed out or failed is not asked again for its other images."),
     def("attachments.describe_max_images", "Images described per message", Integer, "Most images described for one message; the rest are noted as not described."),
     def("attachments.describe_max_chars", "Description budget (characters)", Integer, "Most characters of image descriptions one message may carry in all."),
+    live(def("terminal.enabled", "Terminals", Bool, "Let the desktop app open terminals in a session's working folder. Off refuses new terminals. Only this file is read for it, never a project's.")),
+    live(def("terminal.shell", "Terminal shell", StringList, "The shell terminals run, as the program and its arguments. Empty: your account's login shell on macOS and Linux (when /etc/shells lists it), PowerShell on Windows. A bare name is looked up on PATH, skipping relative folders and the session's own folders. Only this file is read for it, never a project's.")),
     live(def("sessions.attachment_max_mib", "Largest attachment (MiB)", Integer, "The largest file that can be attached to a message. Files pasted or dropped from outside the session's folders are copied into its attachments folder; uploads from the app travel over the daemon connection, which takes about 12 MiB at most.")),
 ];
 
@@ -724,6 +729,46 @@ mod tests {
         set_user_setting(&paths, "github.session_gh", &Json::from(vec!["env-a"]), []).unwrap();
         let config = load(&paths, None, owned(&[])).unwrap();
         assert_eq!(config.settings().unwrap().github.session_gh, ["env-a"]);
+    }
+
+    #[test]
+    fn terminals_are_on_by_default_and_only_the_users_file_chooses_the_shell() {
+        let (home, paths) = home();
+        let settings = load(&paths, None, owned(&[])).unwrap().settings().unwrap();
+        assert!(settings.terminal.enabled);
+        assert!(settings.terminal.shell.is_empty());
+
+        let project = home.path().join("project");
+        std::fs::create_dir_all(project.join(".imperium")).unwrap();
+        std::fs::write(
+            project.join(".imperium/config.toml"),
+            "[terminal]
+enabled = false
+shell = [\"./planted\"]
+",
+        )
+        .unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(settings.terminal.enabled);
+        assert!(settings.terminal.shell.is_empty());
+
+        set_user_setting(
+            &paths,
+            "terminal.shell",
+            &Json::from(vec!["fish", "-l"]),
+            [],
+        )
+        .unwrap();
+        set_user_setting(&paths, "terminal.enabled", &Json::from(false), []).unwrap();
+        let settings = load(&paths, Some(&project), owned(&[]))
+            .unwrap()
+            .settings()
+            .unwrap();
+        assert!(!settings.terminal.enabled);
+        assert_eq!(settings.terminal.shell, ["fish", "-l"]);
     }
 
     #[test]
