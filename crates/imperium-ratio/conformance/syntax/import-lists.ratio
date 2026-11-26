@@ -1,0 +1,4 @@
+// expect: lex-ok
+// tokens: kw:import ident:std : ident:debate kw:as ident:d {record ident:a , ident:b } ;! kw:import str[ text:"x" ]str {record ident:c } ;!
+import std:debate as d { a, b }
+import "x" { c }

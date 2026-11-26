@@ -1,0 +1,13 @@
+// expect: lex-ok
+// tokens: kw:let ident:a = ident:f ( int:1 , int:2 ) ;! kw:let ident:b = [ ident:x ] ;! kw:let ident:c = {record ident:k : int:1 , ident:j : int:2 } ;!
+let a = f(
+  1,
+  2
+)
+let b = [
+  x
+]
+let c = {
+  k: 1,
+  j: 2
+}

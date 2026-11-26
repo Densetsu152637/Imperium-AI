@@ -1,0 +1,7 @@
+// expect: lex-ok
+// tokens: kw:let ident:s = str3[ text:"one\n  two\n" interp[ ident:x ]interp text:"" ]str ;!
+let s = """
+    one
+      two
+    {x}
+    """

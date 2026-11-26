@@ -1,0 +1,12 @@
+// expect: lex-ok
+// tokens: kw:prompt ident:p ( ident:path : ident:Str ) {prompt ctx:instruct str[ text:"Summarise." ]str ;! ctx:data ident:body kw:as ident:path ;! kw:if ident:flag {prompt ctx:note str[ text:"x" ]str ;! } kw:else {prompt ctx:note str[ text:"y" ]str ;! } ;! ctx:format ident:Note ;! } ;!
+prompt p(path: Str) {
+  instruct "Summarise."
+  data body as path
+  if flag {
+    note "x"
+  } else {
+    note "y"
+  }
+  format Note
+}
