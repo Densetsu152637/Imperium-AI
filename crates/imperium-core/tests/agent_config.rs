@@ -993,3 +993,78 @@ async fn a_file_tool_never_writes_into_the_extension_folders_in_any_mode() {
         std::fs::remove_file(home.path().join("notes.txt")).unwrap();
     }
 }
+
+#[tokio::test]
+async fn requests_only_the_user_may_answer_are_marked_by_the_daemon() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    write(
+        &source.path().join("SKILL.md"),
+        "---\nname: marked\ndescription: A skill.\n---\nbody\n",
+    );
+    let calls = vec![
+        // Respelled with `.` and `..`: the daemon judges the path it resolves to.
+        (
+            "write_file",
+            json!({"path": ".claude/./skills/x/SKILL.md", "content": "x"}),
+        ),
+        (
+            "edit_file",
+            json!({"path": ".claude/sub/../skills/x/SKILL.md", "old_string": "x", "new_string": "y"}),
+        ),
+        (
+            "write_file",
+            json!({"path": "tools/p/hooks/hooks.json", "content": "{}"}),
+        ),
+        (
+            "write_file",
+            json!({"path": "src/main.rs", "content": "fn main() {}"}),
+        ),
+        (
+            "install_extension",
+            json!({"kind": "skill", "source": source.path().display().to_string()}),
+        ),
+    ];
+    let url = fake_model(calls).await;
+    let state = daemon(home.path(), &url, "");
+    let (session, mut events) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    session.set_permission_mode(imperium_api::PermissionMode::Full);
+    session.send("manage the config".into()).unwrap();
+    let mut marked: Vec<(String, Option<bool>)> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match events.recv().await.unwrap().event {
+                SessionEvent::PermissionRequested {
+                    request_id,
+                    tool,
+                    user_only,
+                    ..
+                } => {
+                    marked.push((tool, user_only));
+                    session
+                        .respond(request_id, PermissionDecision::Deny)
+                        .unwrap();
+                }
+                SessionEvent::TurnCompleted { .. } => break,
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the turn ends within 60 s");
+    // Full mode: only floored calls ask, and each asks marked by the daemon.
+    assert_eq!(
+        marked,
+        [
+            ("write_file".to_string(), Some(true)),
+            ("edit_file".to_string(), Some(true)),
+            ("write_file".to_string(), Some(true)),
+            ("install_extension".to_string(), Some(true)),
+        ],
+        "{marked:?}"
+    );
+}

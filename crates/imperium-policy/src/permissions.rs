@@ -481,18 +481,39 @@ pub fn refused_write(absolute: &str) -> bool {
 /// check does (case both ways, no `:stream`, no trailing dots or spaces), so no spelling of
 /// one slips by; over-matching is harmless, a write there only asks.
 pub fn project_extension_file(absolute: &str) -> bool {
-    let parts: Vec<String> = absolute
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let name = part.split(':').next().unwrap_or_default();
-            name.trim_end_matches(['.', ' ']).to_string()
-        })
-        .collect();
+    // Tidied without touching the file system: `.` and `..` parts are resolved lexically, so
+    // `.claude/./skills` and `.claude/sub/../skills` are `.claude/skills`. A part is what it is
+    // before any `:stream` and without trailing dots or spaces (`..` itself is read first).
+    let mut parts: Vec<String> = Vec::new();
+    for part in absolute.split('/').filter(|part| !part.is_empty()) {
+        match part {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => {
+                let name = part.split(':').next().unwrap_or_default();
+                parts.push(name.trim_end_matches(['.', ' ']).to_string());
+            }
+        }
+    }
     let is = |name: &str, want: &str| {
         name.to_lowercase() == want || name.to_uppercase() == want.to_uppercase()
     };
     if parts.last().is_some_and(|last| is(last, ".mcp.json")) {
+        return true;
+    }
+    // A plugin's code-running parts, whenever its folder was registered: `hooks/hooks.json`, and
+    // anything in a `.claude-plugin` folder (its manifest, which can point hooks and servers
+    // anywhere).
+    if parts
+        .windows(2)
+        .any(|pair| is(&pair[0], "hooks") && is(&pair[1], "hooks.json"))
+        || parts
+            .iter()
+            .take(parts.len().saturating_sub(1))
+            .any(|part| is(part, ".claude-plugin"))
+    {
         return true;
     }
     parts.windows(2).any(|pair| {

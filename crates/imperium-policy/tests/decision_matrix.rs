@@ -242,6 +242,16 @@ fn a_projects_extension_files_ask_every_time_in_every_mode() {
         "/work/app/.imperium./skills /x.md",
         "/work/app/.MCP.JSON",
         "/work/app/.mcp.json:stream",
+        // `.` and `..` are tidied: the floor judges what the path resolves to either way.
+        "/work/app/.claude/./skills/x/SKILL.md",
+        "/work/app/.imperium/./config.toml",
+        "/work/app/.claude/sub/../skills/x/SKILL.md",
+        "/work/app/.imperium/commands/../agents/a.md",
+        ".claude/./skills/x/SKILL.md",
+        // A plugin's code-running parts, wherever its folder is.
+        "/tools/plugins/p/hooks/hooks.json",
+        "/tools/plugins/p/.claude-plugin/plugin.json",
+        "/tools/plugins/p/hooks/./hooks.json",
     ] {
         let target = path(file);
         for mode in [

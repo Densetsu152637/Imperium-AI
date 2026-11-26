@@ -544,6 +544,9 @@ impl DaemonState {
             workspaces_warning: Mutex::new(None),
         });
         state.apply_load_view();
+        // After a restart the folders environments add are guarded from the start, not only once
+        // a session in each has loaded.
+        state.guard_environment_plugin_folders();
         if let Some(local) = state.local.get() {
             local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
             if tokio::runtime::Handle::try_current().is_ok() {

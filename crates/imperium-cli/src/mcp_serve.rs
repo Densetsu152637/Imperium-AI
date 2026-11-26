@@ -882,11 +882,12 @@ async fn get_transcript(hub: &Hub, args: &Value) -> Result<Value, String> {
     Ok(result)
 }
 
-/// Why the harness may not answer the permission request `event`: installing or removing an
-/// extension is the user's call alone (an agent never installs one without the user's explicit
-/// approval), and so is a file write into a project's own extension files (`.claude/skills`,
-/// `.mcp.json`, `.imperium/config.toml`, and the like), which the safety floor asks about; a
-/// harness driven by another agent cannot give either. `None` for any other request.
+/// Why the harness may not answer the permission request `event`: the daemon marked it
+/// `user_only` (an extension install or removal, or a write to a project's extension files,
+/// judged by the daemon on the path the call resolves to), so only the user may; a harness driven
+/// by another agent cannot. `None` for any other request. The harness trusts the daemon's flag,
+/// not the request's summary (which carries the model's spelling of a path), and also refuses the
+/// two install tools by name as a backstop for a daemon that did not set it.
 fn user_only_request(event: &Value) -> Option<&'static str> {
     let tool = event["tool"].as_str()?;
     if matches!(tool, "install_extension" | "uninstall_extension") {
@@ -895,22 +896,11 @@ fn user_only_request(event: &Value) -> Option<&'static str> {
              answer it, in the desktop app or the imperium CLI",
         );
     }
-    if matches!(tool, "write_file" | "edit_file") {
-        // The summary is `write <path> (<n> bytes)` or `edit <path>`.
-        let summary = event["summary"].as_str()?;
-        let path = summary
-            .strip_prefix("write ")
-            .map(|rest| rest.rsplit_once(" (").map_or(rest, |(path, _)| path))
-            .or_else(|| summary.strip_prefix("edit "))?;
-        if imperium_policy::permissions::project_extension_file(&path.replace('\\', "/")) {
-            return Some(
-                "this request is a write to a project's extension files (skills, commands, \
-                 agents, .mcp.json or .imperium/config.toml): only the user can answer it, in \
-                 the desktop app or the imperium CLI",
-            );
-        }
-    }
-    None
+    (event["user_only"].as_bool() == Some(true)).then_some(
+        "this request is a write to a project's extension files (skills, commands, agents, \
+         plugin code, .mcp.json or .imperium/config.toml): only the user can answer it, in the \
+         desktop app or the imperium CLI",
+    )
 }
 
 async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
@@ -1684,42 +1674,31 @@ mod tests {
 mod user_only_tests {
     use super::*;
 
-    fn event(tool: &str, summary: &str) -> Value {
-        json!({"tool": tool, "summary": summary})
-    }
-
     #[test]
-    fn the_harness_does_not_answer_an_install_or_a_write_to_a_projects_extension_files() {
+    fn the_harness_answers_nothing_the_daemon_marked_user_only() {
         for tool in ["install_extension", "uninstall_extension"] {
-            let reason = user_only_request(&event(tool, "x")).expect(tool);
+            let reason = user_only_request(&json!({"tool": tool})).expect(tool);
             assert!(reason.contains("only the user can answer"), "{reason}");
         }
+        // The flag decides, whatever the summary says (the model's spelling of the path).
         for summary in [
-            "write .claude/skills/x/SKILL.md (12 bytes)",
-            "write /work/app/.mcp.json (3 bytes)",
-            "edit .imperium/config.toml",
-            "edit C:\\work\\app\\.imperium\\agents\\a.md",
+            "write .claude/./skills/x/SKILL.md (12 bytes)",
+            "edit .claude/sub/../skills/x",
+            "write CLAUDE~1/skills/x.md (1 bytes)",
+            "write alias/SKILL.md (1 bytes)",
         ] {
-            let tool = if summary.starts_with("write") {
-                "write_file"
-            } else {
-                "edit_file"
-            };
-            assert!(
-                user_only_request(&event(tool, summary)).is_some(),
-                "{summary}"
-            );
+            let marked = json!({"tool": "write_file", "summary": summary, "user_only": true});
+            let reason = user_only_request(&marked).expect(summary);
+            assert!(reason.contains("only the user can answer"), "{reason}");
         }
-        for (tool, summary) in [
-            ("write_file", "write src/main.rs (4 bytes)"),
-            ("edit_file", "edit docs/skills/x.md"),
-            ("set_model_card", "x"),
-            ("run_command", "run `ls`"),
+        // No flag, no refusal: an ordinary write, whatever its summary looks like.
+        for event in [
+            json!({"tool": "write_file", "summary": "write src/main.rs (4 bytes)"}),
+            json!({"tool": "write_file", "summary": "write .claude/skills/x (4 bytes)"}),
+            json!({"tool": "write_file", "user_only": false}),
+            json!({"tool": "run_command", "summary": "run `ls`"}),
         ] {
-            assert!(
-                user_only_request(&event(tool, summary)).is_none(),
-                "{summary}"
-            );
+            assert!(user_only_request(&event).is_none(), "{event}");
         }
         assert!(user_only_request(&Value::Null).is_none());
     }
