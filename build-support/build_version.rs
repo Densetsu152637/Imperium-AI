@@ -1,12 +1,12 @@
-//! The build's version string, shared by the build scripts of `imperium-cli` and `imperium-core`
-//! (`include!`d from each `build.rs`; it is not a crate, so no dependency is added).
-//!
-//! It sets `IMPERIUM_BUILD_VERSION_STRING`, which the crate reads with `env!`:
-//!
-//! - a release build (CI sets `IMPERIUM_BUILD_VERSION` to the tag without its `v`, and
-//!   `IMPERIUM_BUILD_COMMIT` to the commit): `0.2.281-experimental (223a0d02)`;
-//! - any other build: `<crate version>-dev (<short commit, or "unknown">)`, the commit read from
-//!   `git rev-parse` when the checkout has one.
+// The build's version string, shared by the build scripts of `imperium-cli` and `imperium-core`
+// (`include!`d from each `build.rs`; it is not a crate, so no dependency is added).
+//
+// It sets `IMPERIUM_BUILD_VERSION_STRING`, which the crate reads with `env!`:
+//
+// - a release build (CI sets `IMPERIUM_BUILD_VERSION` to the tag without its `v`, and
+//   `IMPERIUM_BUILD_COMMIT` to the commit): `0.2.281-experimental (223a0d02)`;
+// - any other build: `<crate version>-dev (<short commit, or "unknown">)`, the commit read from
+//   `git rev-parse` when the checkout has one.
 
 use std::process::Command;
 
