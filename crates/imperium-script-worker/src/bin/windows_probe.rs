@@ -6,7 +6,8 @@
 //! profile), `--read PATH` (a file to read), `--pipe NAME` (the daemon's named pipe),
 //! `--handle N --handle-len N` (a handle the test made inheritable before the launch, and the
 //! length of its file), `--cred TARGET` (a Credential Manager entry), `--port N` (a loopback
-//! listener the test holds open).
+//! listener the test holds open). It always tries a second process, and one that breaks away from
+//! its job (`CREATE_BREAKAWAY_FROM_JOB`).
 #![cfg_attr(windows, allow(unsafe_code))]
 
 #[cfg(not(windows))]
@@ -86,8 +87,11 @@ fn main() -> std::process::ExitCode {
     let me = std::env::current_exe().expect("the probe knows its path");
     report(
         "spawn",
-        denied(std::process::Command::new(me).arg("--noop").status()),
+        denied(std::process::Command::new(&me).arg("--noop").status()),
     );
+    // A process outside the job: the job must not allow breakaway (N1).
+    report("breakaway", breakaway(&me));
+    report("job_breakaway_ok", job_allows_breakaway());
     if let Some(raw) = handle {
         report("handle", handle_state(raw, handle_len));
     }
@@ -114,6 +118,51 @@ fn denied<T, E: std::fmt::Display>(result: Result<T, E>) -> String {
     match result {
         Ok(_) => "allowed".to_owned(),
         Err(err) => format!("denied ({err})"),
+    }
+}
+
+/// Starts the probe again with `CREATE_BREAKAWAY_FROM_JOB`; reports `allowed` if it started.
+#[cfg(windows)]
+fn breakaway(me: &std::path::Path) -> String {
+    use std::os::windows::process::CommandExt as _;
+    use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+    denied(
+        std::process::Command::new(me)
+            .arg("--noop")
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .status(),
+    )
+}
+
+/// Whether the probe's own job lets a process break away (`yes`, `no`, or why it is unknown).
+#[cfg(windows)]
+fn job_allows_breakaway() -> String {
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject,
+    };
+    // SAFETY: an all-zero structure is a valid value to be overwritten.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: no job handle (the job of this process), the structure the class names with its
+    // size, and no length out-pointer.
+    let queried = unsafe {
+        QueryInformationJobObject(
+            std::ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            (&raw mut limits).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    if queried == 0 {
+        return format!("unknown ({})", std::io::Error::last_os_error());
+    }
+    let flags = limits.BasicLimitInformation.LimitFlags;
+    if flags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) == 0 {
+        "no".to_owned()
+    } else {
+        "yes".to_owned()
     }
 }
 

@@ -163,7 +163,7 @@ async fn the_worker_starts_in_an_empty_private_working_folder() {
     assert_eq!(outcome_of("cwd_empty").await, Ok(()));
 }
 
-/// macOS has no OS memory limit, so the daemon's watchdog kills a worker whose resident memory
+/// macOS has no OS memory limit, so the daemon's watchdog kills a worker whose physical footprint
 /// passes twice `script_memory_mb`, as an escaped program allocating outside Monty would; the
 /// program ends as out of memory. (The test worker allocates with the system allocator.)
 #[cfg(target_os = "macos")]

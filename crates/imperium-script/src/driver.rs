@@ -74,7 +74,7 @@ impl Limits {
     }
 
     /// The OS memory backstop: twice `memory_mb` (the job on Windows, `RLIMIT_DATA` and the
-    /// delegated cgroup on Linux, the resident-memory watchdog on macOS).
+    /// delegated cgroup on Linux, the memory (physical footprint) watchdog on macOS).
     #[must_use]
     pub fn os_memory_bytes(&self) -> u64 {
         self.memory_mb.saturating_mul(2 * 1024 * 1024)
@@ -250,7 +250,7 @@ impl Launcher {
         {
             run._keep.push(Box::new(lease));
         }
-        // macOS: no OS memory limit, so the daemon watches the worker's resident memory.
+        // macOS: no OS memory limit, so the daemon watches the worker's physical footprint.
         #[cfg(target_os = "macos")]
         if let Some(pid) = run.pid() {
             run.watchdog = Some(crate::watchdog::Watchdog::start(
@@ -346,7 +346,7 @@ pub struct ScriptRun {
     _permit: OwnedSemaphorePermit,
     /// Kept as long as the run: the worker's working folder and, on Linux, its cgroup.
     _keep: Vec<Box<dyn Any + Send + Sync>>,
-    /// macOS: the resident-memory watchdog.
+    /// macOS: the memory (physical footprint) watchdog.
     #[cfg(target_os = "macos")]
     watchdog: Option<crate::watchdog::Watchdog>,
 }

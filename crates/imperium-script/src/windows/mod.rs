@@ -1,8 +1,9 @@
 //! Windows confinement of the worker, applied by the daemon (plan C1, "Windows").
 //!
 //! [`launch`] starts a program (the worker, or a test probe) suspended, with a restricted token at
-//! Low integrity, in a job object, with an empty environment, an empty Low-labelled working folder
-//! and nothing inherited but its three pipe ends; only then does it let it run. [`labels`] puts an
+//! Low integrity, in an AppContainer with no capabilities ([`appcontainer`]), in a job object,
+//! with an empty environment, an empty Low-labelled working folder, nothing inherited and only its
+//! three pipe ends duplicated into it; only then does it let it run. [`labels`] puts an
 //! inheritable `NO_READ_UP` label at Medium on the daemon's folders, so a Low process cannot read
 //! anything Imperium keeps; the launcher refuses to start a worker until that is done.
 //!
@@ -10,6 +11,7 @@
 //! the only code in the crate on Windows that allows `unsafe`; each block says why it is sound.
 #![allow(unsafe_code)]
 
+pub mod appcontainer;
 pub mod labels;
 pub mod launch;
 

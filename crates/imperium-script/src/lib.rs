@@ -8,7 +8,7 @@
 //!
 //! Confinement per OS (plan C1): on Linux and macOS the worker confines itself before it reads a
 //! program; the driver adds a cgroup v2 memory limit on Linux when the daemon runs in a delegated
-//! cgroup, and a resident-memory watchdog on macOS, which has no OS memory limit. On Windows the
+//! cgroup, and a memory-footprint watchdog on macOS, which has no OS memory limit. On Windows the
 //! driver launches the worker confined (the `windows` module): suspended, with a restricted
 //! Low-integrity token, in a job object, with only its pipes inherited, and only once the
 //! daemon's folders carry their `NO_READ_UP` label (`windows::labels`).

@@ -231,7 +231,16 @@ async fn no_program_runs_when_confinement_is_forced_to_fail() {
 #[tokio::test]
 async fn no_program_runs_when_any_windows_stage_is_forced_to_fail() {
     for stage in [
-        "labels", "token", "job", "folder", "pipes", "process", "assign", "resume",
+        "labels",
+        "token",
+        "appcontainer",
+        "job",
+        "folder",
+        "pipes",
+        "process",
+        "handles",
+        "assign",
+        "resume",
     ] {
         let launcher = common::launcher().with_forced_failure(stage);
         match launcher.start("print(1)", &common::quick_limits()).await {
@@ -248,7 +257,7 @@ async fn no_program_runs_when_any_windows_stage_is_forced_to_fail() {
             "{stage}: the slot was not returned"
         );
     }
-    for stage in ["integrity", "privileges", "job"] {
+    for stage in ["integrity", "privileges", "appcontainer", "job"] {
         let launcher = common::launcher().with_args(["--force-confinement-failure", stage]);
         let reason = launcher.check().await.unwrap_err();
         assert!(reason.contains(stage), "worker {stage}: {reason}");

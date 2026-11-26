@@ -217,8 +217,9 @@ impl DaemonState {
             if let Err(error) = workspaces::record_root(self.paths.data_dir(), &new) {
                 tracing::warn!(%error, "could not record where the working folders are");
             }
-            // Code mode's labels follow the working folders to their new place (Windows).
-            crate::code_mode::label_folders(&self.paths, &new);
+            // Code mode's labels follow the working folders to their new place (Windows), when
+            // code mode is enabled.
+            crate::code_mode::follow_move(&self.paths, &new);
             *self
                 .workspaces_warning
                 .lock()

@@ -1,9 +1,10 @@
 //! Windows: the daemon confines the worker at launch (plan C1): it starts it suspended with a
-//! restricted, Low-integrity token, puts it in a job object and only then lets it run
-//! (`imperium_script`'s Windows launch). A process cannot lower or jail itself as reliably, so
-//! the worker's own part is a check that this happened: it refuses to read a program unless its
-//! token is at Low integrity or below, holds no privilege, and it runs inside a job. Started any
-//! other way (by hand, or by a launch that skipped a step) it fails closed.
+//! restricted, Low-integrity token in an AppContainer, puts it in a job object and only then lets
+//! it run (`imperium_script`'s Windows launch). A process cannot lower or jail itself as reliably,
+//! so the worker's own part is a check that this happened: it refuses to read a program unless its
+//! token is at Low integrity or below, holds no privilege but `SeChangeNotifyPrivilege` (bypass
+//! traverse checking, which the launch keeps), is an AppContainer token, and it runs inside a job.
+//! Started any other way (by hand, or by a launch that skipped a step) it fails closed.
 //!
 //! Reading the token and the job status needs Win32 calls, so this module, and only this one in
 //! the worker, allows `unsafe`.
@@ -14,8 +15,9 @@ use std::{ffi::c_void, mem, ptr};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
     Security::{
-        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_MANDATORY_LABEL,
-        TOKEN_PRIVILEGES, TOKEN_QUERY, TokenIntegrityLevel, TokenPrivileges,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, LUID_AND_ATTRIBUTES,
+        TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenIntegrityLevel,
+        TokenIsAppContainer, TokenPrivileges,
     },
     System::{
         JobObjects::IsProcessInJob,
@@ -27,6 +29,9 @@ use super::{ConfineError, Report, Settings, forced};
 
 /// `SECURITY_MANDATORY_LOW_RID`.
 const LOW_RID: u32 = 0x1000;
+
+/// The locally unique id of `SeChangeNotifyPrivilege` (`SE_CHANGE_NOTIFY_PRIVILEGE`).
+const CHANGE_NOTIFY_LUID: u32 = 23;
 
 pub(super) fn apply(settings: &Settings) -> Result<Report, ConfineError> {
     let mut report = Report::default();
@@ -49,15 +54,35 @@ pub(super) fn apply(settings: &Settings) -> Result<Report, ConfineError> {
 
     forced(settings, "privileges")?;
     let privileges = token
-        .privilege_count()
+        .privileges()
         .map_err(|err| ConfineError::new("privileges", err))?;
-    if privileges != 0 {
+    let others = privileges
+        .iter()
+        .filter(|entry| !(entry.Luid.LowPart == CHANGE_NOTIFY_LUID && entry.Luid.HighPart == 0))
+        .count();
+    if others != 0 {
         return Err(ConfineError::new(
             "privileges",
-            format!("the worker's token holds {privileges} privileges; it must hold none"),
+            format!(
+                "the worker's token holds {others} privileges besides SeChangeNotifyPrivilege;                  it must hold none"
+            ),
         ));
     }
-    report.applied.push("privileges=0".to_owned());
+    report
+        .applied
+        .push("privileges=change-notify-only".to_owned());
+
+    forced(settings, "appcontainer")?;
+    let container = token
+        .is_app_container()
+        .map_err(|err| ConfineError::new("appcontainer", err))?;
+    if !container {
+        return Err(ConfineError::new(
+            "appcontainer",
+            "the worker's token is not an AppContainer token; only the daemon's confined launch              may start it",
+        ));
+    }
+    report.applied.push("appcontainer=yes".to_owned());
 
     forced(settings, "job")?;
     let mut in_job = 0;
@@ -130,10 +155,25 @@ impl Token {
         }
     }
 
-    fn privilege_count(&self) -> std::io::Result<u32> {
+    fn privileges(&self) -> std::io::Result<Vec<LUID_AND_ATTRIBUTES>> {
         let buffer = self.information(TokenPrivileges)?;
-        // SAFETY: the buffer holds a TOKEN_PRIVILEGES, whose count comes first.
-        Ok(unsafe { (*buffer.as_ptr().cast::<TOKEN_PRIVILEGES>()).PrivilegeCount })
+        // SAFETY: the buffer holds a TOKEN_PRIVILEGES: a count, then that many entries, all
+        // inside the buffer.
+        Ok(unsafe {
+            let privileges = buffer.as_ptr().cast::<TOKEN_PRIVILEGES>();
+            let count = (*privileges).PrivilegeCount as usize;
+            std::slice::from_raw_parts(
+                (&raw const (*privileges).Privileges).cast::<LUID_AND_ATTRIBUTES>(),
+                count,
+            )
+            .to_vec()
+        })
+    }
+
+    fn is_app_container(&self) -> std::io::Result<bool> {
+        let buffer = self.information(TokenIsAppContainer)?;
+        // SAFETY: the buffer holds the class's DWORD.
+        Ok(unsafe { *buffer.as_ptr().cast::<u32>() } != 0)
     }
 }
 
