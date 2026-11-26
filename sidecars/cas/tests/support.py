@@ -147,3 +147,20 @@ def install_string_trap() -> None:
         for name, original in originals.items():
             if getattr(module, name, None) is original:
                 setattr(module, name, wrappers[name])
+
+
+# --- Stage 2b: pools over test workers ---
+
+
+def make_spawner(script: str | None = None, *extra: str):
+    """A `PosixSpawner` for `imperium_cas.worker` (or a test worker script), with the test
+    environment instead of `-I` (see `worker_env`). On Windows the worker applies no limit, so
+    only the wall clock and cancellation hold there; tests opt in to that explicitly."""
+    from imperium_cas.pool import PosixSpawner
+
+    target = [os.path.join(TESTS, "workers", script)] if script else ["-m", "imperium_cas.worker"]
+    return PosixSpawner(
+        command=[BASE_PYTHON, "-B", *target, *extra],
+        env=worker_env(),
+        unlimited_on_windows=True,
+    )

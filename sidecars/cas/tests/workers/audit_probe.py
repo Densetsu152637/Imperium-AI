@@ -10,11 +10,45 @@ import sys
 
 from imperium_cas import worker
 
+if sys.platform != "win32":
+    import resource
+
 CODE = compile("probe = 1", "<probe>", "exec")  # compiled before the hook: `exec` alone trips it
+
+
+class Escape(BaseException):
+    """Not an `Exception`: it passes the handler's own `except Exception`."""
+
+
+class BadStr(Exception):
+    def __str__(self):
+        raise RuntimeError("str() of this exception fails")
+
+
+def outside_the_try(action: str) -> dict | None:
+    """Actions whose exceptions must reach the worker's own handling, not this probe's."""
+    if action == "escape":
+        raise Escape
+    if action == "bad-str":
+        raise BadStr
+    if action == "memory":
+        raise MemoryError
+    if action == "rlimits":
+        kinds = {"core": resource.RLIMIT_CORE, "cpu": resource.RLIMIT_CPU}
+        if hasattr(resource, "RLIMIT_AS"):
+            kinds["as"] = resource.RLIMIT_AS
+        return {
+            "ok": True,
+            "limits": {name: resource.getrlimit(kind) for name, kind in kinds.items()},
+        }
+    return None
 
 
 def probe(request: dict) -> dict:
     action = request.get("action")
+    direct = outside_the_try(action)
+    if direct is not None:
+        return direct
     try:
         if action == "open":
             open(__file__, "rb").close()  # noqa: SIM115
