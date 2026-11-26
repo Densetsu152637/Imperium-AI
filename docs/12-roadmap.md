@@ -938,7 +938,10 @@ and `environments.agent_update` (protocol 0.28)
     language servers (rust-analyzer, TypeScript and ESLint, Ruff and others the user has
     installed) run in the daemon, capped like every other process, and only in projects the
     user trusts, because they run the project's own code; untrusted projects get built-in
-    syntax checks. Problems show as squiggles, in the gutter and in a Problems list; quick fixes
+    syntax checks. When an agent changes a file that decides what they run (`build.rs`, an
+    ESLint config and the like), the project's servers pause until the user reviews the change
+    and resumes them, and Rust build scripts and proc macros stay off until the user turns them
+    on. Problems show as squiggles, in the gutter and in a Problems list; quick fixes
     and format on save are edits the user reviews and saves. Agents can read diagnostics but
     fix code with their own edits. Nothing is installed without the user's approval of that
     install. Editor themes include high-contrast ones and can be imported from VS Code theme
