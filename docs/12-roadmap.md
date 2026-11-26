@@ -934,7 +934,15 @@ and `environments.agent_update` (protocol 0.28)
     confirmation per tab, and harness files (`.imperium/`, `.claude/`, `.mcp.json`,
     `.claude-plugin/`) ask on every save. An agent's full-file `write_file` is refused when the
     file changed since that agent last read it. A paired phone gets no editor, and mods cannot
-    wrap or drive it, the same as item 55's panels
+    wrap or drive it, the same as item 55's panels. The editor also lints as you type:
+    language servers (rust-analyzer, TypeScript and ESLint, Ruff and others the user has
+    installed) run in the daemon, capped like every other process, and only in projects the
+    user trusts, because they run the project's own code; untrusted projects get built-in
+    syntax checks. Problems show as squiggles, in the gutter and in a Problems list; quick fixes
+    and format on save are edits the user reviews and saves. Agents can read diagnostics but
+    fix code with their own edits. Nothing is installed without the user's approval of that
+    install. Editor themes include high-contrast ones and can be imported from VS Code theme
+    files as data
     ([plan](plans/text-editor.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul), or from agent files

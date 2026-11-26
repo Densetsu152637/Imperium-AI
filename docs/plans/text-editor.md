@@ -1,8 +1,14 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 3 (round-2 review: N1 and the stage-text majors folded in; plan
-review of revision 1: B1, B2, M1 to M5, the minor findings and nits; and the root's answers to open questions 1, 2, 3 and 7 recorded as
-[settled decisions](#settled-decisions)); written against `experimental` at `243602ab`. Roadmap
+Revision: 2026-11-26, revision 4 (the user's request for linting and themes: language
+servers run by the daemon, a per-project trust gate, built-in syntax checks for untrusted
+projects, diagnostics, quick fixes, formatting, an agent diagnostics tool and a theme model, as
+decisions [D18 to D27](#decisions) and stages [E8 to E15](#stages), after a study of
+[how VS Code does it](#how-vs-code-does-it)). Revision 3 folded in the round-2 review (N1 and
+the stage-text majors), the review of revision 1 (B1, B2, M1 to M5, the minor findings and nits)
+and the root's answers to open questions 1, 2, 3 and 7, recorded as
+[settled decisions](#settled-decisions). Revisions 1 to 3 were written against `experimental`
+at `243602ab`; revision 4's additions against `a2b26dc6`. Roadmap
 [item 66](../12-roadmap.md#next-in-order). Status: planned (no stage started).
 
 The user asked for "an in-built text editor that can also do markdown presentation". The
@@ -28,6 +34,22 @@ The plan's core is three rules:
   difference and lets the user merge, keep theirs or take the file's. An agent's full-file
   `write_file` is refused in turn when the file changed since that agent last read it.
 
+Revision 4 adds **language tooling** (the user: "auto-linting for coding languages ... with
+different themes as well"), under three more rules:
+
+- **Language servers and linters run in the daemon, never in the webview, and only in projects
+  the user trusts.** Running one executes project-controlled code and configuration (build
+  scripts, proc macros, ESLint configs and plugins, a project's own TypeScript). An untrusted
+  project gets only built-in checks that run no project code: parse errors from the editor's own
+  grammars and JSON and TOML checks in the daemon ([D20](#decisions)).
+- **Nothing is installed without the user.** Imperium detects servers already installed and
+  offers an install command; the user runs it or approves that one install. No install is ever
+  automatic, and an agent's install asks every time ([D19](#decisions)).
+- **A fix is an edit like any other.** A quick fix or a format changes the buffer as one undo
+  step, or, for other files, is shown as a diff and saved through `files.write` with its base
+  hash and confirmations. Agents can read diagnostics, but they fix code with their own
+  `edit_file` under the permission rules ([D23, D24](#decisions)).
+
 Each stage below is one pull request against `experimental` of at most about 800 changed lines,
 with the docs it changes. The agent engine is this session's to change; stage E4b changes it
 (`write_file`'s stale-read refusal and the next-turn note).
@@ -47,7 +69,12 @@ The root answered these on 2026-11-26; they are no longer open.
   carry a note listing the files the user saved ([D10](#decisions), stage E4b).
 - **Legacy encodings** stay read-only; a later "reopen with encoding" is editable only for a file
   whose decode and encode round trip is byte-identical ([D8](#decisions)).
-- The other [open questions](#open-questions) keep their defaults.
+- **Installs** (the user's standing rule, recorded in revision 4): every install that an agent
+  starts needs the user's explicit approval, each time; installs are never automatic. Language
+  servers are installed by the user, or by the user approving one offered install
+  ([D19](#decisions)).
+- The other [open questions](#open-questions) keep their defaults; questions 7 to 12 are new in
+  revision 4 and open.
 
 ## Goals
 
@@ -90,6 +117,142 @@ Playwright in Chromium and WebKit against a Node fake daemon, run by `scripts/ch
    attempts.
 9. **Every check runs in CI.** No manual check, display server outside the job, or network service
    other than package installs.
+10. **Problems are shown while typing.** In a trusted project with a server installed, a type
+    error appears as a squiggle, a gutter mark and a Problems entry within 2 s of typing it,
+    and goes when it is fixed; hover shows the message, and completion offers the server's
+    items. Check: stage E11 browser checks against a scripted fake server; stage E15 end-to-end
+    run with real `rust-analyzer`, `typescript-language-server` and `ruff server`.
+11. **An untrusted project runs no project code.** With the project untrusted, opening and
+    editing its files starts no language server, linter, formatter or project binary, and reads
+    no server configuration; syntax errors still show. Check: stage E8 and E10b tests (the fake
+    server records any start; a project `build.rs` and an ESLint config that write a sentinel
+    file leave none), stage E15.
+12. **No install happens without the user.** No code path downloads or installs a server
+    unasked; an offered install runs only after the user confirms that one install, and an
+    agent's install command asks every time. Check: stage E10b tests (no process starts from
+    an offer until the confirmation; the floor asks for the catalogue's install commands).
+13. **Fixes go through the save path.** A quick fix or format on another file is written only
+    after the user accepts its diff, with the file's base hash, so a changed file conflicts and
+    a harness or secret file asks. Check: stage E12 browser and daemon tests.
+14. **Language servers are capped.** Each runs in an `lsp` cap unit (item 68); one that passes
+    its memory cap is stopped, restarted at most three times in ten minutes, and its status
+    names the cap and the setting that raises it. Check: stage E9 tests with a fake server that
+    allocates past a test cap.
+15. **Themes are data and readable.** An imported VS Code theme runs no code and sets only
+    validated colours; every shipped theme meets 4.5:1 for syntax colours (7:1 for the
+    high-contrast themes) on its background. Check: stage E14 `npm test`.
+
+## How VS Code does it
+
+Research for revision 4, from VS Code's documentation, the Language Server Protocol (LSP)
+specification 3.17 and the VS Code repositories, read on 2026-11-26.
+
+**Diagnostics.** A server pushes diagnostics with `textDocument/publishDiagnostics`; 3.17 added
+pull diagnostics (`textDocument/diagnostic`, `workspace/diagnostic`), where the client asks and
+the server answers `full` or `unchanged` against a `resultId`, can declare
+`interFileDependencies`, and can ask the client to re-pull with `workspace/diagnostic/refresh`
+([LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)).
+`vscode-languageclient` pulls on change, save or focus as the extension chooses
+([`diagnostic.ts`](https://github.com/microsoft/vscode-languageserver-node/blob/main/client/src/common/diagnostic.ts)).
+Problems show as squiggles, in the overview ruler, as a count in the status bar and in the
+Problems panel (Ctrl+Shift+M), with F8 stepping through them in an inline zone that also offers
+fixes ([Basic editing](https://code.visualstudio.com/docs/editing/editingevolved)).
+
+**Lint on type or on save, and debouncing.** Each tool chooses: ESLint runs on type by default
+(`eslint.run`: `onType` or `onSave`,
+[vscode-eslint](https://github.com/microsoft/vscode-eslint)); the Python linter extensions run
+on open and save ([Python linting](https://code.visualstudio.com/docs/python/linting)). The
+TypeScript extension debounces its error request by the file's length: a delay of line count
+divided by 20, kept between 300 and 800 ms
+([`bufferSyncSupport.ts`](https://github.com/microsoft/vscode/blob/main/extensions/typescript-language-features/src/tsServer/bufferSyncSupport.ts)).
+
+**Quick fixes and formatting.** Code actions have hierarchical kinds (`quickfix`,
+`refactor.*`, `source.organizeImports`, `source.fixAll`), may be `isPreferred` or `disabled`
+with a reason, and carry an `edit`, a `command` or both; a command usually comes back as a
+server-initiated `workspace/applyEdit` (LSP 3.17). `editor.codeActionsOnSave` runs chosen kinds
+on save, `explicit` (only on a save the user made) or `always` (auto saves too); Refactor
+Preview shows a multi-file edit as diffs to accept or untick
+([Refactoring](https://code.visualstudio.com/docs/editing/refactoring)). Format on save, type
+and paste are settings, off by default
+([Basics](https://code.visualstudio.com/docs/editing/codebasics)); `willSaveWaitUntil` edits are
+applied before saving, and a client may drop a slow answer (LSP 3.17).
+
+**Finding and starting servers.** Each language is an extension. The client runs in the
+extension host and starts the server as a separate process, because "running them in separate
+process avoids performance cost"; settings reach the server through `workspace/configuration`;
+multi-root support is either one server for all folders (`workspaceFolders`) or one per folder
+([Language server guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide)).
+Tools are found in several ways. ESLint loads the project's own `eslint` package, else a global
+one. Ruff ships a binary but prefers the one in the active environment or on `PATH`
+([ruff-vscode](https://github.com/astral-sh/ruff-vscode)). rust-analyzer runs build scripts and
+proc macros by default (`cargo.buildScripts.enable`, `procMacro.enable`) and `cargo check` on
+save, with an overridable command
+([rust-analyzer configuration](https://rust-analyzer.github.io/book/configuration.html)).
+
+**Workspace Trust.** Restricted Mode turns off tasks, debugging, the terminal, agents,
+workspace settings that name executables, and every extension that has not declared
+support ([Workspace Trust](https://code.visualstudio.com/docs/editing/workspaces/workspace-trust)).
+Extensions declare `untrustedWorkspaces.supported` as `true`, `false` or `"limited"`, and list
+`restrictedConfigurations` whose workspace values are ignored until trusted
+([extension guide](https://code.visualstudio.com/api/extension-guides/workspace-trust)).
+rust-analyzer, ESLint and the built-in TypeScript extension all declare `false`, and their
+manifests give the reason: they run binaries named by configuration, or load and run code and
+configuration from the workspace
+([rust-analyzer](https://github.com/rust-lang/rust-analyzer/blob/master/editors/code/package.json),
+[ESLint](https://github.com/microsoft/vscode-eslint/blob/main/package.json),
+[TypeScript](https://github.com/microsoft/vscode/blob/main/extensions/typescript-language-features/package.nls.json)).
+On top of trust, ESLint asks again before it first runs a workspace's ESLint library, and Ruff
+in an untrusted workspace uses only its bundled binary and ignores `ruff.path` and
+`ruff.interpreter`. Trusting a folder trusts its subfolders.
+
+**Themes.** A colour theme is JSON with workbench `colors`, TextMate `tokenColors` (scope
+selectors) and, when `semanticHighlighting` is on, `semanticTokenColors`
+([Color theme guide](https://code.visualstudio.com/api/extension-guides/color-theme)). Semantic
+tokens from a server are layered on the grammar's tokens; a token with no
+`semanticTokenColors` rule falls back to a TextMate scope (`function` to
+`entity.name.function`, `variable.readonly` to `variable.other.constant`, `parameter` to
+`variable.parameter`, and so on), and the standard types and modifiers are fixed by LSP
+([Semantic highlight guide](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide)).
+Users pick a colour theme, a file icon theme and a product icon theme; preferred dark, light
+and both high-contrast themes follow the OS when `window.autoDetectColorScheme` and
+`window.autoDetectHighContrast` are on
+([Themes](https://code.visualstudio.com/docs/configure/themes)). The built-in themes are Light
+and Dark Modern, Light and Dark+, Light and Dark 2026, the Visual Studio pair and Dark and
+Light High Contrast (`uiTheme` `hc-black` and `hc-light`,
+[theme-defaults](https://github.com/microsoft/vscode/blob/main/extensions/theme-defaults/package.json)).
+Settings Sync carries settings and extensions, so the theme travels with them, and leaves
+`machine`-scoped settings behind
+([Settings Sync](https://code.visualstudio.com/docs/configure/settings-sync)).
+
+**What it does well, and this plan takes:**
+
+- servers out of the UI process, speaking a standard protocol, so any server works;
+- a trust gate, decided once per folder, that turns project execution off by default, with
+  workspace settings that name binaries ignored until trust ("restricted configurations"), and
+  a second, narrower confirmation before running a project's own copy of a tool (ESLint's
+  library approval);
+- the Problems list, squiggles, gutter, F8 and Ctrl+. as the shape of the UI;
+- fixes and formatting as edits the user can preview, with `explicit` and `always` kept
+  separate so auto save does not reformat unasked;
+- debouncing by file size, and off-by-default formatting;
+- the semantic-token-to-TextMate fallback, so one theme colours both layers.
+
+**Where it is weak, and this plan does differently:**
+
+- **Trust is a single switch that extensions interpret.** Each extension decides what "limited"
+  means, the manifest is the only record, and a trusted parent folder trusts every clone below
+  it. Here the daemon decides what runs, per server, and trust is per project folder, never
+  inherited by subfolders ([D20](#decisions)).
+- **Extensions are code.** A theme or a server comes with an extension that can run anything in
+  the extension host. Here servers are catalogue entries (a program name and arguments), themes
+  are imported as validated data, and no extension code is loaded ([D25](#decisions)).
+- **Language servers have no resource limits.** rust-analyzer on a large workspace can take
+  several gigabytes, and nothing in VS Code caps it. Here every server is an `lsp` cap unit
+  (item 68, [D21](#decisions)).
+- **Installs are pushed.** Extensions suggest and auto-update, and some download servers on
+  activation. Here nothing downloads by itself ([D19](#decisions)).
+- **Server text is trusted as Markdown.** Hover and diagnostic text from a server can carry
+  links; here it renders through the D11 pipeline, links behind the confirmation.
 
 ## Decisions
 
@@ -129,9 +292,13 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   - **Virtualised rendering** of long files, which item 55 relies on, is built in to both.
 
   Rejected: Monaco (above); **a `<textarea>`** (no highlighting, no virtualising, no search);
-  **Ace** (older model, global state, no virtualised `contenteditable`). Revisit if the editor
-  must offer language-server features (completion, go to definition), which Monaco brings more of;
-  that would be a new roadmap item.
+  **Ace** (older model, global state, no virtualised `contenteditable`). Revision 4 adds
+  language-server features (D18 to D24) and keeps CodeMirror: Monaco's language services are
+  built-in TypeScript, CSS and JSON workers in the webview, which this plan does not want (D18),
+  and its LSP support would still need a client, so it would bring size without the feature.
+  `@codemirror/lint` 6.9.7 and `@codemirror/autocomplete` 6.20.4 (both MIT; 6.9.8 of lint is
+  13 days old) join the pinned table in stage E10a; `@codemirror/lang-json` 6.0.2 and
+  `@codemirror/lang-yaml` 6.1.3 come with item 55's `language-data` chunks at those versions.
 - **D2. Editing is the user's, not the agents'.** No agent tool, MCP bridge method, hook, mod event
   or skill reaches the editor; nothing an agent says can open, type into or save a buffer. Agents
   keep their own `write_file` and `edit_file`, governed by the permission rules and the safety
@@ -635,6 +802,371 @@ Each records the choice, the reasons, the rejected options and when to revisit i
     stage records it as a named gap and the Windows access rules rest on the `tauri::test` layer.
   - Rejected: manual checks of any kind.
 
+Decisions D18 to D27 are new in revision 4.
+
+- **D18. Language servers run in the daemon; the webview never speaks LSP.**
+  - **Where.** A new crate, `crates/imperium-lsp`, is an LSP 3.17 client: Content-Length framed
+    JSON-RPC over the server's stdin and stdout, the lifecycle (`initialize` with the client's
+    capabilities, `initialized`, `shutdown`, `exit`), document sync, capability checks and
+    the normalisation of results. Types come from `lsp-types` 0.97.0 (MIT), pinned exactly.
+    The daemon owns one `LspHost` per **(server, project folder)**: the folder is the
+    environment's first folder or the session root that holds the file, sent as one
+    `workspaceFolders` entry, so two sessions on one project share a server.
+  - **Why in the daemon:** the daemon already confines paths, spawns processes under caps
+    (item 68) and isolation, and keeps policy; agents' diagnostics tool (D24) needs the same
+    servers; and a webview that spoke LSP would talk to a process that runs project code. VS
+    Code's choice of a separate process for the server holds here too.
+  - **What the webview sees** is Imperium's own `lang.*` protocol (see
+    [protocol additions](#protocol-additions)): positions as UTF-16 offsets (CodeMirror's own
+    units and LSP's mandatory encoding, so no conversion), diagnostics, hover text, completion
+    items, code-action titles and edits as `{root, path, edits}` lists, all normalised and capped
+    by the daemon. Raw LSP messages never reach the webview.
+  - **Gate.** `lang.open`, `lang.change`, `lang.close` and every method that can start a server
+    are answered only to the identified desktop app through the native relay, like
+    `files.write` (D3): starting a server runs project code, and an agent's process holding the
+    token must not get that around the trust gate and its own permission rules. The relay is one
+    more command, `lang_request`, beside `files_write` in `file_write.rs`, and one event,
+    `lang://diagnostics`, for pushed results. `lang.check` (D20) and `lang.status` are answered
+    to any full client; a phone and mods get none.
+  - **Document sync.** The daemon sends `didOpen` for a tab's buffer, `didChange`
+    (incremental when the server supports it, else full) from the buffer's changes, debounced
+    by size (D22), and `didClose` when the last tab on the file closes. Files changed on disk
+    by agents' tools, saves and rewinds are sent as `workspace/didChangeWatchedFiles`, from the
+    daemon's own record of writes; no file-system watcher is added (item 55's non-goal), and
+    servers that watch files themselves (rust-analyzer) keep doing so.
+  - **Server-to-client requests** are answered by the daemon under a fixed policy:
+    `workspace/configuration` from the catalogue's defaults and the user's settings (D19);
+    `workspace/workspaceFolders` with the one folder; `client/registerCapability` for the
+    capabilities the client declared; `window/workDoneProgress/create` and `$/progress` as the
+    status line; `window/showMessage` and `window/logMessage` as text in the server's log, capped;
+    `workspace/applyEdit` as a reviewable edit (D23), never applied without the user;
+    `window/showDocument` only for a file inside the folder, opened in a tab, and an external URI
+    shown as a link behind item 55's confirmation, never opened; every other request gets
+    `MethodNotFound`. A URI outside the project folder in any result is dropped and counted.
+  - **Bounds.** A message over 16 MiB ends the server (logged); diagnostics are capped at 1,000
+    per file and 20,000 per server, messages at 4 KiB, hover and documentation at 64 KiB,
+    completion lists at 500 items; a request unanswered after 10 s is cancelled with
+    `$/cancelRequest`.
+  - Rejected: **`@codemirror/lsp-client` in the webview** (6.3.0, MIT) over a transport relayed
+    to the server's pipes: the webview would handle server requests such as `applyEdit` and
+    `showDocument`, and agents could not share the server; its UI parts are not needed when
+    `@codemirror/lint` and `@codemirror/autocomplete` take normalised data. **Monaco's built-in
+    workers** (above). **One server per session** (two sessions on one repository would start two
+    rust-analyzers).
+- **D19. Which servers, how they are found, and installs only by the user.**
+  - **A built-in catalogue,** `crates/imperium-lsp/catalog/servers.json` (data, reviewed like
+    code), names for each server: the languages and file patterns, the program and arguments,
+    where to look for it, a version probe, the settings it is sent, whether it needs a trusted
+    project, and the install commands to offer. Projects and plugins cannot add entries; the user
+    can add or override one in the user layer (`editor.lang.servers.<id>`: `command`, `args`,
+    `languages`, `enabled`), which is the only way to name a program.
+  - **First languages and servers** (licences checked on their repositories and the npm
+    registry; versions are the user's, not pinned):
+
+    | Language | Server (licence) | Diagnostics and formatting | Found by | Offered install |
+    | --- | --- | --- | --- | --- |
+    | Rust | `rust-analyzer` (MIT or Apache-2.0) | compiler errors through `cargo check`; Clippy when `editor.lang.rust.check = "clippy"`; `rustfmt` through the server | `rustup which rust-analyzer`, then `PATH` | `rustup component add rust-analyzer` |
+    | TypeScript, JavaScript | `typescript-language-server` (Apache-2.0) with the project's `typescript` or a user-installed one | type errors; formatting off (ESLint or Prettier is the formatter) | `PATH`; the project's `node_modules/typescript` only when trusted and approved (below) | `npm install -g typescript typescript-language-server` |
+    | TypeScript, JavaScript lint | `vscode-eslint-language-server` from `vscode-langservers-extracted` (MIT) | ESLint rules and fixes; it always loads the project's `eslint` and config | `PATH` | `npm install -g vscode-langservers-extracted` |
+    | Python | `ruff server` (MIT) for lint, fixes and formatting; `basedpyright-langserver` or `pyright-langserver` (MIT) for types | Ruff rules; type errors | `PATH`, the active environment's `bin` only when trusted and approved | `uv tool install ruff`, `pipx install ruff`; `npm install -g pyright` |
+    | Go | `gopls` (BSD-3-Clause) | compiler and vet errors; `gofmt` | `PATH`, `$(go env GOPATH)/bin` | `go install golang.org/x/tools/gopls@latest` |
+    | C, C++ | `clangd` (Apache-2.0 with LLVM exception) | compiler errors from `compile_commands.json`; clang-tidy when the project's `.clang-tidy` asks | `PATH` | the OS package (`winget install LLVM.LLVM`, `brew install llvm`, `apt install clangd`) |
+    | Markdown | `marksman` (MIT) | broken links and headings | `PATH` | the release from its GitHub page (shown, not run) |
+    | JSON | `vscode-json-language-server` (MIT) | parse errors and schemas; remote schema download off | `PATH` | `npm install -g vscode-langservers-extracted` |
+    | TOML | `taplo lsp stdio` (MIT) | parse errors and schemas; remote schemas off | `PATH` | `cargo install taplo-cli --locked` |
+    | YAML | `yaml-language-server --stdio` (MIT) | parse errors and schemas; SchemaStore off | `PATH` | `npm install -g yaml-language-server` |
+
+  - **Settings sent to servers that would otherwise execute or fetch:** rust-analyzer gets
+    `cargo.targetDir = true` (its own target folder, so its checks do not lock the agents'
+    builds; stage E9 confirms the key), and `check.overrideCommand` and
+    `cargo.buildScripts.overrideCommand` are sent only from the user layer, never from a
+    project; the JSON, TOML and YAML servers get remote schema download off, with a bundled set
+    of schemas (below).
+  - **Discovery** looks only in the catalogue's places and the user's override, never in a
+    project folder unless the project is trusted **and** the user approved that program (D20).
+    The status bar shows each language's state: running, starting, not installed, off, untrusted,
+    or stopped with the reason.
+  - **Installs are never automatic** (the user's rule, [settled](#settled-decisions)):
+    - **Detect first.** A missing server shows once per language and project as a notice in the
+      tab: "No Rust language server found. Install `rust-analyzer`?" with *Install*, *Copy
+      command*, *Not now* and *Don't ask for Rust*.
+    - **One install per approval.** *Install* opens a confirmation naming the exact command, what
+      it downloads and from where, and that it runs with your rights. Only *Run this install*
+      runs it; there is no "always" and no batch. The command runs through `lang.install` (desktop
+      gate only, [D3](#decisions)) as a `command` cap unit, its output is shown, and the server is
+      found again afterwards. An offer whose command line is not exactly the catalogue's is
+      refused, so the webview cannot be made to run another command.
+    - **Agents.** No agent tool installs a server. An agent's `run_command` of a catalogue install
+      command (and of `rustup component add`, `npm install -g`, `pipx install`, `uv tool install`,
+      `go install` and `cargo install` in general) is added to the safety floor's always-ask list,
+      the rule of pull requests #304 and #330: asked every time in every mode, never "always
+      allow".
+    - **Nothing is bundled** in this item ([open question 8](#open-questions)): shipping
+      servers would add hundreds of megabytes, their own update and licence notices, and a
+      second copy beside the user's toolchain (rust-analyzer must match the toolchain).
+  - **Bundled schemas** for the built-in checks and the JSON, TOML and YAML servers: a small set
+    from SchemaStore (Apache-2.0) for `package.json`, `tsconfig.json`, `.eslintrc.json`,
+    `Cargo.toml`, `pyproject.toml`, GitHub workflow files and `.mcp.json`, plus Imperium's own
+    schema for `.imperium/config.toml`, pinned by revision in `crates/imperium-lsp/schemas/`.
+  - Rejected: **downloading servers on first use** (the user's rule); **a plugin or mod
+    contributing servers** (a plugin would then name a program the daemon runs; a later item may
+    add that behind the plugin approval of [06](../06-extensibility.md)); **the project's
+    `.imperium/config.toml` naming servers** (the environment layer never runs a program).
+- **D20. Project trust, and what an untrusted project gets.**
+  - **What trust means.** A language server or linter in a project executes project-controlled
+    code and configuration: rust-analyzer runs `build.rs` and proc macros and reads
+    `rust-analyzer.toml`; ESLint loads `eslint.config.*` and its plugins from `node_modules`;
+    `typescript-language-server` with the project's TypeScript runs the project's copy of
+    `tsserver` and its plugins; Ruff and Pyright read `pyproject.toml`, and a project
+    environment's `ruff` is a project binary; `gopls` runs `go list`, which can run toolchain
+    downloads named by `go.mod`; clangd's `.clangd` and `compile_commands.json` choose flags and,
+    with `--query-driver`, compilers to run. So a server runs only in a **trusted project**.
+  - **One trust, the existing one.** The trusted list is the user's `mcp.trusted_projects`, which
+    already decides whether a project's `.mcp.json` servers, its environment config's servers
+    and plugins and its named agents load ([10](../10-configuration.md),
+    `crates/imperium-config/src/environment.rs`): it means "this repository's own files may make
+    Imperium run programs". Revision 4 uses the same list and calls it **trusted projects** in
+    the interface and docs; the key keeps its name, so no migration. Rejected: a second list for
+    the editor (two answers to one question); VS Code's "trust the parent folder" (a folder of
+    clones would trust every future clone): trust here is per project folder only, compared by
+    identity as `McpSettings::trusts` does.
+  - **Who may grant it.** Only the user: their config file, Settings → *Trusted projects*, or the
+    editor's banner, which call a new `projects.trust { folder }` and `projects.untrust` answered
+    only to the desktop app through the native relay **and** to a caller that passes
+    `peer::may_grant` ([06](../06-extensibility.md#who-may-grant-trust-and-approval-implemented)).
+    Found on `experimental`: the safety floor asks about `imperium config set|unset` of
+    `extensions.*` keys but not of `mcp.trusted_projects`, so an agent's command in a permissive
+    mode can trust a project today. Stage E8 makes `config set|unset mcp.trusted_projects` from
+    an agent's command **refused outright** (as resource caps do for `limits.mode`), and the
+    daemon's `config.set` of that key refuses a caller that fails `may_grant`.
+  - **The banner.** Opening a file of an untrusted project shows once per project: "Language
+    servers and linters are off in this project, because they run the project's own code. Trust
+    `<folder>`?" with *Trust project*, *Not now* and *What runs?* (a list of the servers that
+    would start and what each reads). Untrusting stops its servers at once.
+  - **Project-local programs need a second approval.** Even in a trusted project, a program
+    found inside the project (`node_modules/typescript`, `node_modules/.bin/eslint`, `.venv/bin/ruff`)
+    runs only after the user approves that path once, recorded with its content hash in the
+    daemon's approvals (`lsp-approvals.json`), as ESLint's library approval does; a changed hash
+    asks again. The default is the user-installed program, so most projects never ask.
+  - **Untrusted projects get built-in checks only, which run no project code:**
+    - **In the webview:** parse errors from the file's Lezer grammar (the error nodes of
+      `syntaxTree`, shown as "Syntax error (built-in)") for every language item 55's
+      `language-data` loads with a Lezer parser (Rust, JavaScript, TypeScript, Python, Go, C,
+      C++, JSON, YAML, CSS, HTML, XML); stream-mode languages have none.
+    - **In the daemon:** `lang.check { language, text }` (pure, answered to any full client,
+      at most 4 MiB): JSON and JSON with comments through `serde_json` with positions, TOML through
+      the `toml` crate already in the lock, and JSON Schema validation of the bundled schemas
+      (D19) through `jsonschema` 0.61.1 (MIT) with default features off, so no `$ref` is ever
+      fetched over the network or from disk. Schema choice is by file name only, never by a
+      `$schema` in the file.
+    - No server, linter, formatter, project binary or project configuration is used, whatever
+      the catalogue says. Trusted projects get the built-in checks too, under the servers'.
+  - Rejected: **running "data-only" servers (JSON, YAML, TOML, Markdown) in untrusted projects**
+    as VS Code's built-in JSON support does: they are still third-party programs parsing
+    attacker files, and the built-in checks cover their main value ([open question
+    10](#open-questions)); **trust by default with a warning** (a cloned repository would run
+    its build scripts on first open).
+- **D21. Language servers are an item 68 cap class.** Item 68 (resource caps,
+  `docs/plans/resource-caps.md`, pull request #332, not merged yet) gives every process
+  Imperium starts a cap unit. Revision 4 adds a class to its table (L6) and to `Class` (L1):
+
+  | Class | Covers | Memory | 64 GB machine | Processes (Windows, macOS) | Linux tasks | CPU |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `lsp` | each language server with everything it starts (rust-analyzer's `cargo check` and `proc-macro-srv`, clangd's workers, ESLint's Node) | 25% of RAM, between 2 and 8 GiB | 8 GiB | 256 | 8,192 | none; below-normal priority |
+
+  - **Why 8 GiB:** rust-analyzer on a large Rust workspace commonly takes several gigabytes, and
+    its `cargo check` runs inside the same unit; 2 GiB would stop it on this repository. Other
+    servers use far less, so the class cap is a leak guard. Stage E9 measures rust-analyzer on
+    this workspace and `typescript-language-server` on `apps/desktop` in CI and adjusts before
+    the class enforces; it starts in `warn` like item 68's other new classes.
+  - **Per server:** `limits.lsp.memory_mb` for the class and `limits.lsp.servers."<id>".memory_mb`
+    for one server, user layer only, as item 68's L7 says for MCP servers.
+  - **Not in a session aggregate:** servers belong to a project, not a session (D18), so they
+    count against Imperium's total but no session's aggregate; the watchdog (L11) stops them
+    before commands, after idle models.
+  - **At most `editor.lang.max_servers` servers (default 4)** run at once; starting a fifth stops
+    the least recently used. A server with no open file is stopped after 10 minutes.
+  - **Ending (L14):** when the server exits, its descendants are stopped with the unit. A server
+    stopped by its cap or crashed is restarted after 1, 5 and 30 s, at most three times in ten
+    minutes; then its status says "Stopped: memory cap 8 GiB reached. Raise
+    `limits.lsp.memory_mb` in Settings → Resources." and diagnostics from it are marked stale.
+  - **Environment:** the server gets the user's environment with the daemon's token, endpoint
+    and `IMPERIUM_*` variables removed and the spawn mark `IMPERIUM_SPAWNED_BY_DAEMON` set, so a
+    server, or the project code it runs, cannot pass `may_grant` or the desktop gate. It runs at
+    tier 0 (the user's rights, as a build the user starts would); a confined tier for servers is
+    [open question 11](#open-questions).
+- **D22. Diagnostics in the editor.**
+  - **Shown with `@codemirror/lint`:** squiggles by severity (LSP 1 to 4 as error, warning, info
+    and hint; hints as a faint underline), `lintGutter()` marks, the hover tooltip with the
+    message, source and code, the diagnostic panel (`openLintPanel`) and `lintKeymap`; F8 and
+    Shift+F8 (rebindable, *Next problem*, *Previous problem*) move between them as VS Code's
+    Alt+F8 does. Diagnostics arrive by `setDiagnostics` from the daemon's `lang://diagnostics`
+    event and from the built-in checks, merged and labelled by source.
+  - **Problems list.** A *Problems* view in the Files panel lists the open file's problems and,
+    for the project, every problem the servers have reported (pushed and, where the server
+    declares `workspaceDiagnostics`, pulled), grouped by file, filterable by severity and text,
+    each opening the file at its range. The status bar shows the counts; Ctrl+Shift+M
+    (rebindable) opens the list.
+  - **When.** Each language has `editor.lang.<language>.lint_on` (`type`, default for servers
+    that answer quickly, or `save`). On type, changes are sent after a delay of the line count
+    divided by 20, kept between 150 and 800 ms (VS Code's TypeScript rule with a lower floor,
+    because CodeMirror shows results without a layout pass); pull diagnostics are requested after
+    the same delay, and on save, focus and tab visibility, as `vscode-languageclient` does.
+  - **Staleness.** Each diagnostic set carries the document version it was computed for; a set
+    for an older version than the buffer is shown, mapped through the changes since, until the
+    next arrives (no flicker); a set for a version the daemon never sent is dropped.
+  - **Text is data.** Messages, hover text and completion documentation come from project
+    tooling and may hold anything: diagnostic messages render as plain text; hover and
+    documentation Markdown renders through the D11 pipeline (no HTML, links as buttons behind
+    the confirmation, no images), into React elements.
+  - **Completion** with `@codemirror/autocomplete`: the server's items on its trigger characters
+    and on Ctrl+Space, filtered in the webview, with `resolve` for documentation; snippet items
+    are inserted as plain text with tab stops turned into CodeMirror snippet fields; an item's
+    `additionalTextEdits` apply only within the open buffer. Completion is off in untrusted
+    projects (it needs a server) except for words in the buffer.
+- **D23. Quick fixes and formatting are reviewable edits.**
+  - **Asking.** Ctrl+. (rebindable, *Quick fix*) or the lightbulb in the gutter lists the code
+    actions for the cursor or diagnostic, preferred ones first and `disabled` ones greyed with
+    their reason. *Fix* (Shift+Alt+. by default) applies the single preferred fix.
+  - **An edit to the open buffer** is applied as one CodeMirror transaction (one undo step) and
+    leaves the tab dirty; the user saves as usual, through D6's base hash and D7's
+    confirmations. Nothing is written by the fix itself.
+  - **An edit to other files** (a `WorkspaceEdit` from the action, or a server's
+    `workspace/applyEdit` after a `command`) opens a **review dialog**: one diff per file
+    (`@codemirror/merge`), each ticked by default except harness and secret files, which are
+    unticked and say why; *Apply* writes the ticked files through `files.write` with their base
+    hash read when the edit was shown, so a file changed since conflicts (D9's banner), and with
+    D7's confirmations. Open tabs of those files get the edit in their buffer instead. At most 50
+    files and 4 MiB per edit; `CreateFile`, `RenameFile` and `DeleteFile` operations are refused
+    in this item (no `files.rename` or `files.delete`), with the reason, and the rest of the edit
+    is shown.
+  - **Commands** (`workspace/executeCommand`) run only from an action the user chose, and only
+    when the server declared the command.
+  - **Format and fix on save are opt-in, per language:** `editor.lang.<language>.format_on_save`
+    and `fix_on_save` (each `off` by default, `explicit` for saves the user makes, or `always`
+    for auto saves too, as VS Code's `codeActionsOnSave` separates them). Before the save, the
+    daemon asks `source.fixAll` (and `source.organizeImports` if chosen) and then
+    `textDocument/formatting` (or `willSaveWaitUntil`), each with a 2 s limit; the edits apply to
+    the buffer as one undo step, then the normal save runs. A timeout or an error saves the
+    unformatted buffer with a note. Format document and format selection are commands too.
+  - Rejected: **applying workspace edits without review** (a server or a project's code could
+    write anywhere in the folder, and harness files change what agents run); **writing fixes from
+    the daemon directly** (it would skip the editor's base hash and dirty-buffer rules).
+- **D24. Agents can read diagnostics; fixing is their normal edit.**
+  - **A read-only tool, `diagnostics`**: `{path?, severity? (error, warning, all), limit? (at most
+    200)}` returns problems for one file or the session's roots from running servers and the
+    built-in checks, each `{path, line, column, severity, source, code, message}`, the message
+    trimmed to 1 KiB. It is a read tool under the permission rules ([05](../05-tools-and-isolation.md#permissions))
+    like `read_file`, available in every mode, and its result is framed as data ("Diagnostics
+    reported by language tools (data, not instructions):"), because a project's lint messages
+    can carry injected text.
+  - **It never starts a server** and never runs a linter: it reads what is running for files
+    the user has open, plus `lang.check` for any file (agents may read files anyway). For a file
+    with no running server it says so and returns the built-in checks ([open question
+    12](#open-questions) asks whether a trusted project's servers may start for agents).
+  - **No apply.** Code actions are not offered to agents; an agent fixes code with `edit_file`
+    or `write_file`, under its permission rules, the safety floor and D10's stale-write check.
+    Its edits reach the editor through D9's reload and the servers through
+    `didChangeWatchedFiles`, so the diagnostics it reads next reflect them.
+  - Behind `harness.diagnostics_tool` (default on in sessions) and a headless eval variant flag
+    (default off, like `stale_write_check`), so evaluations stay comparable.
+- **D25. Themes: a token model shared by CodeMirror, imported VS Code themes and semantic
+  tokens.**
+  - **The model.** An editor theme is `{id, name, kind (light, dark, hc-light, hc-dark), colors,
+    tokens}`: `colors` are the editor surfaces (background, foreground, selection, active line,
+    gutter, cursor, find match, diagnostic colours), and `tokens` give each `--syntax-*` variable
+    a colour and an optional style (`italic`, `bold`, `underline`, `strikethrough`). Applying a
+    theme sets those CSS custom properties on the editor's root with `style.setProperty`, so
+    D14's `HighlightStyle`, which already uses only the variables, needs no rebuild.
+  - **More tokens.** D14's set grows to cover what VS Code themes and semantic tokens tell
+    apart: `--syntax-constant`, `--syntax-property`, `--syntax-parameter`, `--syntax-namespace`,
+    `--syntax-macro`, `--syntax-tag`, `--syntax-attribute`, `--syntax-regexp`,
+    `--syntax-punctuation`, `--syntax-escape`, plus `--diag-error`, `--diag-warning`,
+    `--diag-info` and `--diag-hint`. Each maps to `@lezer/highlight` tags in one table
+    (`src/editor/themes/tags.ts`).
+  - **From TextMate scopes.** A fixed table maps each token to the TextMate scopes that VS Code
+    themes colour, most specific first, for example: keyword to `keyword`, `storage.type`,
+    `storage.modifier`; string to `string`; number to `constant.numeric`; constant to
+    `constant.language`, `variable.other.constant`; comment to `comment`; type to
+    `entity.name.type`, `support.type`, `support.class`; function to `entity.name.function`,
+    `support.function`; variable to `variable`, `variable.other.readwrite`; parameter to
+    `variable.parameter`; property to `variable.other.property`; namespace to
+    `entity.name.namespace`; macro to `entity.name.function.macro`; tag to `entity.name.tag`;
+    attribute to `entity.other.attribute-name`; operator to `keyword.operator`; regexp to
+    `string.regexp`; escape to `constant.character.escape`; heading to `markup.heading`; link to
+    `markup.underline.link`; invalid to `invalid`; punctuation to `punctuation`. The importer
+    resolves each token against the theme's `tokenColors` with TextMate's rule (a selector
+    matches a scope when it is a dot-segment prefix; the longest match wins; later rules win
+    ties); descendant selectors and exclusions (`-`) are ignored and listed in the import report.
+  - **Semantic tokens.** When a server offers `semanticTokens/full` (with `delta` when it can),
+    the daemon decodes the five-integer encoding against the server's legend and sends ranges
+    with a token type and modifiers; the editor shows them as mark decorations above the
+    grammar's highlighting (VS Code's layering). The colour comes from the theme's
+    `semanticTokenColors` when the imported theme has a matching selector
+    (`type.modifier:language`), else from VS Code's fallback table (`function` as
+    `entity.name.function`, `variable.readonly` as `variable.other.constant`, `parameter` as
+    `variable.parameter` and the rest) through the same scope table, so one theme colours both
+    layers. `editor.semantic_highlighting` (`theme`, default: on when the theme asks for it, as
+    VS Code's `configuredByTheme`; `on`; `off`).
+  - **Importing a VS Code theme is data only.** Settings → Editor → *Import theme* takes one
+    `*-color-theme.json` file chosen with the webview's file input (no file-system access) or
+    pasted text, at most 1 MiB: parsed as JSON with comments by a small tolerant parser, never
+    evaluated. Only `name`, `type`, `colors` (the editor keys in the mapping table),
+    `tokenColors` (an inline array; a string path to a `.tmTheme` is refused), `semanticHighlighting`
+    and `semanticTokenColors` are read; `include` is not followed (it would read another file),
+    and every other key is ignored. A colour must match `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`
+    (alpha flattened against the background), a style must be one of the four words, and
+    anything else is dropped and reported, so no value can carry CSS. The normalised theme (not
+    the original) is kept in the app store's `editor-themes` document, at most 20 themes.
+    Extension packages (`.vsix`), icon themes and product icon themes are not imported: they
+    carry code, fonts or SVG.
+  - **Contrast check.** Every theme, shipped or imported, is checked with
+    `test/tokenContrast.test.ts`'s function: each token and diagnostic colour against the
+    editor background and the active line, 4.5:1 for normal themes and 7:1 for `hc-*` themes.
+    An imported theme that fails shows which tokens fail and offers *Adjust for contrast* (on
+    by default), which moves only the failing colours' lightness in OKLCH until they pass,
+    keeping hue; *Use as designed* keeps the originals, with a warning in the theme picker.
+  - **Shipped themes**, converted once with the same importer and committed with their
+    licence and source revision under `src/editor/themes/`, the MIT notices added to the app's
+    third-party notices: **Imperium Light and Dark** (D14's tokens, the defaults); **Imperium
+    High Contrast Dark and Light** (new, 7:1, and the editor's forced-colours rules stay on
+    top); **Dark Modern and Light Modern** (VS Code, MIT); **GitHub Dark and Light**
+    (`primer/github-vscode-theme`, MIT); **One Dark Pro** (MIT); **Dracula** (MIT); **Solarized
+    Dark and Light** (MIT); **Nord** (MIT); **Catppuccin Mocha and Latte** (MIT). Each passes the
+    contrast test as shipped (adjusted at conversion where it does not, and the theme says
+    "adjusted for contrast"). Monokai is not shipped (its licence is unclear).
+  - **Selection** is per user, in the window's settings (D15): *Editor theme* (`follow app`,
+    default, which uses Imperium Light or Dark with the app's `data-theme`, or a named theme),
+    and *Preferred light*, *Preferred dark* and *Preferred high contrast* themes used when
+    following the app or the OS; `prefers-contrast: more` picks the high-contrast one, as VS
+    Code's `autoDetectHighContrast` does. Imperium has no settings sync; the choice stays with
+    this machine's app store.
+  - **File icons** in the tree stay the app's own set (`projectIcons.tsx`); icon themes are not
+    in this item.
+  - Rejected: **TextMate grammars in the editor** (`vscode-textmate` with Oniguruma in
+    WebAssembly: a second highlighting engine beside Lezer, and the window's policy would have
+    to allow `wasm-unsafe-eval`);
+    **rendering imported themes as stylesheets** (a value could break out of a declaration);
+    **themes from mods** (a mod could ship one as data later; not in this item).
+- **D26. Settings for language tooling.** Daemon-side, user layer only (in the registry, not on
+  the environment layer's allow-list, so a project cannot turn a server on or name one):
+  `editor.lang.enabled` (bool, default `true`), `editor.lang.max_servers` (default 4),
+  `editor.lang.servers.<id>` (D19), `editor.lang.<language>.lint_on`, `format_on_save`,
+  `fix_on_save` (D22, D23), `editor.lang.rust.check` (`check`, `clippy`),
+  `harness.diagnostics_tool` (D24), and the item 68 keys `limits.lsp.*` (D21). A project's
+  environment config may only turn servers **off** for itself (`[editor] lang_enabled = false`,
+  narrowing). App-side (Settings → Editor): *Editor theme*, the preferred themes, *Semantic
+  highlighting*, *Show problems inline* (on), *Lightbulb* (on).
+- **D27. Testing language tooling without real servers in most stages.** A fake LSP server,
+  `crates/imperium-lsp/tests/fake_server.rs` built as a test binary, is scripted per test:
+  which capabilities it declares, what it answers, which server requests it sends
+  (`applyEdit`, `showDocument` outside the folder, a 20 MiB message), how much memory it
+  allocates, and whether it writes a sentinel file when started (to prove it was not started).
+  The browser checks' fake daemon (item 55 stage 4) gains scripted `lang.*` answers. Only stage
+  E15 installs real servers, in CI (`rustup component add rust-analyzer`, `npm install -g`
+  pinned versions, `pip install ruff==<pinned>`), which is CI provisioning, not an agent
+  install.
+
 ## Current state (found on `experimental` at `243602ab`)
 
 - **Item 55 is planned, not started.** There is no `files.*` method, no `crates/imperium-core/src/files.rs`,
@@ -666,6 +1198,26 @@ Each records the choice, the reasons, the rejected options and when to revisit i
   `notify`. Tauri is 2.x (CLI 2.12.4).
 - **Protocol** is 0.62; error codes run to `-32009` (`DAEMON_STOPPING`).
 
+Found for revision 4 on `experimental` at `a2b26dc6`:
+
+- **Protocol** is 0.64 (pull request #329); the stages still take the next minor at merge.
+- **Item 55** has begun: stage 1 (the PTY library, #307) is merged; the file stages are not.
+- **No language tooling:** no LSP client, no `lsp-types`, no `@codemirror/lint` or
+  `@codemirror/autocomplete`, no `jsonschema`; `toml` and `serde_json` are in the lock.
+- **Project trust** is `mcp.trusted_projects` (`crates/imperium-config/src/settings.rs`,
+  `McpSettings::trusts`, compared by canonical path): it gates a project's `.mcp.json`
+  servers, its environment config's servers, plugin folders and suggestions
+  (`environment.rs`), and its named agents. A repository cannot trust itself (the environment
+  layer drops the key).
+- **The safety floor** (`crates/imperium-policy/src/floor.rs`, `changes_plugin_setting`) asks
+  about `config set|unset` of `extensions.disabled_plugins` and `extensions.plugin_dirs` but
+  not `mcp.trusted_projects`, so an agent's command outside Ask mode can add a trusted project
+  today. Stage E8 closes this.
+- **Resource caps** (item 68) are planned in pull request #332 (open); its `Class` has no
+  language-server class yet.
+- **Agent installs:** pull request #304 (open) makes `install_extension` ask every time; pull
+  request #330 (open) floors runtime installs. Neither covers language-server install commands.
+
 ## Scope and non-goals
 
 In scope: editing, saving and creating files in the Files panel; conflict handling with agents
@@ -679,7 +1231,11 @@ Not in scope:
 - Agents driving the editor in any way; any agent tool for it.
 - Rename, move, delete and folder creation (the tree's *New file* is the only structural action);
   "Save as" outside the file's folder.
-- Language servers, completion, diagnostics, formatting on save, linting.
+- In language tooling (revision 4 brings diagnostics, hover, completion, quick fixes and
+  formatting into scope): go to definition, find references, rename, refactorings beyond
+  code actions, call hierarchies, inlay hints and debugging; servers for languages outside the
+  D19 table; bundled servers; servers contributed by plugins or mods; icon themes; TextMate
+  grammars; remote schema downloads.
 - Remote runtimes (container, WSL, SSH), a remote daemon, the phone, the CLI.
 - Persisting unsaved buffers; a file-system watcher; collaborative editing.
 - Speaker notes, presenter view and exporting slides; reopening with another encoding.
@@ -724,6 +1280,37 @@ user's own registry hive (writable by any same-user process).
     the poll is one visible tab every 2 s; the preview's worker is bounded in time and size, and
     images are capped in count and bytes; a busy file fails after 5 s rather than queueing.
 
+Revision 4 adds language servers, which run project code, and themes from outside. New
+untrusted inputs: a project's build scripts, proc macros, lint configs and plugins, local
+copies of tools and server config files; servers' messages and requests; imported theme files.
+
+<!-- markdownlint-disable-next-line MD029 -->
+11. **A cloned project runs code on open.** No server starts in an untrusted project (D20);
+    trust is granted only by the user through the desktop gate and `may_grant`, or their own
+    config; an agent's `config set mcp.trusted_projects` is refused (stage E8); trust is never
+    inherited by subfolders; a project-local program needs its own approval bound to its hash.
+12. **A token holder starts a server.** `lang.open` and every starting method are answered only
+    to the desktop app through the native relay (D18); agents' `diagnostics` tool never starts
+    one (D24).
+13. **A server or project code acts through the client.** Server requests are answered by a
+    fixed policy: `applyEdit` only becomes a reviewed edit, `showDocument` only opens files in
+    the folder, URIs outside the folder are dropped, unknown requests get `MethodNotFound`
+    (D18); servers run with the spawn mark and without the daemon's token or endpoint (D21).
+14. **Fixes that bypass the save rules.** Every fix or format is a buffer change the user saves,
+    or a reviewed diff written through `files.write` with base hashes and D7's confirmations;
+    resource operations are refused (D23).
+15. **Injected text from tooling.** Diagnostic messages are plain text; hover and documentation
+    go through D11's pipeline; the agents' tool frames results as data and trims them (D22,
+    D24).
+16. **Installs without the user.** Nothing downloads by itself; an offer runs only its exact
+    catalogue command after a per-install confirmation, through the desktop gate; agents'
+    install commands are on the floor's always-ask list (D19).
+17. **A hostile theme.** One file, at most 1 MiB, parsed as data; only validated colours and
+    four style words are applied, through `style.setProperty`; no `include`, no `.tmTheme` path,
+    no packages, icons or fonts (D25).
+18. **Servers exhausting the machine.** `lsp` cap units, a server limit, idle stops, bounded
+    messages and result caps, restart backoff (D18, D21).
+
 ### Residual risks
 
 - **Commands racing a save.** A program outside the daemon (an agent's `run_command`, a build, the
@@ -744,6 +1331,12 @@ user's own registry hive (writable by any same-user process).
   a restart is not checked against an earlier read.
 - **macOS has no `RESOLVE_BENEATH`;** the component walk and the held parent handle cover it, as in
   item 55.
+- **A trusted project is trusted fully.** Once the user trusts a project, its build scripts,
+  proc macros and lint plugins run with the user's rights whenever its servers start, as they
+  would in VS Code or a build; caps bound their memory, not what they do. A confined tier for
+  servers is [open question 11](#open-questions).
+- **User-installed servers are the user's.** Imperium runs the program the user installed or
+  named; a compromised global install is outside this plan.
 
 ## Protocol additions
 
@@ -770,6 +1363,28 @@ arguments, relayed (stage E2). Config: `files.write_enabled`, `harness.user_edit
 `harness.stale_write_check` (D15).
 
 Not added: a `files.changed` notification (the editor polls, D9), `files.delete`, `files.rename`.
+
+Language tooling (revision 4), in a new `crates/imperium-protocol/src/methods/lang.rs` and
+`projects.rs`; "gated" means answered only to the desktop app through the native relay (D3):
+
+| Method, field or event | Stage | Does |
+| --- | --- | --- |
+| `projects.trust`, `projects.untrust` | E8 | `{folder}` → `{trusted}`; gated and `may_grant` (D20) |
+| `FileContent` gains `project_trusted` | E8 | whether the file's project is trusted, for the banner |
+| `lang.check` | E10a | `{language, path?, text}` → `{diagnostics}`: built-in JSON, TOML and schema checks, no project code; any full client, not the phone |
+| `lang.status` | E9 | `{session_id}` → per language `{server, state (running, starting, missing, off, untrusted, stopped), reason?, version?, offer?}`; any full client |
+| `lang.open`, `lang.change`, `lang.close` | E9 | sync a tab's buffer `{session_id, root, path, version, text \| changes}`; start the server if allowed; gated |
+| `lang.diagnostics` event | E9 | `{root, path, version, source, items}`, pushed to the relay and re-emitted as `lang://diagnostics` |
+| `lang.problems` | E11 | `{session_id, severity?}` → the project's problems by file; gated |
+| `lang.hover`, `lang.complete`, `lang.resolve` | E11 | at a UTF-16 offset; normalised, capped results; gated |
+| `lang.actions`, `lang.run_action` | E12 | list code actions at a range; run one → `{buffer_edits, review?: [{root, path, base, edits}]}`; gated |
+| `lang.format` | E12 | `{…, range?}` → edits for the buffer; gated |
+| `lang.install` | E10b | `{offer_id}` → runs the catalogue's exact command as a `command` unit, streams output; gated, after the dialog |
+| `lang.approve_program`, `lang.revoke_program` | E10b | approve a project-local program by path and hash (D20); gated and `may_grant` |
+| `lang.semantic_tokens` | E14 | `{…, version}` → decoded ranges with type and modifiers; gated |
+
+Agents' tool: `diagnostics` (D24, stage E13). Native (Tauri) command: `lang_request`, one
+command for the gated methods with a method allowlist; event `lang://diagnostics`. Config: D26.
 
 ## Assumptions
 
@@ -803,6 +1418,17 @@ Not added: a `files.changed` notification (the editor polls, D9), `files.delete`
 `src/settings/settings.ts`, `shortcuts.ts` and a new `EditorSection.tsx`, `src/styles/tokens.css`,
 `panels.css`, `forced-colors.css` and a new `editor.css`, `apps/desktop/test/`,
 `apps/desktop/e2e/`, `scripts/ci/presence-e2e/`, `scripts/ci/detect.sh`.
+
+Revision 4: `crates/imperium-lsp/` (new: `src/`, `catalog/servers.json`, `schemas/`,
+`tests/fake_server.rs`), `crates/imperium-core/src/lang/` and `rpc/lang.rs`, `rpc/projects.rs`
+(new), `crates/imperium-limits/` (item 68, the `lsp` class), `crates/imperium-policy/src/floor.rs`,
+`crates/imperium-config/src/settings.rs`, `registry.rs` and `environment.rs`,
+`crates/imperium-tools/src/diagnostics.rs` (new), `crates/imperium-protocol/src/methods/lang.rs`
+and `projects.rs` (new), `apps/desktop/src-tauri/src/file_write.rs` (the `lang_request`
+command), `apps/desktop/src/editor/lang/` (new: `lint.ts`, `complete.ts`, `hover.ts`,
+`actions.ts`, `problems.ts`, `builtinChecks.ts`), `src/editor/themes/` (new: `model.ts`,
+`importer.ts`, `tags.ts`, `scopes.ts`, `contrast.ts` and the shipped themes),
+`src/settings/EditorSection.tsx`, `src/styles/tokens.css`.
 
 ## Stages
 
@@ -1234,7 +1860,297 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
 
 Order: E1a, E1b, E2, E3a, E3b, E4a, E4b, E7. E5 and E6 need only item 55's viewer, so they may
 land before or alongside the write-path stages; E4b may run in parallel with E2 to E4a once E1b has
-landed.
+landed. Revision 4's stages follow E2: E8, then E9 (after item 68 stage 1), then E10a (which
+needs only E3a and may come earlier) and E10b, E11, E12 (after E4a), E13 (any time after E9
+and E10a), E14 (its theme part after E3b, at any time) and E15 last, after E7.
+
+**Dependencies on other items:** item 55 stages 2b and 3 (the gate and relay pattern, through
+E2), 4 (browser checks), 6a and 7a (reads and the viewer, for E10a and E11); item 68 stage 1
+(`imperium-limits`, for E9) and its settings pattern for a class (`limits.<class>`); the floor
+rules of pull requests #304 and #330 (E8 and E10b follow their pattern; if they merge first,
+the entries are added beside theirs).
+
+### Stage E8: Project trust
+
+- Objective: D20's trust gate on the existing list: `projects.trust` and `projects.untrust`
+  (protocol minor at merge), answered only through the native relay and to a caller that passes
+  `may_grant`; `config.set` and `config.unset` of `mcp.trusted_projects` refused to a caller that
+  fails `may_grant`; the safety floor **refuses** `imperium config set|unset mcp.trusted_projects`
+  from an agent's command (any case of the key, `--remote` anywhere, as
+  `changes_plugin_setting` matches); `FileContent.project_trusted`; the editor's trust banner
+  with *What runs?*; Settings → *Trusted projects* (list, add by folder picker, remove); the docs
+  call the concept "trusted projects" (05, 10, 14), the key unchanged.
+- Depends on: stage E2 (the relay file and its access test); item 55 stage 6a (`FileContent`).
+- Owned paths: `crates/imperium-core/src/rpc/projects.rs` (new), `rpc/config.rs`,
+  `crates/imperium-policy/src/floor.rs`, `crates/imperium-protocol/src/methods/projects.rs` (new),
+  `methods/files.rs`, snapshots and generated types, `apps/desktop/src-tauri/src/file_write.rs`,
+  `capabilities/default.json`, `apps/desktop/src/editor/trust.tsx` (new), `src/settings/` (a
+  *Trusted projects* section), `apps/desktop/e2e/trust.spec.ts` (new),
+  `docs/05-tools-and-isolation.md`, `docs/10-configuration.md`,
+  `docs/14-projects-and-automation.md`.
+- Acceptance checks: `cargo test -p imperium-core -p imperium-policy` on the matrix: the agent
+  commands `imperium config set mcp.trusted_projects '["/x"]'`, `config set
+  MCP.Trusted_Projects …` and `config --remote box unset mcp.trusted_projects` are refused in
+  every permission mode, Bypass included; `projects.trust` over loopback TCP, from a child
+  carrying the spawn mark and from a stub non-app identity is refused with `-32005`; from the
+  stub app it adds the folder, compared by identity (a second spelling is not added twice); a
+  subfolder of a trusted folder is not trusted; a phone is refused. `tauri::test`: the trust
+  command refuses a mod-frame origin. Browser checks: the banner shows once per project, *Trust
+  project* calls the relay, *Not now* keeps servers off and the banner does not return in the
+  session.
+- Size: about 500 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E9: The LSP client in the daemon
+
+- Objective: D18 and D21: the `imperium-lsp` crate (framing with the 16 MiB bound, lifecycle,
+  capabilities, incremental and full sync, versions, cancellation after 10 s, the server-request
+  policy, URI confinement, result caps, semantic-token decoding as a pure function); the
+  daemon's `LspHost` per server and project folder, started only for a trusted project, a found
+  server and `editor.lang.enabled`; spawning through `imperium-limits` as the `lsp` class (added
+  to item 68's `Class`, L6 table and settings), with the environment scrubbed and the spawn mark
+  set; at most `max_servers`, idle stop, restart backoff and the stopped status;
+  `didChangeWatchedFiles` from the daemon's write record; `lang.open`, `lang.change`,
+  `lang.close`, `lang.status` and the `lang.diagnostics` event (protocol minor at merge); the
+  fake server (D27). If it passes about 800 lines, it splits into E9a (the crate and fake
+  server) and E9b (the host, caps and methods).
+- Depends on: stage E8; item 68 stage 1 (`imperium-limits`) and its pattern for a class's
+  settings; stage E2 (the relay).
+- Owned paths: `crates/imperium-lsp/` (new), `Cargo.toml` (workspace member, `lsp-types`
+  0.97.0 exact), `crates/imperium-core/src/lang/` (new), `rpc/lang.rs` (new), `rpc.rs`,
+  `crates/imperium-limits/src/` (the class), `crates/imperium-config/src/settings.rs`,
+  `registry.rs`, `crates/imperium-protocol/src/methods/lang.rs` (new), snapshots and generated
+  types, `docs/02-architecture.md`, `docs/10-configuration.md`.
+- Acceptance checks: `cargo test -p imperium-lsp -p imperium-core --test lang` on the matrix,
+  with the fake server:
+  - the handshake sends `initialize` once with one `workspaceFolders` entry, then
+    `initialized`; stopping sends `shutdown` then `exit`, and a server that ignores them is
+    stopped with its unit after 5 s;
+  - incremental changes reach a server that asked for them, full text one that did not; a
+    diagnostics set for an older version is kept and a set for an unknown version dropped;
+  - **untrusted:** a `lang.open` in an untrusted project starts nothing (the fake's sentinel
+    file is absent) and `lang.status` says `untrusted`; trusting starts it; untrusting stops it;
+  - **policy:** the fake's `workspace/applyEdit` is not applied (the file is unchanged) and is
+    held as a pending review; `window/showDocument` for a file outside the folder and for an
+    `https:` URI opens nothing; an unknown request gets `MethodNotFound`; a diagnostic whose URI
+    is outside the folder is dropped and counted; a 20 MiB message ends the server; 2,000
+    diagnostics for one file are cut to 1,000;
+  - **caps:** a fake server that allocates past a test `lsp` cap is stopped, restarted after the
+    backoff, and after the third stop in ten minutes reports the cap, the value and
+    `limits.lsp.memory_mb`; its child process is stopped with it; five servers with
+    `max_servers = 4` leave four running, the least recently used stopped;
+  - **environment:** the fake records its environment: no daemon token, endpoint or
+    `IMPERIUM_*` variable except the spawn mark; a `may_grant` check of the fake's process fails;
+  - **gate:** `lang.open` over loopback TCP, from a marked child and from a phone is refused;
+  - semantic tokens decode the specification's example `[2,5,3,0,3, 0,5,4,1,0, 3,2,7,2,0]` to its
+    three tokens, and a delta's edits apply sorted from the back.
+- Size: about 800 lines (E9a and E9b split possible).
+- Risks: item 68 is not merged; if E9 is ready first, the `lsp` unit waits for item 68's stage
+  1 crate with the class added there, never a local job wrapper.
+- Status: pending
+- Outcome: -
+
+### Stage E10a: Built-in checks and the lint view
+
+- Objective: D20's built-in checks and D22's display: `@codemirror/lint` 6.9.7 pinned;
+  `src/editor/lang/builtinChecks.ts` (Lezer error nodes as "Syntax error (built-in)" for the
+  Lezer languages); `lang.check` in the daemon (JSON and JSON with comments through
+  `serde_json`, TOML through `toml`, schemas through `jsonschema` 0.61.1 with default features
+  off, the bundled schemas chosen by file name); squiggles, gutter, tooltip, `lintKeymap`, F8 and
+  Shift+F8, the open file's problem list, the status-bar counts, the `--diag-*` tokens. Works
+  with no server and in untrusted projects.
+- Depends on: stage E3a; item 55 stage 7a.
+- Owned paths: `crates/imperium-lsp/src/check.rs`, `schemas/`, `crates/imperium-core/src/rpc/lang.rs`,
+  `Cargo.toml` (`jsonschema`), `apps/desktop/src/editor/lang/lint.ts`, `builtinChecks.ts`,
+  `problems.ts` (new), `src/settings/shortcuts.ts`, `src/styles/tokens.css`, `editor.css`,
+  `apps/desktop/package.json` and `pnpm-lock.yaml`, `apps/desktop/test/builtinChecks.test.ts`
+  (new), `apps/desktop/e2e/lint.spec.ts` (new), `docs/07-desktop-ui.md`.
+- Acceptance checks: `cargo test -p imperium-lsp check`: a JSON file with a trailing comma
+  reports its line and column; JSON with comments accepts comments; a TOML duplicate key is
+  reported; a `package.json` whose `name` is a number fails the bundled schema; a file with
+  `"$schema": "https://example.invalid/x.json"` and a schema `$ref` to a remote or `file:` URL
+  make no request and read no file (a test resolver fails the test if called); 4 MiB plus one
+  byte is refused. `npm test`: a TypeScript, a Rust and a Python fixture with one syntax error
+  each report exactly it; a valid file reports none; the `--diag-*` colours pass the contrast
+  test. Browser checks: an untrusted fixture project with an unclosed brace shows a squiggle, a
+  gutter mark and one problem; F8 moves to it; fixing it clears all three; no `lang.open` is sent
+  for an untrusted project (the fake records none).
+- Size: about 700 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E10b: The catalogue, discovery, install offers and program approvals
+
+- Objective: D19 and the approval part of D20: `catalog/servers.json` with the table's servers;
+  discovery (the catalogue's places, `rustup which`, `go env GOPATH`, the user override); version
+  probes run as `internal` units with a 5 s limit; the status per language; the missing-server
+  notice; the install dialog and `lang.install` (the catalogue's exact command only, as a
+  `command` unit, output streamed); `lang.approve_program` and `lsp-approvals.json` (path and
+  hash, asked again on change); and the safety floor's always-ask entries for install commands.
+- Depends on: stage E9.
+- Owned paths: `crates/imperium-lsp/catalog/`, `src/discover.rs` (new),
+  `crates/imperium-core/src/lang/`, `rpc/lang.rs`, `crates/imperium-policy/src/floor.rs`,
+  `crates/imperium-config/src/settings.rs`, `registry.rs`, `environment.rs`,
+  `apps/desktop/src/editor/lang/install.tsx` (new), `apps/desktop/e2e/lint.spec.ts`,
+  `docs/05-tools-and-isolation.md`, `docs/07-desktop-ui.md`, `docs/10-configuration.md`.
+- Acceptance checks: `cargo test -p imperium-lsp -p imperium-core --test lang -p imperium-policy -p imperium-config`:
+  - discovery finds a fake `rust-analyzer` placed on a test `PATH` and the user override's
+    program; a `node_modules/.bin/eslint` in an untrusted project is never run, and in a trusted
+    one only after `lang.approve_program` (the fake records each start); changing the approved
+    file's bytes asks again;
+  - **no install unasked:** opening files of every catalogue language with no server installed
+    starts no install process (the test's units show only probes); a `lang.install` whose
+    command was altered in the request, or from a non-app caller, is refused; the approved offer
+    runs exactly the catalogue's argument list as a `command` unit;
+  - the floor asks every time, in every mode, for `rustup component add rust-analyzer`,
+    `npm install -g pyright`, `npm i -g typescript-language-server`, `pipx install ruff`,
+    `uv tool install ruff`, `go install golang.org/x/tools/gopls@latest` and
+    `cargo install taplo-cli --locked`, and offers no "always allow";
+  - the environment layer cannot name a server (`[editor]` server entries in
+    `.imperium/config.toml` are ignored and reported) but can turn servers off for itself.
+  Browser checks: the missing-server notice offers *Install*; *Install* shows the exact command;
+  *Cancel* runs nothing; *Run this install* runs it once and the status turns to running.
+- Size: about 750 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E11: Diagnostics, hover and completion from servers
+
+- Objective: D22 with servers: the relay's `lang_request` and the `lang://diagnostics` event;
+  buffer sync from the editor (open, changes debounced by line count between 150 and 800 ms,
+  close); pushed and pulled diagnostics merged with the built-in checks; the project Problems
+  view through `lang.problems`; hover through D11's pipeline; completion with
+  `@codemirror/autocomplete` 6.20.4 (pinned), resolve, snippets as fields; `lint_on` per
+  language; stale sets mapped through changes.
+- Depends on: stages E9, E10a and E10b; stage E2.
+- Owned paths: `apps/desktop/src/editor/lang/` (`sync.ts`, `hover.ts`, `complete.ts`,
+  `problems.ts`), `src/files/bridge.ts`, `src/panels/FilesPanel.tsx`,
+  `apps/desktop/src-tauri/src/file_write.rs`, `crates/imperium-core/src/lang/`, `rpc/lang.rs`,
+  `apps/desktop/package.json` and `pnpm-lock.yaml`, `apps/desktop/test/langSync.test.ts` (new),
+  the fake daemon's scripted `lang.*`, `apps/desktop/e2e/lint.spec.ts`, `docs/07-desktop-ui.md`.
+- Acceptance checks: `npm test`: the debounce delay for 100, 10,000 and 100,000 lines (150,
+  500 and 800 ms); a change set maps a diagnostic past an insertion; snippet text becomes fields
+  and a snippet holding HTML stays text. Browser checks against the fake daemon scripted as a
+  server: typing an error shows the squiggle within 2 s and fixing it clears it; the Problems
+  view lists two files' problems and opens the second at its line; a hover whose Markdown has
+  `<img src=x onerror>` and a `javascript:` link renders them inert (the D11 DOM scan);
+  completion after `.` shows the items and inserts the chosen one; `lint_on = save` sends no
+  change until the save. `cargo test -p imperium-desktop file_write`: `lang_request` refuses a
+  method off its allowlist and a mod-frame origin.
+- Size: about 800 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E12: Quick fixes, the review dialog and format on save
+
+- Objective: D23: `lang.actions` and `lang.run_action`; the lightbulb, Ctrl+. and *Fix*; buffer
+  edits as one transaction; the review dialog for other files (diffs, ticks, harness and secret
+  files unticked, base hashes, `files.write` with confirmations, open tabs edited in their
+  buffer, resource operations refused, the 50-file and 4 MiB caps); a server's `applyEdit` after
+  a command into the same dialog; `lang.format`; `format_on_save` and `fix_on_save` with
+  `explicit` and `always` and the 2 s limit.
+- Depends on: stage E11; stages E1b and E4a (the write path, conflicts and the merge view).
+- Owned paths: `apps/desktop/src/editor/lang/actions.ts`, `review.tsx` (new),
+  `src/editor/buffer.ts` (the save hook), `crates/imperium-core/src/lang/`, `rpc/lang.rs`,
+  `tests/lang.rs`, `src/settings/shortcuts.ts`, `apps/desktop/test/langActions.test.ts` (new),
+  `apps/desktop/e2e/fixes.spec.ts` (new), `docs/07-desktop-ui.md`.
+- Acceptance checks: daemon tests with the fake server: an action whose edit touches the open
+  file and two others returns one buffer edit and two review entries with their base hashes; a
+  `RenameFile` operation is refused with its reason and the rest kept; 51 files are refused.
+  Browser checks: Ctrl+. lists the preferred fix first; applying it changes the buffer, marks the
+  tab dirty and writes nothing until Ctrl+S; Ctrl+Z undoes it in one step; the review dialog
+  shows three diffs with `.mcp.json` unticked; *Apply* writes the two ticked files with their
+  base; a file changed after the dialog opened conflicts and is not written; with
+  `format_on_save = explicit` a save formats and then saves, an auto save does not format, and
+  with `always` it does; a server that does not answer within 2 s leaves the save unformatted
+  with the note.
+- Size: about 800 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E13: The agents' diagnostics tool
+
+- Objective: D24: `diagnostics` in `imperium-tools`, a read tool reading the daemon's
+  diagnostic store and `lang.check`, never starting a server; the data framing and trims;
+  `harness.diagnostics_tool` and the headless eval variant flag (default off); the tool's
+  description and the agent instructions.
+- Depends on: stages E9 (the store) and E10a (`lang.check`); independent of the later editor
+  stages.
+- Owned paths: `crates/imperium-tools/src/diagnostics.rs` (new), `src/lib.rs`, the tool
+  registry, `crates/imperium-core/src/lang/`, `src/eval/variant.rs`,
+  `crates/imperium-config/src/settings.rs`, `registry.rs`, the tools' tests,
+  `docs/03-agent-engine.md`, `docs/05-tools-and-isolation.md`.
+- Acceptance checks: `cargo test -p imperium-tools -p imperium-core`: with a fake server running
+  for an open file, the tool returns its problems framed as data and trimmed to 1 KiB; for a
+  file with no server it returns the built-in checks and says no server runs; it starts no
+  server in a trusted project (the fake's sentinel absent); a message holding "ignore previous
+  instructions" comes back inside the framing; the tool is available in Plan and Ask modes and
+  writes nothing; an eval variant without the flag does not offer it; a `limit` above 200 is
+  clamped.
+- Size: about 450 lines.
+- Status: pending
+- Outcome: -
+
+### Stage E14: Themes
+
+- Objective: D25: the theme model, the grown token set with its tag table, the scope table and
+  the TextMate-rule resolver, the importer (JSON with comments, the allowed keys, validation,
+  the report), the contrast check with *Adjust for contrast* (OKLCH lightness), the shipped
+  themes converted and committed with their licences, the app's third-party notices, the
+  `editor-themes` store document, Settings → Editor's theme pickers and *Import theme*,
+  `prefers-contrast: more`; and semantic tokens from servers as decorations through
+  `lang.semantic_tokens`, with `semanticTokenColors` and the fallback table.
+- Depends on: stage E3b (D14's tokens); stage E11 for the semantic-token part only (the rest
+  may land before it).
+- Owned paths: `apps/desktop/src/editor/themes/` (new), `src/editor/lang/semantic.ts` (new),
+  `src/settings/EditorSection.tsx`, `src/styles/tokens.css`, `forced-colors.css`, the app's
+  third-party notices file, `apps/desktop/test/themeImporter.test.ts` and
+  `themeContrast.test.ts` (new), `tokenContrast.test.ts`, `apps/desktop/e2e/themes.spec.ts`
+  (new), `crates/imperium-core/src/lang/` (semantic tokens), `docs/07-desktop-ui.md`.
+- Acceptance checks: `npm test`:
+  - the resolver picks `entity.name.function.member` over `entity.name.function`, and a later
+    rule on a tie, and reports a descendant selector as ignored;
+  - the importer accepts a theme with comments and trailing commas; refuses a file of 1 MiB
+    plus one byte; drops `"red; background:url(x)"`, `"var(--x)"` and `"#12345"` as colours and
+    `"italic; color: red"` as a style, each in the report; ignores `include` and a string
+    `tokenColors`; flattens `#ff000080` against the background;
+  - every shipped theme passes 4.5:1 (7:1 for the high-contrast themes) for every token and
+    diagnostic colour on its background and active line; *Adjust for contrast* makes a failing
+    imported theme pass and changes only the failing colours;
+  - the semantic fallback colours `variable.readonly` with the theme's
+    `variable.other.constant` rule.
+  Browser checks: choosing Dracula recolours an open editor without reopening it; *Follow app*
+  switches with the app theme; an imported theme survives a reload (the store); a theme with a
+  hostile value leaves no inline style outside the `--syntax-*`, `--diag-*` and editor colour
+  properties (a scan of the editor root); with the fake server's semantic tokens a parameter
+  takes `--syntax-parameter`.
+- Size: about 800 lines (the converted theme files are data and counted apart).
+- Status: pending
+- Outcome: -
+
+### Stage E15: Language tooling end to end and docs
+
+- Objective: the close-out for revision 4. The Linux end-to-end job installs pinned servers as
+  job provisioning (`rustup component add rust-analyzer`, `npm install -g` of pinned
+  `typescript`, `typescript-language-server` and `vscode-langservers-extracted`, `pip install` of
+  a pinned `ruff`) and runs an `editor-lint` scenario on a fixture project per language:
+  untrusted, only built-in syntax errors show and no server starts (a `build.rs` and an
+  `eslint.config.js` that would write sentinel files leave none); trusted, a type error appears
+  as a problem, a quick fix applies to the buffer and format on save formats; the agents'
+  `diagnostics` tool returns the same problem; rust-analyzer's peak memory on the fixture and on
+  this repository is recorded for D21's numbers. Docs: 02 (`lang.*`, `projects.*`), 05 (trust,
+  the diagnostics tool, the install floor), 07 (problems, fixes, themes), 10 (settings), 12
+  (item 66's text), 14 (trusted projects).
+- Depends on: stages E8 to E14; stage E7 (the `editor` scenario it extends).
+- Owned paths: `scripts/ci/presence-e2e/` (with a `fixtures/lint/` tree),
+  `.github/workflows/presence-e2e.yml`, `scripts/ci/detect.sh`, `scripts/ci/test-detect.sh`,
+  `docs/**`, `docs/12-roadmap.md`.
+- Acceptance checks: the `presence-e2e` Linux job runs `editor-lint` green, the sentinel checks
+  included; docs checks green; `cargo test --workspace` and `scripts/check-web.sh` green.
+- Size: about 600 lines.
+- Status: pending
+- Outcome: -
 
 ## Risks across stages
 
@@ -1252,7 +2168,18 @@ landed.
 - **CodeMirror version drift** between item 55's viewer and this editor: one set of exact pins,
   changed together.
 - **Protocol minors.** Stages E1a and E1b take the next free minor at their merge; merge
-  `experimental`, never rebase.
+  `experimental`, never rebase. So do E8, E9, E10a, E10b, E11, E12 and E14.
+- **Item 68 is not merged** (pull request #332). E9 waits for its stage 1; the `lsp` class's
+  numbers are proposals until stage E9 and E15 measure them.
+- **Servers differ.** Capabilities, configuration and quirks vary (clangd without
+  `compile_commands.json`, rust-analyzer's first indexing taking minutes, gopls needing a
+  module); the fake server tests the client, and E15 tests three real servers. The other
+  catalogue entries are tested for discovery and start only, a named gap.
+- **Trust is a new prompt.** Users who open many repositories see the banner often; it shows
+  once per project and *Not now* holds for the session. If it is too noisy, a later change may
+  offer trusting a folder of the user's own repositories, which this plan rejects for now.
+- **Theme licences.** Every shipped theme's licence is checked at conversion and its notice
+  kept; a theme whose licence changes is removed.
 
 ## Open questions
 
@@ -1271,3 +2198,29 @@ settled questions are listed [above](#settled-decisions).
 5. **Mermaid diagrams and math in the preview?** Default: no; Mermaid renders through its own
    script and SVG, math needs KaTeX's markup and fonts.
 6. **Rename, delete and new folders in the tree?** Default: *New file* only.
+
+New in revision 4, open until the user answers:
+
+<!-- markdownlint-disable-next-line MD029 -->
+7. **Which languages first?** Default: Rust, TypeScript and JavaScript (with ESLint) and Python
+   (Ruff) in stage E15's real tests, since they cover this repository and the research work;
+   Go, C and C++, Markdown, JSON, TOML and YAML are in the catalogue from E10b but tested for
+   discovery and start only.
+8. **Ship servers or detect existing installs?** Default: detect and offer the install (D19);
+   nothing bundled. Bundling Ruff (a single binary, as its VS Code extension does) or the JSON,
+   TOML and YAML servers would make untrusted-safe checks richer, at the cost of size and
+   updates.
+9. **One trust for everything?** Default: one list, `mcp.trusted_projects`, shown as "trusted
+   projects", covers MCP servers, environment plugins, named agents and language servers. The
+   alternative is a separate editor-only trust.
+10. **Data-only servers in untrusted projects?** Default: no (D20); only the built-in checks.
+    The JSON, YAML, TOML and Markdown servers do not run project code, so they could run in
+    untrusted projects with remote schemas off, as VS Code's built-in JSON does.
+11. **Confine servers?** Default: servers run at tier 0 with caps (D21). Running them at the
+    session's isolation tier (no network, writes only to their caches) is safer, but rust-analyzer
+    and gopls fetch dependencies and write target folders, so many projects would break.
+12. **May agents' `diagnostics` start servers?** Default: no; the tool reads servers the editor
+    started and the built-in checks (D24). Allowing it in trusted projects would give headless
+    agents type errors, at the cost of starting rust-analyzer without the user opening a file.
+13. **Lint on type or save by default?** Default: on type, debounced, for every server; `save`
+    per language.
