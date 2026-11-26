@@ -1,6 +1,7 @@
 // The pull-request card in the session view: the title and link, the state, the check counts with
 // the failing names, the review and conflict state, and the auto-fix and auto-merge switches. The
-// auto-fix switch stays off and says why until the stage that builds it. The auto-merge switch
+// auto-fix switch is an ordinary daemon call (`pull_requests.set_monitor`), as is the
+// acknowledgement of the notice that a session handled review text. The auto-merge switch
 // turns on only through the app's own `auto_merge_enable` command, after a native confirmation
 // that names the method and the branch (`sessions/autoMerge.ts`); turning it off is an ordinary
 // daemon call. The daemon's cache (`pull_requests.status`) and its `pull_requests.changed`
@@ -206,6 +207,20 @@ function Bound({
     }
   };
 
+  /** The auto-fix switch and the acknowledgement of untrusted text are daemon calls. */
+  const changeMonitor = async (change: { auto_fix?: boolean; ack_untrusted?: boolean }) => {
+    if (!client || busy) return;
+    setProblem(null);
+    setBusy(true);
+    try {
+      onStatus(await client.call<PrStatus>("pull_requests.set_monitor", { session_id: sessionId, url: status.url, ...change }));
+    } catch (error) {
+      setProblem(message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** The auto-merge switch: off asks the daemon; on asks the app, which asks the user first. */
   const toggleAutoMerge = async () => {
     if (!client || busy) return;
@@ -283,6 +298,16 @@ function Bound({
         </Notice>
       )}
 
+      {view.untrusted && (
+        <Notice tone="warn" title="Untrusted comment text was handled">
+          {view.untrusted}{" "}
+          <button type="button" className="ghost small" disabled={busy || !client} onClick={() => void changeMonitor({ ack_untrusted: true })}>
+            Got it
+          </button>
+        </Notice>
+      )}
+      {view.ignored && <p className="muted pr-ignored">{view.ignored}</p>}
+
       {open && (
         <div id={detailsId} className="pr-details">
           {view.branches && <p className="muted pr-branches">{view.branches}</p>}
@@ -291,6 +316,7 @@ function Bound({
             method={method}
             onMethod={setChosen}
             busy={busy || !client}
+            onToggleAutoFix={() => void changeMonitor({ auto_fix: !view.autoFix.on })}
             onToggleAutoMerge={() => void toggleAutoMerge()}
           />
           {problem && <Notice tone="danger">{problem}</Notice>}
@@ -308,8 +334,8 @@ function Bound({
 }
 
 /**
- * The two switches and the method picker. Auto-fix stays off with its reason beside it. The
- * auto-merge switch is on when GitHub has the request, can be turned on when nothing says it
+ * The two switches and the method picker. The auto-fix switch can be turned on while the pull
+ * request is open and off at any time, with what it does beside it. The auto-merge switch is on when GitHub has the request, can be turned on when nothing says it
  * cannot (the note beside it says what), and can always be turned off.
  */
 function Controls({
@@ -317,12 +343,14 @@ function Controls({
   method,
   onMethod,
   busy,
+  onToggleAutoFix,
   onToggleAutoMerge,
 }: {
   view: PrCardView;
   method: PrMergeMethod | null;
   onMethod: (method: PrMergeMethod) => void;
   busy: boolean;
+  onToggleAutoFix: () => void;
   onToggleAutoMerge: () => void;
 }) {
   const fixId = useId();
@@ -331,11 +359,16 @@ function Controls({
     <div className="pr-controls">
       <div className="pr-control">
         <label className="option-row">
-          <Switch checked={view.autoFix.on} onChange={() => {}} label={`${view.autoFix.label}. ${view.autoFix.reason}`} disabled />
+          <Switch
+            checked={view.autoFix.on}
+            onChange={onToggleAutoFix}
+            label={`${view.autoFix.label}. ${view.autoFix.reason}`}
+            disabled={busy || !(view.autoFix.canTurnOn || view.autoFix.canTurnOff)}
+          />
           <span>{view.autoFix.label}</span>
         </label>
         <p className="muted" id={fixId}>
-          {view.autoFix.reason}
+          {view.autoFix.hint ?? view.autoFix.reason}
         </p>
       </div>
       <div className="pr-control">

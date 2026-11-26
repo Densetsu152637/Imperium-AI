@@ -170,8 +170,9 @@ lines or `allowed-tools` flagged), `sha256`, the digest of what it runs, and a c
 what is installed under that name. It refuses a manifest name unlike the entry's and any link or
 junction in the source (a link in a git repository is written as a plain file by the clone,
 `core.symlinks=false`, so it never reaches the disk as a link). The content hash is the
-load-time gate's (the files' paths, lengths and bytes without a top-level `.git` and
-`.imperium-source.json`). Nothing runs: no hook, server, build step, install script or git hook.
+load-time gate's (the files' paths, lengths and bytes without a top-level `.git`, unless a hook or
+server mentions `.git`, and without `.imperium-source.json`). Nothing runs: no hook, server, build
+step, install script or git hook.
 
 **Inspecting a folder that did not come from a marketplace (protocol 0.62; not a paired phone).**
 `plugins.inspect_folder {name}` is `plugins.inspect` for an installed plugin folder that has no
@@ -189,11 +190,23 @@ implementation) and, in `notes`, that Imperium has no record of it or that it ch
 record. Nothing runs. The desktop's *Approve* takes the preview's hash and digest to
 `plugins.approval_challenge` and `plugins.approve` as for any plugin, so the approval counts for the
 folder's files as they are at the dialog; any change afterwards to any file makes the gate
-withhold the plugin again until it is approved again, except the folder's own top-level `.git` folder and `.imperium-source.json`, which the content hash leaves out. A hook or server that runs a
-path under `.git` is flagged in `notes`, because it can change without voiding the approval. The
-challenge and the approval name the folder the same way: a name that is exactly an entry of
-`<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
-another name is looked up as a plugin name or id; the hash and digest must still match. The content
+withhold the plugin again until it is approved again, except `.imperium-source.json` and the
+folder's own top-level `.git` folder, which the content hash leaves out unless a hook or server
+mentions `.git` anywhere: in a hook's command or URL, or a server's command, arguments, URL, launch
+environment values or working folder (`.git/h.sh`, `GIT_DIR=.git`, `--git-dir=.git`, `cd .git;sh h`,
+`NODE_OPTIONS=--require ./.git/x.js`). Then the whole `.git` is hashed, with no exclusion, because
+a path can be built from a mention in too many ways (`cd .git/hooks && sh ../refs/x`,
+`.git/hooks/"../refs/x"`) to tell which files run, and git's own files can hold what runs (a ref
+name a remote chose, an object with chosen bytes). The accepted trade-off: a plugin folder the user
+placed, whose hooks mention `.git`, needs approving again after git activity in it (a fetch or a
+commit); it is withheld until then, never run. The approval covers files that run directly, not
+data a hashed program reads: `git show HEAD:payload | sh` runs whatever the repository's history
+holds, and a hashed script inside `.git` that reads unhashed data (a ref, an object, a file
+outside the plugin folder) is covered only as far as the script itself. On Windows the hash does
+not cover alternate data streams (`file:stream`) of any plugin file, `.git` or not (this predates
+the `.git` rule). The challenge and the approval name the folder the same way: a name that is
+exactly an entry of `<config>/plugins` is that folder (byte for byte, never trimmed or case-folded,
+never a link), and another name is looked up as a plugin name or id; the hash and digest must still match. The content
 hash refuses a folder that holds a link anywhere (a link is never followed), and opens each file
 with the operating system's no-follow flag (`O_NOFOLLOW` on Unix), which guards the last part of the
 path against a swap for a link after the walk; a plugin folder that is itself a link or junction

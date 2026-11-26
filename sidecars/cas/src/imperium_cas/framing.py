@@ -3,6 +3,9 @@
 A frame is a 4-byte big-endian length, then that many bytes of UTF-8 JSON holding one object.
 The reader checks the length against its cap before it reads or allocates the body, so a hostile
 or broken prefix costs four bytes: a request is at most 1 MiB, a reply at most 256 KiB.
+
+The worker's exit codes and the limits' bounds live here too, because the front (`pool.py`)
+shares them with the worker but must never import it: the worker imports SymPy.
 """
 
 import json
@@ -10,6 +13,19 @@ import json
 REQUEST_CAP = 1024 * 1024
 REPLY_CAP = 256 * 1024
 PREFIX = 4
+
+# The worker's exit codes (`worker.py` explains each); `pool.py` maps them to error categories.
+EXIT_OK = 0
+USAGE = 64  # a bad command line
+FRAME = 65  # a request frame over its cap, truncated or not JSON
+MEMORY = 66  # a `MemoryError` after the hook: the memory limit (`RLIMIT_AS` on Linux)
+CPU = 67  # `SIGXCPU`: the CPU limit's soft limit (its hard limit is a `SIGKILL`)
+CRASHED = 70  # any other exception after the hook, or a request read without the hook
+REFUSED = 77  # the audit hook saw an event outside the allow-list
+
+# Command-line limits: name -> (smallest, largest, default), from plan D3.
+LIMITS = {"--cpu-seconds": (1, 120, 15), "--memory-mib": (64, 8192, 1024)}
+WALL_SECONDS = (1, 300, 20)  # the front's wall clock: smallest, largest, default
 
 
 class FrameError(Exception):

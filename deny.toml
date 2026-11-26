@@ -16,7 +16,8 @@ targets = [
 version = 2
 yanked = "deny"
 # An advisory is ignored only with a reason, one entry each. All were in the workspace before code
-# worker's type checker) went with stage 1b, whose own worker loop leaves the type checker out.
+# mode added this check. The two Monty-only ones (zip 8.6.0 through the worker's type checker) went
+# with stage 1b, whose own worker loop leaves the type checker out.
 ignore = [
   { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
   { id = "RUSTSEC-2026-0594", reason = "cookie nonces repeat in processes that fork. Present in the workspace before code mode (stage 1a added the check); triage separately." },
