@@ -1654,7 +1654,7 @@ pub(crate) fn parse_pr_url(url: &str) -> Result<(String, u64), String> {
 }
 
 /// `owner/name` of a git remote URL on github.com (`https://`, `ssh://` or scp-style).
-fn github_repo(remote: &str) -> Option<String> {
+pub(crate) fn github_repo(remote: &str) -> Option<String> {
     let remote = remote.trim();
     let path = ["https://", "http://", "ssh://", "git://"]
         .iter()

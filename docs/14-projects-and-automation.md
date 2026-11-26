@@ -1372,7 +1372,9 @@ can comment, so nothing in it is trusted:
   before any of this, and the result is never cut, so a quoted mention cannot be split. A footer says the
   reply was posted by Imperium auto-fix and ends with the marker `<!-- imperium-auto-fix -->`;
   the id of every reply is kept in `pr-review.json`, so the daemon's own replies never wake
-  anything.
+  anything. Two edge cases are **accepted**, not defended: GitHub may turn an email address in a
+  reply into a link, and an `@` right after a letter or digit (`name@host`) is not quoted, as
+  GitHub does not read it as a mention either.
 - **Approval of the exact text.** With `github.autofix.comment = "ask"` (the default) each reply
   is an approval request of kind `reply` whose `text` is exactly what will be posted (the footer
   is added after it), and its summary says which thread and comment it answers and that the
@@ -1382,9 +1384,11 @@ can comment, so nothing in it is trusted:
   send `text`. `comment = "auto"` posts without asking, **with a risk**: a reviewer with write
   access can ask the session to read a file (reads run in a capped turn) and put it in its
   summary, which is then posted on a public pull request. A reply that looks like a credential (a
-  GitHub, GitLab, Slack, OpenAI-style or AWS key, or a PEM private key) is never posted unasked:
-  it asks, with a warning, in either mode; anything else that is secret but does not look like a
-  key is not caught. Approvals (push and reply alike) have no timeout: one nobody answers waits,
+  GitHub, GitLab, Slack, OpenAI-style, Stripe, Google, Hugging Face or npm key, an AWS key, a
+  JSON web token, a connection string with a password in it such as `scheme://user:pass@host`,
+  or a PEM private key) is never posted unasked: it asks, with a warning, in either mode. The
+  check is best-effort: anything else that is secret but does not look like one of these is not
+  caught. Approvals (push and reply alike) have no timeout: one nobody answers waits,
   and the pull request is not worked on again until it is answered or the daemon restarts. Over `github.autofix.comment_replies_per_hour` (default 6) replies on the pull
   request in the last hour, a reply is **held**: not asked about and not posted
   (`autofix.event` status `held`). The other statuses are `replied` and `reply_declined`.
@@ -1408,7 +1412,12 @@ can comment, so nothing in it is trusted:
   session wrote, or a repository's `.husky` hooks, never run), turns fsmonitor off, never enters
   submodules and skips the hooks again with `--no-verify`; a repository whose own config names a
   filter, a signing program, an SSH or proxy command, a credential helper or a transport program
-  is refused before the commit or the push. It now shares the wake path's commit and push (the approved commit is
+  is refused before the commit or the push, and before the first fetch of the checkout (a
+  credential helper or `core.sshCommand` in the repository's config would run in the fetch). The
+  push also goes only where the pull request is: `git remote get-url --push origin` (with
+  `pushurl`, `url.*.insteadOf` and `pushInsteadOf` applied) must name the repository being
+  fixed, or the fix fails with an `autofix.event` of status `failed` before anything is asked or
+  pushed (and is checked again just before the push). It now shares the wake path's commit and push (the approved commit is
   pushed by its hash, auto-merge is turned off first), and its handled commits and attempt count
   are kept in `pr-review.json` across restarts. Network tools follow `ask` mode there; the capped
   wake of a user's session asks for every call that is not a read.

@@ -127,6 +127,13 @@ pub async fn commit_all(worktree: &Path, message: &str) -> Result<bool, String> 
     Ok(true)
 }
 
+/// The address a push to `origin` goes to, as git resolves it (`git remote get-url --push
+/// origin`): `pushurl` and the `url.*.insteadOf` and `pushInsteadOf` rewrites included, so it is
+/// where the push really goes.
+pub async fn push_url(dir: &Path) -> Result<String, String> {
+    git(dir, &["remote", "get-url", "--push", "origin"]).await
+}
+
 /// Pushes the worktree's commit to `branch` on origin. A plain push: if the branch moved
 /// meanwhile, the push is rejected rather than overwriting it.
 pub async fn push(worktree: &Path, branch: &str) -> Result<(), String> {
@@ -246,4 +253,69 @@ pub async fn is_clean(dir: &Path) -> Result<bool, String> {
     git(dir, &["status", "--porcelain"])
         .await
         .map(|out| out.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn repo_with_origin(url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), &["init", "-q"]);
+        run(dir.path(), &["remote", "add", "origin", url]);
+        dir
+    }
+
+    #[tokio::test]
+    async fn the_push_address_is_the_origin_url_by_default() {
+        let dir = repo_with_origin("https://github.com/owner/repo.git");
+        assert_eq!(
+            push_url(dir.path()).await.unwrap(),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pushurl_redirect_is_the_push_address() {
+        let dir = repo_with_origin("https://github.com/owner/repo.git");
+        run(
+            dir.path(),
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://example.com/other/place.git",
+            ],
+        );
+        assert_eq!(
+            push_url(dir.path()).await.unwrap(),
+            "https://example.com/other/place.git"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_push_insteadof_redirect_is_the_push_address() {
+        let dir = repo_with_origin("https://github.com/owner/repo.git");
+        run(
+            dir.path(),
+            &[
+                "config",
+                "url.https://example.com/other/.pushInsteadOf",
+                "https://github.com/owner/",
+            ],
+        );
+        assert_eq!(
+            push_url(dir.path()).await.unwrap(),
+            "https://example.com/other/repo.git"
+        );
+    }
 }
