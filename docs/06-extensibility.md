@@ -196,7 +196,9 @@ path under `.git` is flagged in `notes`, because it can change without voiding t
 challenge and the approval name the folder the same way: a name that is exactly an entry of
 `<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
 another name is looked up as a plugin name or id; the hash and digest must still match. The content
-hash opens each file without following a link, and a plugin folder that is itself a link or junction
+hash refuses a folder that holds a link anywhere (a link is never followed), and opens each file
+with the operating system's no-follow flag (`O_NOFOLLOW` on Unix), which guards the last part of the
+path against a swap for a link after the walk; a plugin folder that is itself a link or junction
 is refused rather than approved.
 
 **Installing (protocol 0.51; not a paired phone).** `plugins.install {id, sha256, revision?}`
