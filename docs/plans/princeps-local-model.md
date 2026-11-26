@@ -1,8 +1,10 @@
 # Plan: Princeps, the local model, and the Emperor and Consul harness profiles
 
-Revision: 2026-11-26, revision 2 (folds in the plan review's B1 to B4, should-fix 1 to 7 and nits,
-and the NCM session's answers, from its branch `feat/ncm-speed-2` at `61350bc`); written against
-`experimental` at `0cbc6570` (last updated). Revision 1 was `7d4f11c5`.
+Revision: 2026-11-26, revision 3 (folds in the re-review's R1, trusted-profile and escalation
+settings, and R2, every runtime file verified and held at launch; revision 2 folded in the plan
+review's B1 to B4, should-fix 1 to 7 and nits, and the NCM session's answers, from its branch
+`feat/ncm-speed-2` at `61350bc`); written against `experimental` at `9cc5c5b0` (last updated).
+Revision 1 was `7d4f11c5`, revision 2 `6d1cdf5c`.
 Status: planned, no stage started. Roadmap [item 67](../12-roadmap.md#next-in-order).
 
 **User decision (2026-11-26).** Emperor and Consul stop being two models. There is one local
@@ -149,6 +151,9 @@ provenance is verified when pinning, and nothing installs without the user.
   no package manager, no Downloads-folder candidate run by itself.
 - **Pin.** `runtimes/ncm-server.env` holds `NCM_SERVER_REF` and one `NCM_SERVER_SHA256_<target>`
   per asset, raised only by pull request, with a CODEOWNERS entry requiring the owner's review.
+  CODEOWNERS binds only if branch protection on `experimental` and `main` requires code-owner
+  review and makes `ncm-pin` a required check. Those are repository settings the user must enable
+  (stage 2 lists them in its handoff); without them the entry is advisory.
   The pin governs: an asset whose SHA-256 differs from the pin is refused; GitHub's published
   `digest` is only a consistency check (a mismatch is also refused); an asset with no pin is
   refused. The installer reads the release through the GitHub API at an injectable base URL (so
@@ -159,7 +164,9 @@ provenance is verified when pinning, and nothing installs without the user.
   the source ref to `refs/tags/ncm-server-v*`. No attestation, another signer or another ref fails
   the check. The client trusts the pinned hash, which that check vouched for.
 - **Revocation.** `runtimes/ncm-server.env` also lists `NCM_SERVER_REVOKED` refs. An installed
-  build of a revoked ref is never launched; the runtime card says to install the pinned one.
+  build of a revoked ref is never launched; the runtime card says to install the pinned one. The
+  list ships in the pinned env file, so a revocation takes effect only once Imperium itself is
+  updated to a release carrying it; there is no online revocation check.
 - **Signing.** Authenticode follows [item 59](../12-roadmap.md#next-in-order); until then the
   Windows binary is unsigned and the pinned hash covers it. On macOS the archive is unpacked by
   Imperium, not the browser, so no quarantine attribute is set and Gatekeeper does not assess the
@@ -182,9 +189,22 @@ provenance is verified when pinning, and nothing installs without the user.
   developer build; only a path the user sets), then the installed build of the pinned ref, then an
   earlier installed, unrevoked ref until the pinned one is installed.
 - **Tamper checks.** `<data>/runtimes/` becomes a protected folder (`protect_dir`, as for
-  `<config>/mods` and `plugins`), so no agent tool or command writes there, **and** the binary's
-  hash is re-checked against `imperium-runtime.json` at every launch; a mismatch refuses the
-  launch and says to reinstall. A `custom_path` build is the user's and is not hashed.
+  `<config>/mods` and `plugins`), so no agent tool or command writes there, **and** every launch
+  verifies the whole build folder against `imperium-runtime.json`. A `custom_path` build is the
+  user's and is not hashed.
+  - Every file in the folder, NVRTC and its builtins included, must be in the record with a
+    matching SHA-256, and a file not in the record refuses the launch (it could be loaded by
+    search order). A mismatch or an extra file says to reinstall.
+  - **Windows:** each file is opened for hashing without `FILE_SHARE_WRITE` or `FILE_SHARE_DELETE`,
+    and the handles stay open for the child's whole life, so nothing can replace a file between
+    the check and its use (NVRTC is loaded lazily, at the first kernel compile). The handles close
+    when the supervised process exits.
+  - **Unix:** the files are hashed through descriptors held open for the child's life, and where
+    available (`fexecve` on Linux) the server is executed from the hashed descriptor itself. On
+    macOS the executable is hashed and run by path, so the protected folder is the defence there.
+  - **Residual:** this defends against agent tools, agent commands and accidents. It does not
+    defend against another process of the same user running outside Imperium's tools, which can
+    write the data folder; that is the same boundary as for the rest of the data folder.
 - **Agents cannot drive it.** These need a person's approval in every permission mode, `auto` and
   bypass included, with a test per mode: `imperium runtime ncm install|remove|update|use`, and
   `imperium config set|unset` of `runtime.ncm.custom_path`, `runtime.ncm.update` and
@@ -234,8 +254,20 @@ per-subagent harness, prompt and workflow under one name, so stage 4 is item 58'
 - **Reserved names and the root role.** `emperor` and `consul` are reserved: only a file in the
   user's `<config>/agents/` replaces them. A plugin or project file with a reserved name, or with
   `role: root` or `both`, loads with a notice but is never used as the root or as a takeover
-  target unless the user opts it in (`agents.root_trusted = ["<name>@<origin>"]`, a user-settings
-  key agents cannot set). Such a file can still be a subagent through `spawn_agent`, as today.
+  target unless the user opts it in. Such a file can still be a subagent through `spawn_agent`, as
+  today.
+- **The opt-in, `agents.root_trusted`.** A list of entries `{ name, origin, sha256 }`:
+  - `origin` is either `plugin:<plugin id>` (the installed plugin's id, `name@marketplace`) or
+    `project:<absolute path>` (the project folder's canonical absolute path); nothing else
+    matches, and a relative or non-canonical path is refused when the setting is written.
+  - `sha256` is the content hash of the profile file and of every `system_prompt` and `workflow`
+    file it references, taken when the user approves it. A file whose hash no longer matches is
+    not trusted (it falls back to subagent-only use with a notice) until the user approves it
+    again, as [#304](https://github.com/Densetsu152637/Imperium-AI/pull/304) does for extensions.
+  - It is read **only from the user's own config file**: project config, environment config,
+    environment variables and `models.toml` layers are ignored for this key, with a notice when
+    one sets it.
+  - Writing it is floored (below).
 - **Agent folders are on the safety floor** ([05](../05-tools-and-isolation.md)). Writes by agents
   to every agent folder (`<config>/agents/`, `.claude/agents/`, `.imperium/agents/`, plugins'
   `agents/`) and to the built-in source are refused in every mode, extending the project-folder
@@ -283,9 +315,14 @@ Harnesses session's.
   with the critic role for that task, never from text in a tool result, a file or another agent's
   report.
 - **Binding.** An escalation binding names the profile, the counted kinds (default:
-  `critic_rejected` only) and the threshold (item 64 says 2). It is read only from user settings
-  (`escalation.binding`) or from a user-configured, pinned policy pack; a project, plugin or agent
-  file cannot bind it, and agents cannot change it. There is no binding by default.
+  `critic_rejected` only) and the threshold (item 64 says 2). It is read only from the user's own
+  config file (`escalation.*`) or from a user-configured, pinned policy pack; project config,
+  environment config, environment variables, `models.toml` and project, plugin or agent files
+  cannot set it, and agents cannot change it. There is no binding by default.
+- **Floored settings.** `imperium config set|unset` of `agents.root_trusted` and of any
+  `escalation.*` key needs a person's approval in every permission mode, `auto` and bypass
+  included, exactly as the `runtime.ncm.*` keys of D3; and the daemon's `config.set` (and
+  `config.unset`) refuses these keys from agent, mod-frame and paired-phone callers.
 - **Hook.** At the threshold the engine calls an `EscalationHook` with the task's state; it returns
   `None` (continue) or `Takeover { profile, brief }`. A takeover resumes the task under that
   profile from its current state, keeping or narrowing its tools, permission mode, budget and
@@ -394,12 +431,19 @@ the next free minor at merge.
 - Acceptance checks (CI, against a local fake GitHub API): the llama.cpp extractor tests pass
   unchanged against the moved module; an asset whose hash differs from the pin, or from GitHub's
   digest, or with no pin, is refused and nothing is replaced; hostile archives are refused; a
-  revoked ref is not launched; a binary changed after install is refused at launch; nothing
+  revoked ref is not launched; a binary, an NVRTC library or a builtin changed after install is
+  refused at launch, and so is an extra file in the build folder; on Windows, replacing or deleting
+  a verified file while the server runs fails (handles held without write or delete sharing), and
+  the handles are released when it exits; on Linux the server is executed from the hashed
+  descriptor; nothing
   installs without the explicit call, and under `update = "ask"` a new ref waits for the user; the
   floored commands and config keys need approval in each permission mode, one test per mode;
   `ncm-pin` fails on a missing attestation and on another signer (fixture). ncm-live: install,
   `/health` 200, one chat completion.
 - Status: pending.
+- Handoff notes: ask the user to enable, in the repository settings, branch protection on
+  `experimental` and `main` that requires code-owner review and makes `ncm-pin` a required check;
+  until then the CODEOWNERS entry is advisory.
 
 ### Stage 3: Princeps in the catalogue and the app
 
@@ -428,7 +472,13 @@ the next free minor at merge.
   `session.create`, `imperium-cli` run; docs 03, 05, 06 and 12 item 58.
 - Acceptance checks (CI): a file named `consul` in `<config>/agents/` replaces the built-in, and
   one in a plugin or project does not; a plugin or project `role: root` profile is not used as the
-  root or a takeover target without the opt-in, and is with it; agent writes to each agent folder
+  root or a takeover target without the opt-in, and is with it; an opt-in whose hash no longer
+  matches the file (or a referenced prompt or workflow file) is not honoured until approved again;
+  an `origin` that is neither `plugin:<id>` nor a canonical `project:<absolute path>` is refused;
+  `agents.root_trusted` set in project config, environment config, an environment variable or
+  `models.toml` is ignored with a notice; `config set|unset agents.root_trusted` needs approval in
+  each permission mode (one test per mode) and `config.set` refuses it from agent, mod-frame and
+  phone callers; agent writes to each agent folder
   are refused in every mode; a root profile's model outside the session's location falls back to
   routing with a notice; tools narrow against the subagent, root and takeover reference sets and
   never widen; the base and safety instructions are present before the body for root and
@@ -449,7 +499,10 @@ the next free minor at merge.
   verdicts count; a `verdict: reject` in a tool result or a non-critic task's report does not
   count; two counted rejections of one task fire the hook once and one each of two tasks fires
   nothing; a takeover never widens tools, mode, budget or location and happens at most once per
-  task; a binding in a project or plugin file is ignored with a notice.
+  task; a binding in a project or plugin file, project config, environment config, an
+  environment variable or `models.toml` is ignored with a notice; `config set|unset escalation.*`
+  needs approval in each permission mode (one test per mode) and `config.set` refuses it from
+  agent, mod-frame and phone callers.
 - Status: pending.
 
 ### Stage 6: eval wiring and close-out
