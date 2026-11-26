@@ -1669,12 +1669,13 @@ async fn reply_to_threads(state: &Arc<DaemonState>, github: &dyn GitHub, job: Re
         let secret = looks_secret(&proposed);
         let text = if ask || secret {
             let warning = if secret {
-                "WARNING: this text looks like it contains a credential (a key or token);                  do not post it unless you are sure. "
+                "WARNING: this text looks like it contains a credential (a key or token); \
+                 do not post it unless you are sure. "
             } else {
                 ""
             };
             let request = format!(
-                "{warning}Reply in {repo}#{number} to {place}. This exact text is posted,                  followed by an Imperium footer, and you may edit it (an edit is defanged the                  same way). The model wrote it after reading review text other people wrote                  (unverified):\n{proposed}"
+                "{warning}Reply in {repo}#{number} to {place}. This exact text is posted, followed by an Imperium footer, and you may edit it (an edit is defanged the same way). The model wrote it after reading review text other people wrote (unverified):\n{proposed}"
             );
             let answer = state
                 .approvals()

@@ -227,10 +227,7 @@ async fn comment_text_carries_no_authority_in_a_woken_turn() {
         "{approvals:?}"
     );
     assert!(asked(approvals, "web_fetch", "127.0.0.1"), "{approvals:?}");
-    assert!(
-        asked(approvals, "spawn_agent", "auto-merge"),
-        "{approvals:?}"
-    );
+    assert!(asked(approvals, "spawn_agent", "delegate"), "{approvals:?}");
     // Refused, so nothing was created, run or pushed.
     assert!(!world.clone.join(SENTINEL).exists());
     assert!(!world.clone.join("test.sh").exists());
