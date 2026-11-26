@@ -1,0 +1,56 @@
+[package]
+name = "imperium-limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Cap units for every process Imperium starts: Job Objects, cgroup v2 or rlimits and a poll"
+
+# The bounded probes the tests and the CI measurements run (`alloc`, `fork`, `spin`, `breakaway`,
+# `measure`, and the Linux launcher). Built only with the `test-support` feature, so no release
+# build has it.
+[[bin]]
+name = "limit_probe"
+path = "src/bin/limit_probe.rs"
+required-features = ["test-support"]
+
+[features]
+# The probe binary. Enabled only by this crate's own dev-dependency below.
+test-support = []
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["process", "rt", "time", "sync", "macros", "net"] }
+
+[target.'cfg(unix)'.dependencies]
+# Safe wrappers: rlimits, process groups, signals, directory-relative cgroup files, inotify.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The tree poll (macos.rs): `proc_listpgrppids`, `proc_pid_rusage`, `proc_pidinfo`, `setpriority`.
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+imperium-limits = { path = ".", features = ["test-support"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+# The Job Objects (windows.rs) and the macOS process calls (macos.rs) are Win32 and C calls, all
+# unsafe. Only those modules opt in (`#![allow(unsafe_code)]`); the rest of the crate denies it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

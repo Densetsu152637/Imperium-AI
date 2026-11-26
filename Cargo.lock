@@ -2976,6 +2976,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-limits"
+version = "0.2.0"
+dependencies = [
+ "imperium-limits",
+ "libc",
+ "rustix",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "imperium-local"
 version = "0.2.0"
 dependencies = [
