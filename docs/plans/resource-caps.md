@@ -1,7 +1,8 @@
 # Plan: resource caps on every child process
 
-Revision: 2026-11-26, revision 3 (plan review: blockers B1 to B5, majors M1 to M7 and the
-minor and missing-resource findings folded in; revision 2 recorded the user's answers as
+Revision: 2026-11-26, revision 4 (second review round: R1 to R7 folded in; revision 3 folded in
+the first review's blockers B1 to B5, majors M1 to M7 and the minor and missing-resource
+findings; revision 2 recorded the user's answers as
 [settled decisions](#settled-decisions); revision 1 was the first draft). Written
 against `experimental` at `cd791003`. Roadmap [item 68](../12-roadmap.md#next-in-order).
 Status: planned (no stage started).
@@ -98,7 +99,8 @@ Each goal is boolean, with a check that runs in CI on the three OSes and needs n
    - These fail to raise a cap: a project or environment `.imperium/config.toml` (refused as
      widening), a plugin manifest or an `.mcp.json` (the field is ignored with a warning), an
      `IMPERIUM_LIMITS__*` variable (narrow-only), an `.mcp.json` `env` block that sets
-     `IMPERIUM_CGROUP_ROOT` (ignored by an on-demand daemon), and an agent's `imperium config
+     `IMPERIUM_CGROUP_ROOT` (ignored by a daemon started with `--exit-when-idle`), and an
+   agent's `imperium config
      set` (the safety floor; refused outright for `limits.mode`).
    - In the OS tier, writing the unit's cgroup files and reaching the daemon's endpoint are
      blocked.
@@ -331,10 +333,11 @@ daemon-side poll of L4.**
   fallback mode.
 - **Skipped inside a unit.** A daemon that already sits inside an Imperium unit (for example one
   an agent's command started on demand) does not move. It stays inside that unit's caps and
-  runs in fallback mode. This is detected by path (its `/proc/self/cgroup` is under an
-  `imperium-core-*.scope/total/` or `models/` cgroup) or by the `IMPERIUM_LIMITS_UNIT` marker the
-  launcher sets on every child. The path check alone is enough; the marker is a hint, because a
-  child can clear its environment.
+  runs in fallback mode. This is detected by **structure**, not by a name pattern: the daemon
+  walks up from its own cgroup (`/proc/self/cgroup`), and if any ancestor holds both an
+  `imperium-daemon` child and a `total/` child (the layout below), it is inside an Imperium
+  tree. A scope's name can be anything and proves nothing. The `IMPERIUM_LIMITS_UNIT` marker the
+  launcher sets on every child is only a hint, because a child can clear its environment.
 - **Getting a delegated subtree, in order.**
   1. **Already delegated.** The daemon is in a cgroup that passes the M5 checks below (the
      package's systemd user unit, if the user installs one, sets `Delegate=yes`).
@@ -345,17 +348,32 @@ daemon-side poll of L4.**
      org.freedesktop.systemd1.Manager StartTransientUnit ...`, with `busctl` found by absolute
      path (`/usr/bin`, then `/bin`), and the daemon then waits up to 2 s for
      `/proc/self/cgroup` to show the scope. The process is not executed again, so the daemon's
-     arguments, environment and open files are untouched. Cost: one `busctl` process and one
+     arguments, environment and open files are untouched.
+     - **A late move cannot happen.** On timeout the daemon calls `StopUnit` on the scope it
+       asked for, then reads `/proc/self/cgroup` once more. If the move did happen after all, it
+       uses the scope; if not, it falls back. Either way it decides once, before the lock.
+     - **Moving out of a root-owned cgroup.** A process in a cgroup owned by root (a login
+       session's `session-N.scope`, which `logind` creates) cannot be moved by the user manager
+       alone. systemd then asks PID 1 to do it (`AttachProcessesToUnit`, systemd 238 or later,
+       A2). Where that is missing, the call fails and the daemon falls back.
+     - **The clients wait long enough.** `imperium-client`'s launch and the desktop's daemon
+       start both wait 20 s for `daemon.json` (`START_TIMEOUT` in
+       `crates/imperium-client/src/launch.rs` and `apps/desktop/src-tauri/src/daemon.rs`). That
+       covers the 2 s here and the call's own time with room to spare. Stage 2 asserts that the
+       setup's worst case stays under a tenth of it. Cost: one `busctl` process and one
      D-Bus round trip at start, about 20 to 50 ms (estimate, measured in stage 2). A new scope
      holds only the daemon, which also meets M5's "alone in the cgroup" rule.
   3. **`IMPERIUM_CGROUP_ROOT=<path>`** names a subtree the administrator delegated (for CI,
      servers and containers: the server package, item 63). It is honoured only for a daemon
      started by hand or by the autostart entry, never for an on-demand start (L7), and only
-     after the M5 checks.
+     after the M5 checks. It selects **where** the units live, never a cap's value (R2).
   4. **None of these:** fallback mode, reported by `imperium limits status` and in Settings.
 - **M5: checks before using a subtree.**
   - The path is on a `cgroup2` filesystem (`statfs` magic), under `/sys/fs/cgroup`, owned by
     the daemon's user (not root), and the daemon is not running as root.
+  - `cgroup.controllers` lists both `memory` and `pids`. Without them the caps cannot be set, so
+    the daemon falls back. `cpu` is used where it is listed, and its absence only disables CPU
+    caps.
   - The daemon is **alone** in its cgroup (`cgroup.procs` lists only it). Under cgroup v2's
     no-internal-process rule, enabling controllers for children fails while other processes
     share the cgroup, and moving them is not the daemon's business. Otherwise it falls back.
@@ -364,9 +382,11 @@ daemon-side poll of L4.**
     it; a path swapped between the two would be written blindly. The rebase onto
     `imperium-limits` fixes that.
 - **systemd-oomd.** Where `systemd-oomd` runs, it can kill a whole user scope under memory
-  pressure. The scope is created with `ManagedOOMPreference=avoid` where systemd honours it for
-  user units. Stage 2 records whether it does, and the units' own caps make a whole-scope kill
-  unlikely.
+  pressure. The scope asks for `ManagedOOMPreference=avoid`, but the plan **expects it not to be
+  honoured**: systemd applies that preference only to cgroups owned by root, and a user unit's
+  is not. The protection is the caps themselves (a unit stops at its cap long before the scope
+  is under the pressure oomd acts on) and the watchdog. Stage 2 records what oomd does on the
+  CI image.
 - **Layout.** `<scope>/imperium-daemon` (the daemon, a leaf, as in #328), `<scope>/models/` (model
   runtimes, outside the total), `<scope>/terminals/` (uncapped terminals, S2, outside the total),
   `<scope>/total/` with `internal/` and `s-<session>/`, and units below them (`cmd-p3`,
@@ -569,10 +589,25 @@ environments."<environment id>".commands.memory_mb = 32768   # one environment's
 - **Environment variables narrow.** `IMPERIUM_LIMITS__*` may only lower a value, like the
   project layer, because an on-demand daemon can inherit the environment of whatever started it
   (an `.mcp.json` `env` block that runs `imperium`, an agent's command). A higher value is
-  ignored and reported by `config explain`. `IMPERIUM_CGROUP_ROOT` is honoured only for a daemon
-  started by hand or by the autostart entry. The on-demand launcher (`imperium-client`'s
-  `launch`) removes it and `IMPERIUM_LIMITS__*` from the daemon's environment and passes
-  `--on-demand`, and a daemon started with that flag ignores both.
+  ignored and reported by `config explain`.
+- **The on-demand rule keys on `--exit-when-idle` (R1).** Both on-demand starts already pass that
+  flag, so no new flag is added:
+  - `imperium-client`'s launch (`crates/imperium-client/src/launch.rs`), which starts
+    `imperium-core --exit-when-idle[=SECONDS]`;
+  - the desktop's daemon start (`start` in `apps/desktop/src-tauri/src/daemon.rs`, which adds
+    `--exit-when-idle` unless the user keeps the daemon running).
+
+  A daemon started with `--exit-when-idle` ignores `IMPERIUM_CGROUP_ROOT`, and both sites also
+  remove it and `IMPERIUM_LIMITS__*` from the daemon's environment. A desktop set to keep the
+  daemon running starts it without the flag. That start is treated as a hand start, which is
+  right: the desktop is the user's own program, and its environment is the user's. It still
+  strips the two variables when it spawns.
+- **`IMPERIUM_CGROUP_ROOT` is a tier-0 residual (R2).** It selects only **where** the units'
+  cgroups live, never a cap's value, so the worst it can do is point the daemon at a subtree
+  whose limits someone else controls. A tier-0 process that can set the environment of a hand
+  or autostart start can already edit `config.toml`. At every start, the daemon writes the
+  mechanism it chose (`cgroup`, `rlimit + poll`, `job` or `poll`) and the root path to the change
+  journal, and a change from the last start gives L7's toast.
 - **The environment and project layers narrow.** `limits.*` joins the environment layer's
   allow-list as narrow-only ([10](../10-configuration.md#layers)): a value at or below the user's
   is applied, a higher one is listed as refused by `imperium env config` and `config explain`.
@@ -746,9 +781,17 @@ creation and every input it has received came through the terminal plan's gate. 
 - **Any other terminal is a command unit.** A terminal created on a connection that did not
   pass the gate (a stub gate in a test build, a future client such as the phone), or one that
   receives any `terminal.input` from such a connection, is placed under the `command` class caps
-  from that moment, and counted in its session's aggregate. On Windows this sets the limits on
-  its existing job; on Linux it moves it from `terminals/` to the session; on macOS the poll
-  starts enforcing. It stays capped until it is closed.
+  from that moment. It stays capped until it is closed.
+  - **Caps set in place (R7).** The terminal keeps its own job or cgroup, and the caps are set on
+    it where it is: `SetInformationJobObject` on its existing job on Windows, `memory.max` and
+    `pids.max` written to its own cgroup under `terminals/` on Linux, and the poll starts
+    enforcing on macOS. Nothing is moved, so no process runs outside a unit during the switch.
+  - **Counted by the daemon.** The terminal's unit is not under the session's job or cgroup, so
+    the OS does not count it in the session aggregate. The daemon does: it adds the unit's usage
+    to the session's total in its own accounting, and a session over its aggregate stops its
+    largest unit, which may be this terminal.
+  - **A watchdog candidate.** It joins the watchdog's order (L11) in the foreground-command
+    group, unlike a gated terminal, which the watchdog never touches.
 - **A stronger gate, if wanted.** A per-launch secret that the desktop's native side gets over
   its pipe at start and never writes to disk (a lease) would tie `terminal.*` to the running
   desktop process rather than to its identity. The plan does not require it, because the gate
@@ -817,8 +860,11 @@ the repository's scripts, L12).
 - A1. Windows 8 or later (nested jobs); the supported Windows 10 and 11 qualify.
 - A2. Linux desktops with systemd 244 or later delegate `memory` and `pids` to the user manager,
   and its `StartTransientUnit` accepts a scope with the caller's own process and
-  `Delegate=yes`. `busctl` is at `/usr/bin/busctl` wherever systemd is. Stage 2 records what CI
-  and common distributions show. Without these, the RLIMIT and poll fallback holds.
+  `Delegate=yes`. Moving a process that starts in a root-owned cgroup (a `logind` session
+  scope, the usual case for a program launched from a desktop session) also needs PID 1 to
+  attach it on the user manager's behalf (`AttachProcessesToUnit`, systemd 238 or later). `busctl`
+  is at `/usr/bin/busctl` wherever systemd is. Stage 2 records what CI and common distributions
+  show. Without these, the RLIMIT and poll fallback holds.
 - A3. A suspended process created by `tokio::process::Command` has exactly one thread until it
   is resumed, so resuming the one thread a Toolhelp snapshot finds for its process id starts it.
   Stage 1 tests this.
@@ -837,7 +883,8 @@ the repository's scripts, L12).
   `crates/imperium-extensions/src/hooks.rs`, `crates/imperium-local/src/{process.rs,speech.rs,vllm_env.rs,wsl.rs}`,
   `crates/imperium-web/src/browser.rs`, `crates/imperium-script/src/{cgroup.rs,watchdog.rs,windows/launch.rs}`
   (moved), `crates/imperium-pty/src/lib.rs`, `crates/imperium-config/src/{settings.rs,registry.rs}`,
-  `crates/imperium-client/src/launch.rs` (`--on-demand`, the scrubbed variables),
+  `crates/imperium-client/src/launch.rs` and `apps/desktop/src-tauri/src/daemon.rs` (the
+  scrubbed variables),
   `apps/desktop/src-tauri/` (its spawn sites),
   `scripts/check-python.sh`, `sidecars/cas/tests/support.py`, `.github/workflows/ci.yml`, the
   desktop's Settings and resource monitor.
@@ -887,7 +934,7 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 
 - Objective: the cgroup bootstrap (L3's order: the D-Bus scope move before the lock, the
   M5 checks, the skip inside a unit), the `[limits]` settings and their registry rows (L7) with
-  narrowing, narrow-only environment variables, `--on-demand`, the floor rule for `config set
+  narrowing, narrow-only environment variables, the `--exit-when-idle` rule, the floor rule for `config set
   limits.*` and the outright refusal for `limits.mode`, the change detection and its journal,
   `imperium limits status`, the hidden `limit` launcher (exec or supervising, M7), and L12
   (check scripts and the CAS tests).
@@ -898,9 +945,18 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
   - `imperium limits status` reports `cgroup`, `rlimit + poll`, `job` or `poll` correctly in each
     CI job, including a `loginctl enable-linger` job for the D-Bus path and one where the call
     fails (the daemon falls back, starts once, and writes `daemon.json` once);
-  - a daemon started inside a command unit does not move;
-  - `IMPERIUM_CGROUP_ROOT` naming a root-owned path, a non-cgroup2 path or a shared cgroup is
-    refused;
+  - the D-Bus path works for a daemon started from a root-owned cgroup and from a `logind`
+    session scope (a CI job that starts the daemon under `systemd-run --scope` as root with
+    `--uid`, and one under `loginctl`'s session);
+  - a call that times out leaves the daemon either in the scope or in fallback, never moved
+    after the lock (an injected slow `busctl`);
+  - the setup's worst case stays under 2 s against the clients' 20 s wait for `daemon.json`;
+  - a daemon started inside a command unit does not move, whatever the scope's name (the
+    structural check, R6);
+  - `IMPERIUM_CGROUP_ROOT` naming a root-owned path, a non-cgroup2 path, a shared cgroup or a
+    cgroup without `memory` and `pids` in `cgroup.controllers` is refused, and ignored by a
+    daemon started with `--exit-when-idle`;
+  - every start writes the mechanism and the root path to the journal;
   - `python-cas` on Windows runs inside a 4 GiB unit.
 
 ### Stage 3: commands
@@ -955,8 +1011,9 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
 - Acceptance checks: the terminal plan's stop tests pass through the unit; a terminal that
   allocates past the `command` cap is not stopped and is not counted in the session aggregate;
   the watchdog's victim order never includes a terminal; a terminal created or typed into by a
-  connection that fails the gate (a stub gate) gets the command caps; the mod bridge's permission
-  table has no `terminal.*` method.
+  connection that fails the gate (a stub gate) gets the command caps in place (its own job or
+  cgroup), is counted in its session's aggregate and becomes a watchdog candidate; the mod
+  bridge's permission table has no `terminal.*` method.
 
 ### Stage 8: review, measurement and enforce for models
 
