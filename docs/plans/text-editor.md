@@ -1,9 +1,12 @@
 # Plan: built-in text editor with Markdown presentation
 
-Revision: 2026-11-26, revision 6 (round-2 review: R1, closing the remaining command-path
+Revision: 2026-11-26, revision 7 (round-3 review: the freeze rules F1 to F5, a full
+stat-only sweep of installed packages before starts, and S1, resolving npm servers and every
+interpreter from their packages and real executables, in [D21](#decisions),
+[D28](#decisions) and stages E9 and E10c). Revision 6 answered round 2: R1, closing the remaining command-path
 gap of B2 by checking before every forward, polling during background commands and freezing
 servers during foreground ones, and the Windows `.cmd` shim fix, in [D21](#decisions),
-[D28](#decisions) and stage E10c). Revision 5 answered the Opus review of revision 4: blockers B1, project
+[D28](#decisions) and stage E10c. Revision 5 answered the Opus review of revision 4: blockers B1, project
 configuration read by probes and installs, and B2, agents changing execution-relevant files in a
 trusted project, majors 1 to 6, the minors and nits; and the user's answers to open questions 7
 to 13, recorded as [settled decisions](#settled-decisions). Revision 4 brought the user's request for linting and themes: language
@@ -1126,14 +1129,36 @@ Decisions D18 to D27 are new in revision 4 (revised in 5); D28 is new in revisio
     server, probe and install on Windows:
     - the environment sets **`NoDefaultCurrentDirectoryInExePath=1`**, which stops `cmd.exe`
       and the `CreateProcess` search from trying the current folder;
-    - a `.cmd` or `.bat` shim is **never run through `cmd.exe`**: the daemon reads the shim
-      (npm's generated form, matched exactly) for the script it names and launches
-      `<absolute node.exe> <absolute script path> <args>`, with `node.exe` resolved as below; a
-      shim that does not match npm's form is refused with a reason;
+    - a `.cmd` or `.bat` shim is **never run through `cmd.exe`**; npm servers are launched from
+      their package, below (S1);
     - every program, `node.exe` included, is resolved to an **absolute path** by a `PATH` search
       that **drops empty and relative entries and every entry inside a project folder of any
       open session**, as item 55's [D6](terminal-file-panes.md#decisions) does for shells; the
       child's `PATH` is filtered the same way.
+  - **Servers from their packages, interpreters from their real executables (round 3, S1;
+    every OS).** A shim, whether npm's `.cmd` or a version manager's (Volta, asdf, mise, pyenv,
+    nvm-windows), decides at run time which program to run, often from files in the current
+    folder (`.tool-versions`, `.node-version`, `.nvmrc`, `.python-version`, a `volta` key in
+    `package.json`). So the daemon never launches a server through a shim:
+    - **npm-installed servers** (`typescript-language-server`, `vscode-langservers-extracted`,
+      `pyright`, `yaml-language-server`): the daemon runs `npm root -g` (or `pnpm root -g` when
+      the server was found under pnpm's global folder) **from `<data>/lsp-work` with the
+      scrubbed environment of D19**, reads `<root>/<package>/package.json`, takes the `bin`
+      entry for the server's command, and judges the resolved script path to stay inside the
+      package folder (after links are resolved; a `bin` that climbs out is refused). It launches
+      `<real node> <absolute script> <args>`. Parsing npm's shim is at most a cross-check: if
+      the shim names a different script, the status says so and the package's `bin` wins;
+    - **every interpreter** a server needs (`node`, `python`) is resolved to its **real
+      executable** once per discovery, from the neutral folder with the scrubbed environment:
+      `node -p process.execPath` and `python -c "import sys; print(sys.executable)"`, each run
+      through the absolute path the filtered `PATH` search found (which may itself be a version
+      manager's shim, now run where no project pin file exists, so it picks the user's default).
+      The result must be an absolute path to a regular file outside every project folder; the
+      server is then launched with that path, never through the shim. The version used is shown
+      in `lang.status`;
+    - native servers (`rust-analyzer`, `gopls`, `clangd`, `ruff`, `marksman`, `taplo`) are
+      resolved the same way when they are a shim (`rustup`'s proxies via `rustup which` from the
+      neutral folder, D19), and otherwise launched by absolute path.
   - **Isolation tier ([settled](#settled-decisions), B2).** A server runs at the **strictest
     isolation tier of the project's open sessions** ([05](../05-tools-and-isolation.md#isolation-tiers))
     where that tier exists on the OS: tier 1 (the OS sandbox: Landlock and seccomp on Linux,
@@ -1392,16 +1417,55 @@ Decision D28 is new in revision 5.
       `files.write` record of D10) pauses the servers before the message is sent;
     - **every second while any agent command or background process started in the project is
       alive** (R1b), by the same sweep, and once more when it ends;
-    - **during each foreground agent command** in the project (R1c), the project's servers are
-      **frozen** for the command's length: on Linux by `cgroup.freeze` on the server's unit
-      (item 68's cgroup), on macOS by `SIGSTOP` to the unit's processes and `SIGCONT` after, on
-      Windows by suspending every process in the server's job (`NtSuspendProcess` on each id
-      from `JobObjectBasicProcessIdList`, in `imperium-limits`' Windows module) and resuming
-      them after. A frozen server runs nothing, so it cannot react to a change mid-command. When
-      the command ends the daemon sweeps: if nothing moved it thaws them, else it pauses them
-      (stopping the frozen units). Freeze and thaw are `Unit::freeze` and `Unit::thaw`, added to
-      item 68's `imperium-limits` by stage E10c. Editor requests during a freeze wait, within
-      D18's 10 s limit, rather than fail.
+    - **during each foreground agent command** in the project (R1c), the project's servers that
+      can execute project code are **frozen** for the command's length: on Linux by
+      `cgroup.freeze` on the server's unit (item 68's cgroup), on macOS by `SIGSTOP` to the
+      unit's processes and `SIGCONT` after, on Windows by suspending every process in the
+      server's job (`NtSuspendProcess` on each id from `JobObjectBasicProcessIdList`, in
+      `imperium-limits`' Windows module) and resuming them after. A frozen server runs nothing,
+      so it cannot react to a change mid-command. Freeze and thaw are `Unit::freeze` and
+      `Unit::thaw`, added to item 68's `imperium-limits` by stage E10c. Editor requests during a
+      freeze wait, within D18's 10 s limit, rather than fail. The rules (round 3):
+      - **F1, a reference count per project.** Each foreground agent command in the project
+        takes a freeze reference. The servers are frozen on the count's 0 to 1 step; only the 1
+        to 0 step sweeps and thaws, so two overlapping commands never thaw each other's freeze.
+      - **F2, one state lock per project.** The project's server state (`running`, `frozen` or
+        `paused`) sits behind one lock with a **generation counter**, bumped on every change.
+        The end-of-command sweep records the generation when it starts; afterwards it thaws only
+        if the state is still `frozen` **and** the generation is unchanged. A pause always wins:
+        a file-tool pause, a poll or a forward check that pauses during the sweep moves the state
+        to `paused` and bumps the generation, so the sweep's thaw is skipped.
+      - **F3, "the command ended" means its unit is empty.** The end is when the command's job
+        (Windows) or cgroup (Linux), or its process group as polled on macOS, has no process
+        left, not when the main process exits. If descendants are still alive 5 s after the main
+        process exits, the daemon sweeps, thaws (or pauses), and treats the survivors as
+        background processes of the project, covered by the 1 s poll (R1b) for as long as they
+        run.
+      - **F4, freeze only servers that can execute project code, and end their toolchain
+        children.** Frozen: ESLint's server; `tsserver` (through `typescript-language-server`);
+        rust-analyzer **only when *Run project build code* is on** (with it off it runs no
+        project code and is not frozen); clangd only when started with `--query-driver`; and
+        `gopls` (it runs `go list`). The data servers (JSON, TOML, YAML, Markdown), Ruff and
+        Pyright are not frozen. For a server being frozen, its **in-flight toolchain children**
+        (`cargo`, `rustc`, `go`, `npm`, `node` subprocesses other than the server itself) are
+        **ended** at freeze time, not suspended, so a suspended child can never hold the cargo,
+        Go or npm cache lock that the agent's own command is waiting for (a deadlock that would
+        otherwise last the command's whole timeout). The server re-runs its check after the
+        thaw.
+      - **F5, the freeze is complete before the command starts.** The agent's command is
+        spawned only after the freeze is confirmed: on Linux after `cgroup.events` reports
+        `frozen 1`; on macOS and Windows after repeating "list the unit's processes, stop or
+        suspend each one not yet stopped" until a pass finds none unstopped (a process forked
+        between the listing and the stop is caught by the next pass), with a 2 s limit, after
+        which the servers are paused instead.
+  - **Installed packages before every start (round 3).** Before every server start, restart
+    and resume, the daemon runs a **full stat-only sweep** of `node_modules/**` and
+    `.venv/**` (and the other package folders of the file list) against the fingerprint: size
+    and modification time of every file, no hashing, bounded at 200,000 entries and 2 s (past
+    the bound it hashes the lockfile and the approved packages' bound instead, D20, and says
+    so). The sweep is skipped when the lockfile changed since the fingerprint, because that
+    change alone already pauses. A difference not explained by a user action pauses the
+    servers before the start.
   - **Pausing** stops the project's servers (`shutdown`, then the unit) and starts none until
     the user resumes; diagnostics stay, marked stale.
   - **Watching goes through the client where the server allows it** (R1e), so the daemon's
@@ -1625,7 +1689,12 @@ copies of tools and server config files; servers' messages and requests; importe
   keeps both size and modification time (a deliberate `touch -r`) is not hashed by the sweep
   until the next full fingerprint at resume or restart. On Windows, if stage E10c cannot
   suspend a job's processes on the runner, changes during a foreground command are caught only
-  by the 1 s poll and the sweeps, and the stage records that as a named gap.
+  by the 1 s poll and the sweeps, and the stage records that as a named gap. **Descendants that
+  outlive a command (F3)** are treated as background processes after a 5 s grace: from then a
+  server that watches files itself (`tsserver` where client watch events are not available) is
+  thawed and can react to their changes within the poll's one second before the sweep pauses
+  it. **Servers not frozen (F4)** are those that run no project code, so their reading changed
+  files during a command executes nothing.
 - **User-installed servers are the user's.** Imperium runs the program the user installed or
   named; a compromised global install is outside this plan.
 
@@ -2215,7 +2284,8 @@ the entries are added beside theirs).
 
 ### Stage E9: The LSP client in the daemon
 
-- Objective: D18 and D21: the `imperium-lsp` crate (framing with the 16 MiB bound, lifecycle,
+- Objective: D18 and D21 (with revision 7's S1: servers launched from their package's `bin`
+  with real interpreters, never through a shim): the `imperium-lsp` crate (framing with the 16 MiB bound, lifecycle,
   capabilities, incremental and full sync, versions, cancellation after 10 s, the server-request
   policy, URI confinement, result caps, semantic-token decoding as a pure function); the
   daemon's `LspHost` per server and project folder, started only for a trusted project, a found
@@ -2279,13 +2349,23 @@ the entries are added beside theirs).
     server forwards its watch requests; the result is recorded in the catalogue entry, and D28
     relies on the freeze and sweeps where it is not;
   - **Windows shims:** a planted `node.bat` in the project folder and a relative `.` entry on
-    `PATH` are not run when the fake server is installed as an npm `.cmd` shim: the daemon
-    launches the absolute `node.exe` with the shim's script, the child's environment has
-    `NoDefaultCurrentDirectoryInExePath=1`, and its `PATH` has no relative or in-project entry;
-    a shim that is not in npm's form is refused.
+    `PATH` are not run when the fake server is installed as an npm `.cmd` shim; the child's
+    environment has `NoDefaultCurrentDirectoryInExePath=1`, and its `PATH` has no relative or
+    in-project entry;
+  - **S1, from the package:** with a fake global npm root, the daemon runs `npm root -g` from
+    `<data>/lsp-work` (the fake records its working folder and environment), reads the
+    package's `bin`, and launches `<real node> <absolute script>`; a `bin` of
+    `../../outside.js` is refused; a shim that names another script is reported and not used;
+  - **S1, real interpreters:** the hostile fixture holds `.tool-versions` (`nodejs 0.0.1`),
+    `.node-version`, `.nvmrc`, `.python-version` and a `volta` pin in `package.json`, and a fake
+    version-manager shim on `PATH` that would run a sentinel script if it saw any of them in
+    its working folder; discovery runs the shim only from `<data>/lsp-work`, resolves
+    `process.execPath` and `sys.executable` to the user's default, launches the server with
+    those absolute paths, and leaves no sentinel; an interpreter path inside the project folder
+    is refused.
 - Size: about 800 lines (E9a and E9b split possible).
-- Risks: item 68 is not merged; if E9 is ready first, the `lsp` unit waits for item 68's stage
-  1 crate with the class added there, never a local job wrapper.
+- Risks: item 68's plan is merged but not built; if E9 is ready first, the `lsp` unit waits
+  for item 68's stage 1 crate with the class added there, never a local job wrapper.
 - Status: pending
 - Outcome: -
 
@@ -2391,7 +2471,11 @@ the entries are added beside theirs).
   are alive; `Unit::freeze` and `Unit::thaw` in `imperium-limits` (cgroup `freeze`, `SIGSTOP`
   and `SIGCONT`, job process suspension) around each foreground agent command, then sweep and
   thaw or pause; `node_modules/**` and `.venv/**` as execution-relevant for file tools;
-  `--allowLocalPluginLoads` never passed.
+  `--allowLocalPluginLoads` never passed. Revision 7 (round 3): the freeze reference count (F1),
+  the per-project state lock with its generation (F2), the command's end as its empty unit with
+  the 5 s grace (F3), freezing only the servers that can run project code and ending their
+  toolchain children (F4), the confirmed freeze before the command starts (F5), and the full
+  stat-only sweep of installed packages before every start, restart and resume.
 - Depends on: stages E9 and E10b; stage E4a for the diff view in the banner (until then the
   banner lists files and hashes). E11 does not merge before this stage.
 - Owned paths: `crates/imperium-lsp/src/exec_files.rs` (new), `crates/imperium-core/src/lang/`
@@ -2442,10 +2526,32 @@ the entries are added beside theirs).
     recorded as the named gap;
   - `tsserver` is started without `--allowLocalPluginLoads` (the fake records its arguments);
   - a file larger than 1 MiB changed by a command shows its old and new size and hash in
-    `lang.paused`.
+    `lang.paused`;
+  - **F1:** two overlapping foreground commands A and B: A ends first and the servers stay
+    frozen; B ends and they are swept and thawed once;
+  - **F2, with barriers:** the end-of-command sweep is parked after recording the generation; a
+    file-tool write to `build.rs` pauses the servers meanwhile; on release the sweep finds the
+    generation changed and does not thaw, and the project stays paused with no sentinel;
+  - **F3:** a command whose main process exits while a child sleeps 2 s keeps the servers frozen
+    until the child exits; a child that lives 20 s is handed to the poll after 5 s, the servers
+    thaw, and a change it makes at 10 s pauses them within 1 s;
+  - **F4:** with *Run project build code* off, a fake rust-analyzer is not frozen during a
+    command; with it on, it is; a fake server whose child holds a lock file (as cargo holds its
+    package-cache lock) has that child ended at freeze time, and the agent's scripted
+    `cargo build` (a fake that takes the same lock) completes within its normal time; Ruff and the
+    JSON server are not frozen;
+  - **F5:** on Linux the command's process starts only after `cgroup.events` reads `frozen 1`
+    (recorded order); on macOS and Windows a fake server that forks a child while being stopped
+    has both stopped before the command starts; a freeze not confirmed within 2 s pauses the
+    servers instead;
+  - **installed packages:** a file changed under `node_modules/eslint-plugin-x/` by a command
+    (size or time moved, lockfile unchanged) pauses the next start; with the lockfile also
+    changed the full sweep is skipped and the lockfile change pauses; 250,000 entries hit the
+    bound and fall back to the lockfile, and the status says so.
   Browser checks: the banner shows the files and the diff; *Keep paused* keeps it; *Resume*
   restarts and the diagnostics stop being marked stale.
-- Size: about 800 lines (the freeze in `imperium-limits` may split into its own E10d).
+- Size: about 800 lines, so the freeze (F1 to F5 and `Unit::freeze` in `imperium-limits`)
+  splits into its own **E10d** if it grows past that; E11 then waits for E10d too.
 - Status: pending
 - Outcome: -
 
