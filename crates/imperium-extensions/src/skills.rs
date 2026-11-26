@@ -30,6 +30,21 @@ pub struct Skill {
 /// Finds skills in each `(folder, origin)`: every subfolder with a `SKILL.md`. Earlier folders
 /// win when names repeat. Returns problems found along the way.
 pub fn discover(folders: &[(PathBuf, String)]) -> (Vec<Skill>, Vec<String>) {
+    discover_gated(folders, &[], &[])
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// [`discover`], leaving out the skill folders in `skip` and in `last`, then adding those of
+/// `last` (each a skill folder itself, origin `agent`) after every other skill, so a skill of
+/// `last` never takes the name of one found in `folders`.
+pub fn discover_gated(
+    folders: &[(PathBuf, String)],
+    skip: &[PathBuf],
+    last: &[PathBuf],
+) -> (Vec<Skill>, Vec<String>) {
     let mut skills: Vec<Skill> = Vec::new();
     let mut problems = Vec::new();
     for (folder, origin) in folders {
@@ -40,48 +55,64 @@ pub fn discover(folders: &[(PathBuf, String)]) -> (Vec<Skill>, Vec<String>) {
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.join("SKILL.md").is_file())
+            .filter(|path| {
+                !skip
+                    .iter()
+                    .chain(last.iter())
+                    .any(|held| same_folder(held, path))
+            })
             .collect();
         dirs.sort();
         for dir in dirs {
-            let file = dir.join("SKILL.md");
-            let text = match std::fs::read_to_string(&file) {
-                Ok(text) => text,
-                Err(error) => {
-                    problems.push(format!("{}: {error}", file.display()));
-                    continue;
-                }
-            };
-            let (fields, _) = front_matter(&text);
-            let name = fields.get("name").cloned().unwrap_or_else(|| {
-                dir.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
-            let Some(description) = fields.get("description").filter(|d| !d.is_empty()) else {
-                problems.push(format!(
-                    "{}: no description in front matter",
-                    file.display()
-                ));
-                continue;
-            };
-            if skills.iter().any(|skill| skill.name == name) {
-                continue;
-            }
-            let hint = fields
-                .get("when_to_use")
-                .filter(|hint| !hint.is_empty())
-                .map(|hint| hint.chars().take(HINT_CHARS).collect());
-            skills.push(Skill {
-                name,
-                description: description.chars().take(DESCRIPTION_CHARS).collect(),
-                dir,
-                origin: origin.clone(),
-                hint,
-                eager: false,
-            });
+            read_skill(dir, origin, &mut skills, &mut problems);
+        }
+    }
+    for dir in last {
+        if dir.join("SKILL.md").is_file() {
+            read_skill(dir.clone(), "agent", &mut skills, &mut problems);
         }
     }
     (skills, problems)
+}
+
+/// Reads the skill in `dir` into `skills`, unless its name is taken.
+fn read_skill(dir: PathBuf, origin: &str, skills: &mut Vec<Skill>, problems: &mut Vec<String>) {
+    let file = dir.join("SKILL.md");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) => {
+            problems.push(format!("{}: {error}", file.display()));
+            return;
+        }
+    };
+    let (fields, _) = front_matter(&text);
+    let name = fields.get("name").cloned().unwrap_or_else(|| {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
+    let Some(description) = fields.get("description").filter(|d| !d.is_empty()) else {
+        problems.push(format!(
+            "{}: no description in front matter",
+            file.display()
+        ));
+        return;
+    };
+    if skills.iter().any(|skill| skill.name == name) {
+        return;
+    }
+    let hint = fields
+        .get("when_to_use")
+        .filter(|hint| !hint.is_empty())
+        .map(|hint| hint.chars().take(HINT_CHARS).collect());
+    skills.push(Skill {
+        name,
+        description: description.chars().take(DESCRIPTION_CHARS).collect(),
+        dir,
+        origin: origin.to_string(),
+        hint,
+        eager: false,
+    });
 }
 
 /// The index lines for the skills loaded on use: name, description, and trigger hint.

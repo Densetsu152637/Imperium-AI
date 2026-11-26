@@ -173,6 +173,11 @@ impl DaemonState {
         Some((title, self.archived_history(id)?))
     }
 
+    /// Whether the session is archived.
+    pub(crate) fn is_archived(&self, id: &str) -> bool {
+        self.archived_map().contains_key(id)
+    }
+
     /// Archives a running session: records it, stops it, and tells every client. Archiving an
     /// archived session changes nothing.
     pub fn archive(&self, id: &str) -> Result<SessionSummary, ArchiveError> {
@@ -263,6 +268,7 @@ impl DaemonState {
         meta["pull_request_url"] = summary.pull_request_url.clone().into();
         write_meta(&path, &meta.to_string())?;
         session.stop_processes();
+        self.end_session_terminals(id);
         // Dropping the daemon's handle stops the session once its current step ends.
         self.sessions
             .lock()

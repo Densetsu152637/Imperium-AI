@@ -259,14 +259,17 @@ impl Connection {
                 c.params.take(),
                 |params: PluginsApprovalChallengeParams| {
                     crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
+                    let subject = crate::plugin_records::Subject::parse(params.kind.as_deref())
+                        .map_err(refused)?;
                     let folder =
-                        crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+                        crate::plugin_install::resolve_subject(&self.state, subject, &params.name)
                             .map_err(refused)?;
                     let asked = crate::app_identity::Asked {
                         folder: &folder,
                         hash: &params.sha256,
                         runs: &params.runs_digest,
                         now_ms: imperium_api::time::unix_ms(),
+                        subject,
                     };
                     crate::app_identity::challenge(
                         &crate::app_identity::InstalledApp,
@@ -301,13 +304,16 @@ impl Connection {
     fn plugins_approve(&mut self, c: &mut Dispatch<'_>) -> Result<Value, ErrorObject> {
         let params: PluginsApproveParams = decode::<PluginsApprove>(c.params.take())?;
         crate::app_identity::local_only(self.identity.as_deref()).map_err(refused)?;
-        let folder = crate::plugin_install::resolve_for_approval(&self.state, &params.name)
+        let subject =
+            crate::plugin_records::Subject::parse(params.kind.as_deref()).map_err(refused)?;
+        let folder = crate::plugin_install::resolve_subject(&self.state, subject, &params.name)
             .map_err(refused)?;
         let asked = crate::app_identity::Asked {
             folder: &folder,
             hash: &params.sha256,
             runs: &params.runs_digest,
             now_ms: imperium_api::time::unix_ms(),
+            subject,
         };
         let redeemed = crate::app_identity::redeem(
             self.state.paths(),

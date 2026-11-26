@@ -150,6 +150,7 @@ fn start(
         eager: eager.iter().map(|name| name.to_string()).collect(),
         downloaded: Vec::new(),
         allowed: None,
+        skill_gate: imperium_extensions::SkillGate::default(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
     Session::spawn(SessionConfig {

@@ -61,6 +61,12 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         suggested_rule: Option<crate::permissions::PermissionRule>,
+        /// The daemon says only the user may answer this request (an extension install or
+        /// removal, or a write to a project's extension files, judged on the path the call
+        /// resolves to): a harness or other agent-driven client must not. Absent for any other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        user_only: Option<bool>,
     },
     /// A tool call finished, failed, or was denied. `output` is truncated for display.
     ToolFinished {
@@ -902,6 +908,7 @@ mod tests {
             tool: "write_file".into(),
             summary: "write a.txt".into(),
             suggested_rule: None,
+            user_only: None,
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
@@ -916,7 +923,12 @@ mod tests {
                 pattern: "cargo test".into(),
                 action: crate::permissions::RuleAction::Allow,
             }),
+            user_only: Some(true),
         };
+        assert_eq!(
+            serde_json::to_value(&suggested).unwrap()["user_only"],
+            json!(true)
+        );
         assert_eq!(
             serde_json::to_value(&suggested).unwrap()["suggested_rule"],
             json!({"tool":"run_command","pattern":"cargo test","action":"allow"})

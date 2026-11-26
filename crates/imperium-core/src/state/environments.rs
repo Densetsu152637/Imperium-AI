@@ -208,8 +208,23 @@ impl DaemonState {
         self.announce_environments();
     }
 
+    /// Refuses file-tool writes into the plugin folders every known environment's merged settings
+    /// list (a trusted project's `.imperium/config.toml` can add folders, which skip the load-time
+    /// gate). Run when the daemon starts and whenever the environments change, so a folder is
+    /// guarded before any session in it loads; a session's own load adds its folders too.
+    pub(crate) fn guard_environment_plugin_folders(&self) {
+        for env in self.environments.list() {
+            let merged = self.environment_settings(Some(&env.id));
+            for dir in &merged.settings.extensions.plugin_dirs {
+                imperium_policy::permissions::protect_dir(dir);
+                imperium_policy::permissions::refuse_writes_under(dir);
+            }
+        }
+    }
+
     /// Tells every client the environments changed.
     pub fn announce_environments(&self) {
+        self.guard_environment_plugin_folders();
         self.announce(
             imperium_protocol::methods::ENVIRONMENTS_CHANGED,
             self.environment_list(),

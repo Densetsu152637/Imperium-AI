@@ -1104,3 +1104,70 @@ async fn the_harness_cannot_answer_a_bridged_request() {
     assert!(failed);
     assert!(!project.path().join("out.txt").exists());
 }
+
+#[tokio::test]
+async fn the_harness_never_answers_a_request_to_install_an_extension() {
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(
+        source.path().join("SKILL.md"),
+        "---\nname: planted\ndescription: A skill.\n---\nbody\n",
+    )
+    .unwrap();
+    let model = scripted_model(vec![(
+        "install the skill",
+        "install_extension",
+        json!({"kind": "skill", "source": source.path().to_string_lossy()}),
+    )])
+    .await;
+    let data = tempfile::tempdir().unwrap();
+    let endpoint = start_daemon(daemon_with(&CONFIG.replace("{URL}", &model), data.path())).await;
+    let mut harness = Harness::start(&endpoint).await;
+    harness
+        .request(
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}}),
+        )
+        .await;
+    harness
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let started = harness
+        .ok(
+            "start_session",
+            json!({"project_dir": project.path().to_string_lossy(), "prompt": "install the skill"}),
+        )
+        .await;
+    let session_id = started["session_id"].as_str().unwrap().to_string();
+    let waited = harness
+        .ok(
+            "wait_for_turn",
+            json!({"session_id": session_id, "since": started["cursor"], "timeout_s": 30}),
+        )
+        .await;
+    assert_eq!(waited["outcome"], "permission_required", "{waited}");
+    let request = &waited["pending_permissions"][0];
+    assert_eq!(request["tool"], "install_extension");
+    // Every decision is refused, and the request is still pending: only the user answers it.
+    for decision in ["allow", "allow_for_session", "deny"] {
+        let reply = harness
+            .request(
+                "tools/call",
+                json!({"name": "respond_permission", "arguments": {
+                    "session_id": session_id, "request_id": request["request_id"],
+                    "decision": decision}}),
+            )
+            .await;
+        assert_eq!(reply["result"]["isError"], true, "{decision}: {reply}");
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("only the user can answer"), "{text}");
+    }
+    let still = harness
+        .ok("get_session", json!({"session_id": session_id}))
+        .await;
+    assert_eq!(
+        still["pending_permissions"][0]["request_id"],
+        request["request_id"]
+    );
+}
