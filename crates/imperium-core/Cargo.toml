@@ -29,8 +29,6 @@ imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
 imperium-models = { version = "0.2.0", path = "../imperium-models" }
 imperium-pets = { version = "0.2.0", path = "../imperium-pets" }
 imperium-protocol = { version = "0.2.0", path = "../imperium-protocol" }
-# Code mode: the worker launcher and, on Windows, the NO_READ_UP labels on the daemon's folders.
-imperium-script = { version = "0.2.0", path = "../imperium-script" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 imperium-tools = { version = "0.2.0", path = "../imperium-tools" }
 imperium-web = { version = "0.2.0", path = "../imperium-web" }
@@ -73,6 +71,9 @@ nix = { version = "0.31.3", default-features = false, features = ["socket"] }
 security-framework = { version = "3.7.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+# Code mode's NO_READ_UP labels on the daemon's folders (`code_mode.rs`); stage 2 uses the
+# crate's launcher on every OS.
+imperium-script = { version = "0.2.0", path = "../imperium-script" }
 # Check 7 of plugin approvals: the per-machine Program Files folder from
 # SHGetKnownFolderPath(FOLDERID_ProgramFiles) through dirs-sys's safe wrapper.
 dirs-sys = "0.5.0"
