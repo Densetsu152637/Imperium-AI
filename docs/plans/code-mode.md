@@ -2,7 +2,7 @@
 
 Revision: 2026-11-26, revision 5 (final review: D1, and the label and call-state refinements; delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
-Status: stage 1a built (pull request #303), stages 1b to 6 planned.
+Status: stage 1 built (1a in pull request #303, 1b in #328), stages 2 to 6 planned.
 
 The model gets one more tool, `run_script`, whose argument is a short Python program. Inside the
 program every tool the agent may use is a Python function. Each such call goes through the agent's
@@ -579,7 +579,7 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 | Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode does not settle inner sends, writes or commands (C4); the desktop shows each inner call live |
 | Prompt injection from tool results | **The control is per-call dispatch**: whatever a program does, each call it makes is judged on its own name and actual arguments by the same rules, hooks and approvals as a direct call, and the stricter auto-mode rule for inner sends, writes and commands (C4). Removing `eval` and `exec` (A2) is hygiene, not a boundary: without them a program can still pass tool output on as data. The printed output enters the context as a tool result with the existing untrusted-data framing | **Data to arguments**: a value from one result (an injected URL, path or command) can become a later call's argument without the model reading it. Each such call is still judged, and in auto mode it is asked rather than classified, but a person approving it sees only the final arguments. The tests that a renamed or aliased tool cannot bypass a refusal stay (stage 2, stage 5) |
 | Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit (Linux, Windows; none on macOS, C1); at most `script_workers` workers; code length cap; output cap; `request_timeout` | Many programs at once queue for workers, bounded by each wall budget |
-| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows an inheritable `NO_READ_UP` label on the data, config, sessions and scratch folders; files reach the program only through `read_file` and its path checks | Windows: user files outside those folders are readable after an escape, and the OS keyring depends on the stage 1 test (below) |
+| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows an inheritable `NO_READ_UP` label on the data, config, sessions and scratch folders; files reach the program only through `read_file` and its path checks | Windows: user files outside those folders, and files moved into them from elsewhere, are readable after an escape, and so is the OS keyring (the stage 1b test found a Low worker can `CredRead` it; below) |
 | Network | None inside the interpreter; Linux and macOS confinement deny it; web tools go through their own rules | Windows: an escaped worker can open connections (below) |
 | Denial through approvals | A program that asks 40 times is bounded by `script_calls`, and a denial is an ordinary error the program sees | The user sees up to 40 prompts. Approve-for-session works as today |
 
@@ -597,7 +597,8 @@ environment variables and headers in the config files. The daemon's named pipe k
 cannot read.
 
 **The OS keyring.** On Windows the keychain backend is Credential Manager. Stage 1 tests whether a
-Low worker can `CredRead` an Imperium entry. If it cannot, the keyring is covered. If it can,
+Low worker can `CredRead` an Imperium entry. **Stage 1b found that it can** (see its Outcome), so
+the second case below applies. If it cannot, the keyring is covered. If it can,
 secrets in the keyring are part of the accepted residual below, accepted **only while
 `harness.code_mode` is off by default**: the stage 6 default change is then blocked until the
 secrets are moved out of reach of Low processes (for example into the labelled encrypted store) or
@@ -678,8 +679,8 @@ Each is checked in stage 1 and its outcome recorded in this plan before stage 2 
   median. **Decision: the one-ahead spawn is dropped on every OS.** The target is a median, the
   worst macOS start is once per program and invisible beside a model turn, and a spare idle
   worker costs a process and a slot. Stage 6 re-measures real programs and may revisit it for
-  macOS only. Size 40 to 43 MiB (fails; the owned `MontyRun` loop in 1b removes the type
-  checker, see the stage 1a Outcome).
+  macOS only. Size 40 to 43 MiB in 1a (failed); stage 1b's owned `MontyRun` loop removed the
+  type checker, and the shipped worker is 13 to 15 MiB (see the stage 1b Outcome).
 - **A5.** Qwen3.5-4B writes short Python programs that stay inside Monty's subset often enough.
   Stage 6 measures syntax, `NotImplementedError` and `NameError` rates.
 - **A6.** The guided-harness pilot's failures on aggregation are reachable by code: the knowledge
@@ -869,6 +870,133 @@ Stage 1b changes from the findings: build the owned `MontyRun` loop and re-run t
 against its own event set; refuse programs that name `eval` or `exec` (hygiene, not a boundary: `getattr` reaches the
 same names, and every host effect is still judged per call); re-check every
 `FunctionCall` name against the program's handle table at call time; no one-ahead spawn.
+
+### Stage 1b: Status and Outcome
+
+Status: built in pull request #328 (`feat/code-mode-1b`), still default-off and unreachable: there
+is no `run_script` tool and no setting until stage 2. Stage 1 is complete.
+
+Built:
+
+- **The owned worker loop** (`crates/imperium-script-worker/src/serve.rs`, F12): the worker drives
+  `monty::MontyRun` itself and uses `monty-proto` only for frames and message types, without its
+  `worker` feature. It serves one `Configure` (type checking, a first request inside `Configure`,
+  streamed calls and a non-wall clock are refused with `SessionRefused`), one `Feed`, and the
+  answers to that program's suspensions (`ResumeCall`, `ResumeNameLookup`, `AbortFeed`); `Pong` and
+  `Shutdown` at any time. `Dump`, `Load`, `Reset`, `ResumeFutures`, `InstallDependencies`, a second
+  `Feed` and a second `Configure` are protocol violations that change nothing. Its own event set is
+  `Ok`, `SessionRefused`, `Print`, `FunctionCall`, `OsCall`, `NameLookup`, `Complete`, `Error` and
+  `FatalError`; a `ResolveFutures` the VM might raise ends the program inside the worker, and a
+  name lookup on a host object (which a program is never given) is answered undefined inside it.
+  The allowlist tests run against it unchanged (and against the misbehaving test worker for the
+  kinds it never sends), plus `tests/owned_loop.rs` for its refusals. The time-zone database stays
+  bundled (`monty-types/tzdb-bundled`, what the feature used to turn on). The type checker, salsa
+  and both `zip` copies Monty brought (8.6.0 and 0.6.6) left the lock, and RUSTSEC-2026-0546 and
+  0547 left `deny.toml`; the six zip 4.6.1 ignores stay for the updater.
+- **The engine's interface** (`crates/imperium-script`): the object-safe `ScriptRunner` and
+  `ScriptProgram` traits (boxed futures), implemented by `Launcher` and `ScriptRun`; `FakeRunner`,
+  which replays scripted steps (including calls for names never looked up, and a silent worker),
+  records every answer and holds the host to one answer per suspension; `HandleTable`, which admits
+  a call only when its name resolves now through the same resolver as lookups and, if a lookup
+  issued it, to the same tool; `dynamic_code`, the `eval`/`exec` refusal (A2), applied by both
+  runners before a worker starts (`ScriptError::Refused`). The scan is conservative: comments and
+  plain string text are skipped, f-string fields are read as code, and a name with a character
+  outside ASCII is refused, because Python folds names with NFKC. `Launcher::check` is the
+  availability check (an empty program in a real worker; the error names the stage), and
+  `worker_beside` finds the worker beside the daemon.
+- **Windows** (`crates/imperium-script/src/windows/`): the launch of C1 in order, each step failing
+  closed with its stage named (`token`, `job`, `folder`, `pipes`, `process`, `assign`, `resume`): a
+  `CreateRestrictedToken` copy with `DISABLE_MAX_PRIVILEGE` and Administrators deny-only, every
+  remaining privilege removed, at Low integrity; a job (memory at twice `script_memory_mb`, one
+  active process, kill on close, death on an unhandled exception, every UI limit); an empty
+  Low-labelled working folder under the user's temporary folder; three named pipes (random names,
+  only the daemon's user, Medium `NO_READ_UP` and `NO_WRITE_UP`, one instance each, opened once by
+  the daemon for the child); `CreateProcessAsUserW` suspended, with an empty environment,
+  `DETACHED_PROCESS` and the handle list naming only the three pipe ends; joining the job; resuming.
+  The worker checks it is at Low integrity, without privileges and in a job
+  (`confine/windows.rs`) and refuses otherwise, so a launch that skipped a step runs nothing. The
+  labels (`windows/labels.rs`): `S:(ML;OICI;NWNR;;;ME)` on each folder, read first and set only when
+  missing; after setting, every file and folder in it is read back, and the first one without the
+  label fails the call, naming it. The outcome is recorded (`labels::status`), and the launcher
+  refuses to start a worker until the labels are in place. `imperium-core` labels the data folder,
+  the config folder and the working-folder root (when it is outside both) at start, on a
+  background thread, and again after `workspaces.move` (`crates/imperium-core/src/code_mode.rs`).
+- **Linux**: the cgroup v2 limit (`cgroup.rs`). Only when the daemon's cgroup is owned by its
+  (non-root) user and offers the memory controller, the first worker moves the daemon into
+  `<cgroup>/imperium-daemon` and enables `+memory` for the children; each worker then gets
+  `<cgroup>/imperium-script-<pid>` with `memory.max` at twice the budget and no swap, joined before
+  its program is sent. Anything that does not fit is skipped: it is an extra behind `RLIMIT_DATA`.
+- **macOS**: the optional resident-memory watchdog the 1a review suggested (`watchdog.rs`): every
+  50 ms it reads the worker's resident size (`proc_pidinfo`) and kills it past twice the budget;
+  the program ends as out of memory.
+- **Bundling**: `build-desktop.sh` builds `imperium-script-worker` and ships `imperium-script` as a
+  third `externalBin` sidecar; `package-cli.sh` puts it beside `imperium-core` in every CLI
+  archive. There is no server image yet (item 63), so nothing to add there.
+  `scripts/check-rust.sh` fails a normal build of the shipped crates that enables a code-mode
+  `test-support` feature.
+
+Tests (CI: `script-worker` on four OSes, and the workspace `rust` job on three). The interpreter,
+limits, process and protocol suites of 1a now run on Windows too, through the confined launch. On
+Windows, `tests/windows_confinement.rs` launches a probe confined and checks that it runs at Low
+integrity with no privileges and in a job, has an empty environment and an empty working folder
+labelled Low outside the labelled folders, cannot write the user's profile, cannot read a file
+labelled before or created after the labelling, cannot open the daemon's named pipe, cannot start
+a second process and does not hold an inheritable handle the test opened before the launch; and
+that the labels are set once and only read on a second start, and cover files created later in
+each of four folders and the atomic-write rename. `tests/windows_label_failure.rs` makes a file
+that cannot be relabelled and checks that the failure names it, that `labels::status` and the
+launcher report it, and that no worker starts. Every launch stage and each of the worker's own
+checks, forced to fail, gives `Unavailable` naming the stage and returns the slot. The `answer()`
+deadline clear has its test (`an_answer_is_not_bound_by_a_deadline_a_cancelled_wait_left_behind`:
+a stale deadline left by a test hook and a 4 MiB answer, which with the clear removed cannot be
+written in time). The `eval`/`exec` refusal, the fake runner, the handle table, the cgroup set-up
+(against a stand-in cgroup2 tree) and the watchdog (a test worker that allocates outside Monty, on
+macOS) have theirs.
+
+Measurements (A4; release build of the shipped worker without the type checker; the `MEASURE`
+lines of the `script-worker` job):
+
+| OS | Binary | Cold start (median, max) | Resident |
+| --- | --- | --- | --- |
+| Linux x86-64 | MEASURE_X86_SIZE | MEASURE_X86_START | MEASURE_X86_RSS |
+| Linux aarch64 | 14.1 MiB | 1.6 ms, 1.7 ms | 7.6 MiB |
+| macOS | MEASURE_MAC_SIZE | MEASURE_MAC_START | MEASURE_MAC_RSS |
+| Windows x86-64 | 12.7 MiB | 4.5 ms, 9.2 ms (the confined launch included) | not measured |
+
+**A4 now holds**: every binary is under 20 MB (40 to 43 MiB in 1a), and every median cold start is
+under 50 ms. **A3 holds**: the restricted Low token, the suspended launch, the job assignment and
+the pipes work for the CI runner's user, and the label is set and propagated on files the daemon
+owns.
+
+Findings that refute or change the plan (recorded for stages 4 and 6):
+
+- **The keyring is readable at Low (C9).** A Low worker's `CredReadW` of a generic Credential
+  Manager entry of the user succeeds. So Imperium's keyring secrets on Windows are part of the
+  accepted residual only while `harness.code_mode` is off by default: **the stage 6 default change
+  is blocked** until those secrets are out of a Low process's reach (the labelled encrypted store,
+  or an AppContainer worker), as C9 provides.
+- **A file moved in keeps its old descriptor.** A file created in a labelled folder, or written
+  beside and renamed over (the atomic-write pattern), carries the label; a file *moved* in from an
+  unlabelled folder on the same volume keeps the descriptor it had, has no label, and is readable
+  at Low. C1's claim that inheritance covers renamed files holds only for renames within the
+  labelled folders. Residual: anything Imperium moves into its folders from elsewhere, rather than
+  writing or copying it there, is readable by an escaped worker. Stage 4 checks the daemon's moves
+  into these folders (download staging, attachments, a `workspaces.move` by rename, whose new root
+  is labelled again), or the daemon re-verifies the labels before a worker starts.
+- **The worker must have no console.** With `CREATE_NO_WINDOW` the worker died in initialisation
+  (`STATUS_DLL_INIT_FAILED`): a console needs a `conhost` process, which the job's one-process
+  limit refuses. It is launched `DETACHED_PROCESS`; its standard handles are the pipes.
+- **Three handles are inherited on Windows, not two**: stdin, stdout and stderr (the driver reads
+  the worker's stderr for failure reasons), as C1's "Everywhere" bullet says; nothing else.
+- **Network on Windows**: the probe's loopback `connect` failed (`WSAStartup`, error 10106) under
+  the empty environment and the Low token. That is incidental, not a guarantee; the network stays
+  in C9's accepted residual.
+- **No per-environment labelling step**: the label on the working-folder root is inherited by every
+  environment folder made later, so "applied when a new environment is added" needs no code.
+- **The inheritable handles' window**: the three child pipe ends are inheritable from their
+  creation until the launch returns (milliseconds); a process the daemon starts in that window
+  without a handle list (a `run_command`) could inherit them. They are useless without the matching
+  server ends, and stage 4 reviews it.
 
 ## Stage 2: The tool, the driver and dispatch
 
