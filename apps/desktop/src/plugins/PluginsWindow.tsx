@@ -113,10 +113,14 @@ export function PluginsWindow({
   const reloadAfter = async (value: Scope = scope) => {
     const token = generation.current;
     try {
-      const [list, data, held] = await Promise.all([api!.installed(scopeEnv(value)), reload(api!), api!.withheldSkills().catch(() => [] as SkillInfo[])]);
+      const [list, data] = await Promise.all([api!.installed(scopeEnv(value)), reload(api!)]);
       if (generation.current !== token) return;
       setInstalled(list);
-      setSkills(held);
+      // The skills awaiting approval load on their own, so a slow listing never holds up the rest.
+      void api!.withheldSkills().then(
+        (held) => generation.current === token && setSkills(held),
+        () => undefined,
+      );
       applyReloaded(data);
     } catch (failure) {
       if (generation.current === token) setError(message(failure));
