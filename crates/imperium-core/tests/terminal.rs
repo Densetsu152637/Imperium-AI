@@ -79,6 +79,9 @@ fn main() {
         .with_writer(|| Capture)
         .init();
     let all: &[(&str, Test)] = tests![
+        // First: the OS sandbox refuses to start while a daemon folder registered by an earlier
+        // test's daemon (its home, deleted with it) is missing, and the list is process-wide.
+        protocol::a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_device,
         a_terminal_starts_in_the_workspace_root_with_the_default_shell,
         the_daemon_executable_itself_runs_the_supervisor,
         the_fifth_in_a_session_and_the_seventeenth_in_the_daemon_are_refused,
@@ -100,7 +103,6 @@ fn main() {
         protocol::a_lagging_connection_is_told_and_reattaches,
         protocol::opening_while_archiving_or_stopping_leaves_nothing,
         protocol::a_real_child_with_the_spawn_mark_is_refused,
-        protocol::a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_device,
         protocol::no_command_inherits_a_terminal_while_terminals_open,
         protocol::a_token_holder_cannot_change_the_terminal_settings,
         protocol::a_server_refuses_every_terminal,
