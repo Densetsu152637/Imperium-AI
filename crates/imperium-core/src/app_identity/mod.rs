@@ -1041,61 +1041,90 @@ mod tests {
         ] {
             assert!(!crate::plugin_install::mentions_dot_git(text), "{text}");
         }
+        use crate::plugin_install::{DotGitUse, dot_git_use};
+        for text in ["true", "sh x/.github/h"] {
+            assert_eq!(dot_git_use(text), DotGitUse::None, "{text}");
+        }
+        for text in [
+            "sh .git/hooks/pre-commit",
+            "sh ${CLAUDE_PLUGIN_ROOT}/.git/hooks/h.sh",
+            "cat .git/config",
+            "sh .git/info/x.sh",
+            r"C:\x\.git\hooks\h.bat",
+            "sh .git/hooks/a; sh .git/config",
+        ] {
+            assert_eq!(dot_git_use(text), DotGitUse::Safe, "{text}");
+        }
+        for text in [
+            "cd .git",
+            "GIT_DIR=.git",
+            "--git-dir=.git",
+            "sh .git",
+            "sh x/.git/",
+            "sh .git/refs/x",
+            "sh .git/HEAD",
+            "sh .git/objects/ab/cd",
+            "sh .git/hooks/$X",
+            "sh .git/hooks/*",
+            "sh .git/hooks/../refs/x",
+            "sh .git/info/x.lock",
+            "python .git/x.lock",
+            "sh .git/config/x",
+            "sh .git/hooks/a; sh .git/refs/x",
+        ] {
+            assert_eq!(dot_git_use(text), DotGitUse::Any, "{text}");
+        }
         let home = home();
         let state = state_of(&home);
-        // Without a mention, the top-level `.git` is not content: a change there keeps the hash.
-        std::fs::create_dir_all(home.folder.join(".git")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "one").unwrap();
-        let first = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "two").unwrap();
-        let second = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert_eq!(first.sha256, second.sha256);
-        // A hook that runs a path under `.git` makes it content: a change there changes the hash,
-        // so the approval no longer holds.
-        std::fs::write(
-            home.folder.join("hooks/hooks.json"),
-            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"sh ${CLAUDE_PLUGIN_ROOT}/.git/h.sh"}]}]}}"#,
-        )
-        .unwrap();
-        let third = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        std::fs::write(home.folder.join(".git/h.sh"), "three").unwrap();
-        let fourth = crate::plugin_install::inspect_folder(&state, &folder_params("p")).unwrap();
-        assert_ne!(third.sha256, fourth.sha256);
-        assert_ne!(third.sha256, second.sha256);
-        // What git rewrites in normal use stays out of the hash even then: a fetch, a commit.
         let hash = || {
             crate::plugin_install::inspect_folder(&state, &folder_params("p"))
                 .unwrap()
                 .sha256
         };
+        // Every edit writes a file of a new length, so a cached hash is never reused by mistake.
+        let size = std::cell::Cell::new(0usize);
+        let edit = |relative: &str| {
+            let path = home.folder.join(".git").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            size.set(size.get() + 1);
+            std::fs::write(path, "x".repeat(size.get())).unwrap();
+        };
+        let hook = |command: &str| {
+            let hooks = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": command}
+            ]}]}});
+            std::fs::write(home.folder.join("hooks/hooks.json"), hooks.to_string()).unwrap();
+        };
+        // Without a mention, the top-level `.git` is not content.
+        edit("h.sh");
+        let first = hash();
+        edit("h.sh");
+        assert_eq!(hash(), first);
+        // A hook that runs only a file git never rewrites (`hooks/**`, `config`, `info/**`): those
+        // files are content, but what git rewrites in normal use (a fetch, a commit) is not.
+        hook("sh ${CLAUDE_PLUGIN_ROOT}/.git/hooks/pre-commit");
         let before = hash();
-        let object = format!("{}/{}", "ab", "c".repeat(38));
-        let pack = format!("pack-{}.pack", "d".repeat(40));
-        for (relative, text) in [
-            ("FETCH_HEAD", "x"),
-            ("index", "x"),
-            ("HEAD", "ref: refs/heads/main"),
-            ("refs/heads/main", "1"),
-            ("logs/HEAD", "1"),
-            ("packed-refs", "1"),
-            ("index.lock", "1"),
-            ("refs/heads/main.lock", "1"),
-            ("gc.log", "1"),
-            ("objects/info/packs", "1"),
+        let object = format!("objects/ab/{}", "c".repeat(38));
+        let pack = format!("objects/pack/pack-{}.pack", "d".repeat(40));
+        for relative in [
+            "FETCH_HEAD",
+            "index",
+            "HEAD",
+            "refs/heads/main",
+            "logs/HEAD",
+            "packed-refs",
+            "index.lock",
+            "refs/heads/main.lock",
+            "gc.log",
+            "objects/info/packs",
+            object.as_str(),
+            pack.as_str(),
         ] {
-            let path = home.folder.join(".git").join(relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        }
-        for relative in [format!("objects/{object}"), format!("objects/pack/{pack}")] {
-            let path = home.folder.join(".git").join(relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, "x").unwrap();
+            edit(relative);
         }
         assert_eq!(hash(), before);
-        // Anything else under `.git` is content: hooks, config, an unexpected name or object path.
         for relative in [
-            "hooks/x",
+            "hooks/pre-commit",
             "hooks/x.lock",
             "config",
             "info/exclude",
@@ -1104,14 +1133,31 @@ mod tests {
             "objects/pack/pack-short.pack",
             "refs.sh",
         ] {
-            let path = home.folder.join(".git").join(relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let last = hash();
-            std::fs::write(&path, "one").unwrap();
+            edit(relative);
             let added = hash();
             assert_ne!(added, last, "{relative}");
-            std::fs::write(&path, "twotwo").unwrap();
+            edit(relative);
             assert_ne!(hash(), added, "{relative}");
+        }
+        // Any other use of `.git` (a bare `.git`, a variable, refs, a lock file) covers all of it:
+        // the files named can run, and git's own files can hold what they run.
+        for (command, file) in [
+            ("sh .git/refs/x", "refs/x"),
+            ("GIT_DIR=.git sh h", "FETCH_HEAD"),
+            ("cd .git;sh refs/x", "refs/x"),
+            ("sh ${CLAUDE_PLUGIN_ROOT}/.git/$X", "index"),
+            ("python .git/x.lock", "x.lock"),
+            ("sh .git/objects/info/run.sh", "objects/info/run.sh"),
+            ("sh .git/packed-refs", "packed-refs"),
+        ] {
+            hook(command);
+            let last = hash();
+            edit(file);
+            let added = hash();
+            assert_ne!(added, last, "{command}");
+            edit(file);
+            assert_ne!(hash(), added, "{command}");
         }
     }
 

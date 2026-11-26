@@ -195,14 +195,20 @@ folder's own top-level `.git` folder, which the content hash leaves out unless a
 command of the plugin mentions a `.git` path (`.git/h.sh`, `GIT_DIR=.git`, `--git-dir=.git`,
 `cd .git;sh h`), or a server's launch environment value or working folder does
 (`NODE_OPTIONS=--require ./.git/x.js`): then `.git` is hashed too, so changing what runs from it
-voids the approval. Even then the files git rewrites in normal use stay out (the index, `HEAD`,
-`FETCH_HEAD`, `ORIG_HEAD`, `AUTO_MERGE`, `packed-refs`, `gc.log`, `logs/**`, `refs/**`, `*.lock`,
-loose objects, pack files by their strict names, `objects/info/*`), so a fetch or a commit does
-not void it; `hooks/**`, `config`, `info/**`, `description` and any unexpected name are hashed. The
-approval covers files that run directly, not data a hashed program reads: `git show HEAD:payload |
+voids the approval. How much of `.git` is hashed depends on the mention. If every mention names a
+file git does not rewrite itself (`.git/hooks/...`, `.git/config`, `.git/info/...` other than a
+`.lock`), the files git rewrites in normal use stay out (the index, `HEAD`, `FETCH_HEAD`,
+`ORIG_HEAD`, `AUTO_MERGE`, `packed-refs`, `gc.log`, `logs/**`, `refs/**`, `*.lock`, loose objects,
+pack files by their strict names, `objects/info/*`), so a fetch or a commit does not void the
+approval; `hooks/**`, `config`, `info/**`, `description` and any unexpected name are hashed. Any
+other mention (a bare `.git`, `cd` or `GIT_DIR` or `--git-dir` or a working folder of `.git`, a
+variable or glob after it, a path into `refs/`, `logs/`, `objects/`, `HEAD`, `FETCH_HEAD`,
+`packed-refs` or `index`, or any `.lock`) hashes every file of `.git` with no exclusion, because
+git's own files can then run or hold what runs (a ref name a remote chose, an object with chosen
+bytes). The approval covers files that run directly, not data a hashed program reads: `git show HEAD:payload |
 sh` runs whatever the repository's history holds, and a change to that history does not void the
-approval. The challenge and the approval name the folder the same way: a name that is exactly an entry of
-`<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
+approval. The challenge and the approval name the folder the same way: a name that is exactly an
+entry of `<config>/plugins` is that folder (byte for byte, never trimmed or case-folded, never a link), and
 another name is looked up as a plugin name or id; the hash and digest must still match. The content
 hash refuses a folder that holds a link anywhere (a link is never followed), and opens each file
 with the operating system's no-follow flag (`O_NOFOLLOW` on Unix), which guards the last part of the
