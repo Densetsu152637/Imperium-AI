@@ -492,7 +492,13 @@ impl ScriptRun {
                 }
             },
         };
-        if let Some(reason) = reason {
+        if let Some(mut reason) = reason {
+            // A worker that exited by itself says how; anything else is killed first.
+            if reason.contains("exited")
+                && let Ok(Some(exit)) = timeout(Duration::from_secs(2), self.process.wait()).await
+            {
+                reason = format!("{reason} ({})", exit.text);
+            }
             self.kill_and_wait().await;
             let stderr = self.stderr_snapshot().await;
             let reason = if stderr.is_empty() {
