@@ -1000,9 +1000,10 @@ the docs it changes. Every CI test of a cap uses the bounded probes of goal 9.
       leader is reaped (the fallback and macOS check the group id instead).
     - About 4,300 lines rather than 800: half is the tests and probes the acceptance list asks
       for and #328's moved code with its tests.
-  - **A neighbouring flake fixed.** `imperium-pty`'s fork-bomb test set `ulimit -u` from the
-    user's process count, but `RLIMIT_NPROC` counts threads, so a runner whose user ran a few
-    hundred threads left the bomb too few slots to spread; it now counts threads (`ps -L`).
+  - **A neighbouring flake.** `imperium-pty`'s fork-bomb test set `ulimit -u` from the user's
+    process count, but `RLIMIT_NPROC` counts threads. This change counted threads (`ps -L`);
+    #342 then rewrote the test (bash, a task count, a refusal to start without the cap) and its
+    version is the one kept.
 
 ### Stage 2: the daemon's cgroup, the settings and a capped launcher for scripts
 
