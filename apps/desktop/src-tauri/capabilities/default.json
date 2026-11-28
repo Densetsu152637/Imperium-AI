@@ -25,6 +25,8 @@
     "allow-update-switch-install",
     "allow-plugin-approve",
     "allow-auto-merge-enable",
+    "allow-browser-control",
+    "allow-browser-act",
     "core:default",
     "dialog:allow-open",
     "notification:default",

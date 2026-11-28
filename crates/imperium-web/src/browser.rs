@@ -1,33 +1,35 @@
 //! A browser agents drive over the Chrome DevTools Protocol: Chrome, Chromium, or Edge,
 //! started with its own profile under Imperium's data folder (never the user's), visible or
 //! headless. After each action a screenshot is taken so the desktop app can mirror the page.
+//!
+//! The debugger is reached only through the pipe the browser inherits (`--remote-debugging-pipe`,
+//! [`crate::launch`]): the browser opens no TCP port, so no other process on the machine can
+//! attach to the signed-in profile and read its cookies. Everything goes over that one
+//! browser-level connection: tabs are listed, opened and closed with `Target.*` commands, and the
+//! active tab is driven through a session of its own on it (`Target.attachToTarget` with
+//! `flatten`).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
 use imperium_protocol::methods::BrowserAction;
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::cdp::Pipe;
+use crate::launch::{self, Process};
 use crate::tabs::{self, Listed, TabRec};
-
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// From starting the browser to having a page to drive. The wait polls the debugger and ends
 /// as soon as a page is listed (or the browser exits), so this is only a ceiling. A browser's
 /// first start on a CI runner is cold (profile, disk cache, component registration) and took
 /// more than 30 seconds once on Ubuntu, where the warm-up alone is allowed 90.
 const START_TIMEOUT: Duration = Duration::from_secs(90);
-/// Longest one request to the browser's debugger may take.
+/// Longest one quick request to the browser's debugger (listing or closing tabs) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
-/// Longest the browser may take to answer its first request. Chrome holds that request back
+/// Longest the browser may take to answer its first page load. Chrome holds that request back
 /// until its own start-up work (a fresh profile registers dozens of components first) has
 /// finished, which took 10 to 45 seconds on a Windows CI runner; it is waited out once, in
 /// `launch`, so no later page load pays for it.
@@ -44,7 +46,7 @@ pub const MAX_TABS: usize = 8;
 const DOWNLOAD_POLL: Duration = Duration::from_millis(150);
 /// Downloads remembered so the agent can save one without naming its URL.
 const MAX_PENDING_DOWNLOADS: usize = 10;
-/// The most time, and the most events, one look at the download connection may take.
+/// The most time, and the most messages, one look for downloads may take.
 const DOWNLOAD_READ_LIMIT: Duration = Duration::from_secs(1);
 const DOWNLOAD_EVENTS: usize = 200;
 
@@ -79,19 +81,127 @@ pub struct PendingDownload {
     pub filename: String,
 }
 
-pub struct Browser {
+/// The browser's one debugger connection, over its pipe.
+struct Cdp {
+    pipe: Pipe,
+    next_id: u64,
     log_path: PathBuf,
-    _process: Option<Child>,
-    /// The debugger connection of the active tab.
-    socket: Socket,
-    next_id: AtomicU64,
+    /// `Browser.downloadWillBegin` events read while waiting for an answer, oldest first.
+    downloads: Vec<Value>,
+    /// The browser closed the pipe: nothing it is asked is answered any more, and it can no
+    /// longer be held to refusing downloads.
+    closed: bool,
+}
+
+impl Cdp {
+    fn new(pipe: Pipe, log_path: PathBuf) -> Self {
+        Cdp {
+            pipe,
+            next_id: 1,
+            log_path,
+            downloads: Vec::new(),
+            closed: false,
+        }
+    }
+
+    /// Sends a CDP command, to the page `session` names or to the browser itself, and waits for
+    /// its result; gives up when the browser is silent for `limit`. Messages in between are
+    /// events: the downloads among them are kept for [`Browser::notices`].
+    async fn call(
+        &mut self,
+        limit: Duration,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut message = json!({"id": id, "method": method, "params": params});
+        if let Some(session) = session {
+            message["sessionId"] = json!(session);
+        }
+        if let Err(error) = self.pipe.send(&message) {
+            self.closed = true;
+            return Err(error);
+        }
+        loop {
+            let frame = match tokio::time::timeout(limit, self.pipe.next()).await {
+                Err(_) => {
+                    return Err(format!(
+                        "{method} timed out; browser output: {}",
+                        log_tail(&self.log_path)
+                    ));
+                }
+                Ok(None) => {
+                    self.closed = true;
+                    return Err("the browser closed".into());
+                }
+                Ok(Some(frame)) => frame,
+            };
+            let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
+                continue;
+            };
+            if value["id"].as_u64() != Some(id) {
+                self.note(&value);
+                continue;
+            }
+            if let Some(error) = value.get("error") {
+                return Err(format!(
+                    "{method}: {}",
+                    error["message"].as_str().unwrap_or("failed")
+                ));
+            }
+            return Ok(value["result"].clone());
+        }
+    }
+
+    /// Keeps a download the browser reported (and refused); other events are not needed.
+    fn note(&mut self, message: &Value) {
+        if message["method"] == "Browser.downloadWillBegin" {
+            self.downloads.push(message["params"].clone());
+            if self.downloads.len() > DOWNLOAD_EVENTS {
+                self.downloads.remove(0);
+            }
+        }
+    }
+
+    /// Reads what the browser sent unasked, for at most `DOWNLOAD_READ_LIMIT` in all and
+    /// `DOWNLOAD_EVENTS` messages, so a page that floods the connection cannot hold a call up;
+    /// it stops as soon as the browser is quiet for `DOWNLOAD_POLL`.
+    async fn drain(&mut self) {
+        let deadline = Instant::now() + DOWNLOAD_READ_LIMIT;
+        let mut read = 0;
+        while read < DOWNLOAD_EVENTS && !self.closed {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(DOWNLOAD_POLL.min(left), self.pipe.next()).await {
+                Err(_) => break,
+                Ok(None) => {
+                    tracing::warn!("the browser's debugging pipe closed");
+                    self.closed = true;
+                }
+                Ok(Some(frame)) => {
+                    read += 1;
+                    if let Ok(value) = serde_json::from_slice::<Value>(&frame) {
+                        self.note(&value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct Browser {
+    _process: Option<Process>,
+    cdp: Cdp,
+    /// The debugger session of the active tab, on the browser's connection.
+    session: String,
     /// Whether the start-up warm-up opened its throwaway page. False when the browser would
     /// not open one (the first navigation then pays for the start-up work, as it used to).
     warmed: bool,
-    /// The debugging port, on loopback.
-    port: u16,
-    http: reqwest::Client,
-    /// Open tabs in the order they were opened; `socket` talks to the one labelled `active`.
+    /// Open tabs in the order they were opened; `session` talks to the one labelled `active`.
     tabs: Vec<TabRec>,
     active: u32,
     next_tab: u32,
@@ -101,11 +211,6 @@ pub struct Browser {
     ignored: Vec<String>,
     /// The last URL the browser listed for each open tab (by label), for the approval rules.
     tab_urls: Vec<(u32, String)>,
-    /// The browser-level connection that reports downloads (and refuses them).
-    downloads: Option<Socket>,
-    /// The connection that refuses downloads closed or failed: the browser may save files
-    /// by itself now, so it must not be used any more.
-    refusal_lost: bool,
     pending_downloads: Vec<PendingDownload>,
 }
 
@@ -153,6 +258,27 @@ pub fn find_browser() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// What the browser is started with: the debugger on its pipe, never a port; its own profile;
+/// and WebRTC kept off the network except through a proxy, so a page cannot send UDP straight
+/// out to probe the local network or learn the machine's local addresses.
+fn launch_args(profile_dir: &Path, headless: bool) -> Vec<OsString> {
+    let mut user_data_dir = OsString::from("--user-data-dir=");
+    user_data_dir.push(profile_dir.as_os_str());
+    let mut args: Vec<OsString> = vec![
+        "--remote-debugging-pipe".into(),
+        user_data_dir,
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        "--window-size=1280,900".into(),
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
+    ];
+    if headless {
+        args.push("--headless=new".into());
+    }
+    args.push("about:blank".into());
+    args
+}
+
 impl Browser {
     /// Starts `program` with a profile in `profile_dir` and connects to its first page.
     pub async fn launch(
@@ -167,45 +293,18 @@ impl Browser {
             tracing::warn!(%error, "could not point the browser's downloads at an empty folder");
         }
         let log_path = profile_dir.join("imperium-browser.log");
-        let mut command = Command::new(program);
-        let deadline = Instant::now() + START_TIMEOUT;
-        // We choose the port ourselves and poll the debugger over HTTP: the port file the
-        // browser writes for `--remote-debugging-port=0` is not reliably written on CI runners.
-        let port = free_port()?;
         let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
-        command
-            .arg(format!("--remote-debugging-port={port}"))
-            .arg("--remote-debugging-address=127.0.0.1")
-            .arg(format!("--user-data-dir={}", profile_dir.display()))
-            .args([
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--window-size=1280,900",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(
-                log.try_clone().map_err(|error| error.to_string())?,
-            ))
-            .stderr(Stdio::from(log))
-            .kill_on_drop(true);
-        if headless {
-            command.arg("--headless=new");
-        }
-        command.arg("about:blank");
-        let mut process = command
-            .spawn()
+        let deadline = Instant::now() + START_TIMEOUT;
+        let (mut process, pipe) = launch::spawn(program, &launch_args(profile_dir, headless), log)
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-        let waited = wait_for_page(port, profile_dir, deadline, || {
-            matches!(process.try_wait(), Ok(Some(_)))
-        })
-        .await;
-        let socket_url = match waited {
-            Ok(url) => url,
+        let mut cdp = Cdp::new(pipe, log_path.clone());
+        let waited = wait_for_page(&mut cdp, deadline, || process.exited().is_some()).await;
+        let target = match waited {
+            Ok(target) => target,
             Err(reason) => {
-                let status = match process.try_wait() {
-                    Ok(Some(status)) => format!("the browser exited ({status})"),
-                    Ok(None) => "the browser was still running".to_string(),
-                    Err(error) => format!("the browser state is unknown ({error})"),
+                let status = match process.exited() {
+                    Some(status) => format!("the browser exited ({status})"),
+                    None => "the browser was still running".to_string(),
                 };
                 return Err(format!(
                     "{}; {status}; output: {}",
@@ -214,57 +313,40 @@ impl Browser {
                 ));
             }
         };
-        let (socket, _) = tokio_tungstenite::connect_async(socket_url.as_str())
-            .await
-            .map_err(|error| {
-                format!(
-                    "could not connect to the browser: {}",
-                    redact(&error.to_string())
-                )
-            })?;
-        let target = socket_url
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let mut browser = Browser::assemble(log_path, Some(process), socket, port, target);
-        browser.call("Page.enable", json!({})).await?;
-        browser.warm_up(port).await?;
+        let mut browser = Browser::assemble(cdp, Some(process), target);
+        // The browser may still be starting: its first answers get what is left of the start.
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .max(LOAD_TIMEOUT);
+        browser.attach_within(1, left, false).await?;
+        browser.warm_up().await?;
         // After the warm-up, so the browser has finished starting. Failing to refuse downloads
         // fails the start: a browser that might save files by itself is not offered.
         browser.refuse_downloads().await?;
         Ok(browser)
     }
 
-    /// A browser whose one tab, `target`, `socket` is connected to.
-    fn assemble(
-        log_path: PathBuf,
-        process: Option<Child>,
-        socket: Socket,
-        port: u16,
-        target: String,
-    ) -> Self {
+    /// A browser whose one tab is `target`, not yet attached to.
+    fn assemble(cdp: Cdp, process: Option<Process>, target: String) -> Self {
         Browser {
-            log_path,
             _process: process,
-            socket,
-            next_id: AtomicU64::new(1),
+            cdp,
+            session: String::new(),
             warmed: false,
-            port,
-            http: reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .unwrap_or_default(),
             tabs: vec![TabRec { label: 1, target }],
             active: 1,
             next_tab: 2,
             opened_by_pages: Vec::new(),
             ignored: Vec::new(),
             tab_urls: Vec::new(),
-            downloads: None,
-            refusal_lost: false,
             pending_downloads: Vec::new(),
         }
+    }
+
+    /// The browser's process id, for the test that it listens on no port.
+    #[cfg(test)]
+    fn process_id(&self) -> Option<u32> {
+        self._process.as_ref().and_then(Process::id)
     }
 
     /// Whether the start-up warm-up ran: the browser opened its throwaway page.
@@ -272,23 +354,23 @@ impl Browser {
         self.warmed
     }
 
-    /// Waits until the browser answers a first request, for at most `WARM_UP_TIMEOUT` in all.
-    /// A throwaway page loads the browser's own debugging page (nothing leaves the machine);
-    /// that request is held back by Chrome's start-up work in the same way as the first page
-    /// load, so doing it here, with a long limit, keeps that wait out of the first real
-    /// `Page.navigate`, whose limit is short. The page being driven is not touched, so its
-    /// history never holds the debugging page.
-    async fn warm_up(&mut self, port: u16) -> Result<(), String> {
-        self.warm_up_within(port, WARM_UP_TIMEOUT).await
+    /// Waits until the browser answers a first page load, for at most `WARM_UP_TIMEOUT` in
+    /// all. A throwaway page loads an empty page the daemon serves on loopback for the moment
+    /// (nothing leaves the machine); that load is held back by Chrome's start-up work in the
+    /// same way as the first real one, so doing it here, with a long limit, keeps that wait out
+    /// of the first real `Page.navigate`, whose limit is short. The page being driven is not
+    /// touched, so its history never holds the throwaway page.
+    async fn warm_up(&mut self) -> Result<(), String> {
+        self.warm_up_within(WARM_UP_TIMEOUT).await
     }
 
     /// `warm_up` with its limit chosen. The limit is on the whole wait; events the browser
     /// sends meanwhile do not extend it. Only a timeout or a closed browser fails the wait: any
     /// other answer (a navigation refused, a page replaced by another) means the request ended.
-    async fn warm_up_within(&mut self, port: u16, limit: Duration) -> Result<(), String> {
+    async fn warm_up_within(&mut self, limit: Duration) -> Result<(), String> {
         let started = Instant::now();
         let outcome = tokio::time::timeout(limit, async {
-            let opened = Self::warm_up_navigations(port, limit, self.log_path.clone()).await?;
+            let opened = self.warm_up_navigations(limit).await?;
             self.warmed = opened.is_some();
             if let Some(throwaway) = opened {
                 // The browser can keep listing it for a while; it is never a tab of ours.
@@ -318,7 +400,7 @@ impl Browser {
                 );
                 Err(format!(
                     "the browser did not finish starting within {limit:?}; browser output: {}",
-                    log_tail(&self.log_path)
+                    log_tail(&self.cdp.log_path)
                 ))
             }
         }
@@ -338,56 +420,72 @@ impl Browser {
         }
     }
 
-    /// Opens, loads and closes the throwaway page; its target id when it was opened.
-    async fn warm_up_navigations(
-        port: u16,
-        limit: Duration,
-        log_path: PathBuf,
-    ) -> Result<Option<String>, String> {
-        let base = format!("http://127.0.0.1:{port}");
-        let client = reqwest::Client::new();
-        let created = match client
-            .put(format!("{base}/json/new?about:blank"))
-            .send()
-            .await
+    /// Serves an empty page on loopback for the throwaway page, opens, loads and closes that
+    /// page, and stops serving; the throwaway's target id when it was opened.
+    async fn warm_up_navigations(&mut self, limit: Duration) -> Result<Option<String>, String> {
+        let listener = match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
         {
-            Ok(response) => response
-                .json::<Value>()
-                .await
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        };
-        // Without a throwaway page there is nothing to wait on; the first navigation then
-        // pays, as it did before.
-        let target = match created {
-            Ok(target) => target,
+            Ok(listener) => listener,
             Err(error) => {
-                tracing::warn!(%error, "could not open a page to warm the browser up");
+                tracing::warn!(%error, "could not serve a page to warm the browser up");
                 return Ok(None);
             }
         };
-        let Some(id) = target["id"].as_str().map(str::to_string) else {
+        let url = match listener.local_addr() {
+            Ok(address) => format!("http://{address}/"),
+            Err(error) => {
+                tracing::warn!(%error, "could not serve a page to warm the browser up");
+                return Ok(None);
+            }
+        };
+        // Stopped however this ends, a warm-up cut off by its time limit included: the guard
+        // goes with this future, and the page is served only for the moment of the warm-up.
+        let _server = AbortOnDrop(tokio::spawn(serve_blank(listener)));
+        self.throwaway(&url, limit).await
+    }
+
+    /// Opens a throwaway page, loads `url` in it and closes it again.
+    async fn throwaway(&mut self, url: &str, limit: Duration) -> Result<Option<String>, String> {
+        let created = match self
+            .cdp
+            .call(
+                limit,
+                None,
+                "Target.createTarget",
+                json!({"url": "about:blank"}),
+            )
+            .await
+        {
+            Ok(created) => created,
+            // Without a throwaway page there is nothing to wait on; the first navigation then
+            // pays, as it did before.
+            Err(error) if error.starts_with("Target.createTarget: ") => {
+                tracing::warn!(%error, "could not open a page to warm the browser up");
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(id) = created["targetId"]
+            .as_str()
+            .filter(|id| tabs::is_target_id(id))
+            .map(str::to_string)
+        else {
             tracing::warn!("the browser opened a page without an id");
             return Ok(None);
         };
-        let outcome = match page_socket(&json!([target]), port) {
-            Ok(Some(socket_url)) => {
-                Self::navigate_throwaway(&socket_url, &base, limit, log_path).await
-            }
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
-        };
+        let outcome = self.navigate_throwaway(&id, url, limit).await;
         // Close it whatever happened (failing to is harmless) and wait until it is gone.
-        let _ = client.get(format!("{base}/json/close/{id}")).send().await;
+        self.close_target(&id).await;
         for _ in 0..30 {
-            let listed = match client.get(format!("{base}/json/list")).send().await {
-                Ok(response) => response.json::<Value>().await.ok(),
-                Err(_) => None,
-            };
-            let present = listed
-                .as_ref()
-                .and_then(Value::as_array)
-                .is_some_and(|targets| targets.iter().any(|target| target["id"] == id.as_str()));
+            let present = self
+                .cdp
+                .call(REQUEST_TIMEOUT, None, "Target.getTargets", json!({}))
+                .await
+                .is_ok_and(|reply| {
+                    tabs::listed(&reply["targetInfos"])
+                        .iter()
+                        .any(|target| target.id == id)
+                });
             if !present {
                 break;
             }
@@ -397,18 +495,34 @@ impl Browser {
     }
 
     async fn navigate_throwaway(
-        socket_url: &str,
-        base: &str,
+        &mut self,
+        id: &str,
+        url: &str,
         limit: Duration,
-        log_path: PathBuf,
     ) -> Result<(), String> {
-        let (socket, _) = tokio_tungstenite::connect_async(socket_url)
+        let attached = match self
+            .cdp
+            .call(
+                limit,
+                None,
+                "Target.attachToTarget",
+                json!({"targetId": id, "flatten": true}),
+            )
             .await
-            .map_err(|error| format!("could not connect to the browser: {error}"))?;
-        let mut page = Browser::assemble(log_path, None, socket, 0, String::new());
-        let url = format!("{base}/json/version");
-        match page
-            .call_within(limit, "Page.navigate", json!({"url": url}))
+        {
+            Ok(attached) => attached,
+            Err(error) if error.starts_with("Target.attachToTarget: ") => {
+                tracing::debug!(%error, "the browser refused to attach to the warm-up page");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(session) = attached["sessionId"].as_str() else {
+            return Ok(());
+        };
+        match self
+            .cdp
+            .call(limit, Some(session), "Page.navigate", json!({"url": url}))
             .await
         {
             Err(error) if !error.starts_with("Page.navigate: ") => Err(error),
@@ -420,7 +534,8 @@ impl Browser {
         }
     }
 
-    /// Sends a CDP command and waits for its result, skipping events in between.
+    /// Sends a CDP command to the active tab and waits for its result, skipping events in
+    /// between.
     async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.call_within(LOAD_TIMEOUT, method, params).await
     }
@@ -432,8 +547,9 @@ impl Browser {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        cdp_call(&mut self.socket, &self.log_path, id, limit, method, params).await
+        self.cdp
+            .call(limit, Some(self.session.as_str()), method, params)
+            .await
     }
 
     /// Evaluates a JavaScript expression and returns its value.
@@ -531,17 +647,12 @@ impl Browser {
     // ---- Tabs ----
 
     /// The page targets the browser lists, in its order.
-    async fn list_targets(&self) -> Result<Vec<Listed>, String> {
-        let pages: Value = self
-            .http
-            .get(format!("http://127.0.0.1:{}/json/list", self.port))
-            .send()
-            .await
-            .map_err(|error| redact(&error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| redact(&error.to_string()))?;
-        let mut listed = tabs::listed(&pages);
+    async fn list_targets(&mut self) -> Result<Vec<Listed>, String> {
+        let reply = self
+            .cdp
+            .call(REQUEST_TIMEOUT, None, "Target.getTargets", json!({}))
+            .await?;
+        let mut listed = tabs::listed(&reply["targetInfos"]);
         listed.retain(|tab| !self.ignored.contains(&tab.id));
         Ok(listed)
     }
@@ -650,21 +761,16 @@ impl Browser {
                 "{MAX_TABS} tabs are open, the most allowed; close one first"
             ));
         }
-        let target: Value = self
-            .http
-            .put(format!(
-                "http://127.0.0.1:{}/json/new?about:blank",
-                self.port
-            ))
-            .send()
-            .await
-            .map_err(|error| redact(&error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| redact(&error.to_string()))?;
-        page_socket(&json!([target]), self.port)?
-            .ok_or_else(|| "the browser opened a tab without a page to drive".to_string())?;
-        let id = target["id"]
+        let created = self
+            .cdp
+            .call(
+                LOAD_TIMEOUT,
+                None,
+                "Target.createTarget",
+                json!({"url": "about:blank"}),
+            )
+            .await?;
+        let id = created["targetId"]
             .as_str()
             .filter(|id| tabs::is_target_id(id))
             .ok_or("the browser opened a tab without a usable id")?
@@ -676,28 +782,59 @@ impl Browser {
         Ok(label)
     }
 
-    /// Connects to a tab and makes it the active one.
+    /// Attaches to a tab and makes it the active one.
     async fn attach(&mut self, label: u32) -> Result<(), String> {
+        self.attach_within(label, LOAD_TIMEOUT, true).await
+    }
+
+    /// `attach`, with `limit` for each answer, bringing the tab to the front with `front`.
+    async fn attach_within(
+        &mut self,
+        label: u32,
+        limit: Duration,
+        front: bool,
+    ) -> Result<(), String> {
         let target = self
             .tabs
             .iter()
             .find(|tab| tab.label == label)
             .map(|tab| tab.target.clone())
             .ok_or("that tab is not open")?;
-        let url = format!("ws://127.0.0.1:{}/devtools/page/{target}", self.port);
-        let (socket, _) = tokio_tungstenite::connect_async(url.as_str())
+        let attached = self
+            .cdp
+            .call(
+                limit,
+                None,
+                "Target.attachToTarget",
+                json!({"targetId": target, "flatten": true}),
+            )
             .await
-            .map_err(|error| {
-                format!(
-                    "could not connect to the tab: {}",
-                    redact(&error.to_string())
-                )
-            })?;
-        self.socket = socket;
+            .map_err(|error| format!("could not connect to the tab: {error}"))?;
+        let session = attached["sessionId"]
+            .as_str()
+            .filter(|session| !session.is_empty())
+            .ok_or("the browser attached to the tab without a session")?
+            .to_string();
+        let previous = std::mem::replace(&mut self.session, session);
         self.active = label;
-        self.call("Page.enable", json!({})).await?;
-        // A tab in the background draws no frames, so a screenshot of it would wait forever.
-        self.bring_to_front(Duration::from_secs(5)).await
+        if !previous.is_empty() && previous != self.session {
+            // Its events are of no use any more; a tab already closed has no session to end.
+            let _ = self
+                .cdp
+                .call(
+                    REQUEST_TIMEOUT,
+                    None,
+                    "Target.detachFromTarget",
+                    json!({"sessionId": previous}),
+                )
+                .await;
+        }
+        self.call_within(limit, "Page.enable", json!({})).await?;
+        if front {
+            // A tab in the background draws no frames, so a screenshot of it would wait forever.
+            self.bring_to_front(Duration::from_secs(5)).await?;
+        }
+        Ok(())
     }
 
     /// Makes an open tab the active one.
@@ -747,97 +884,45 @@ impl Browser {
     }
 
     /// Asks the browser to close a page (failing to is harmless).
-    async fn close_target(&self, target: &str) {
+    async fn close_target(&mut self, target: &str) {
         if tabs::is_target_id(target) {
             let _ = self
-                .http
-                .get(format!(
-                    "http://127.0.0.1:{}/json/close/{target}",
-                    self.port
-                ))
-                .send()
+                .cdp
+                .call(
+                    REQUEST_TIMEOUT,
+                    None,
+                    "Target.closeTarget",
+                    json!({"targetId": target}),
+                )
                 .await;
         }
     }
 
     // ---- Downloads ----
 
-    /// Connects to the browser itself, tells it to refuse every download and to report each
-    /// one it refuses.
+    /// Tells the browser to refuse every download and to report each one it refuses. The
+    /// setting lasts while the debugging pipe is open, which is the browser's whole life.
     async fn refuse_downloads(&mut self) -> Result<(), String> {
-        let version: Value = self
-            .http
-            .get(format!("http://127.0.0.1:{}/json/version", self.port))
-            .send()
+        self.cdp
+            .call(
+                LOAD_TIMEOUT,
+                None,
+                "Browser.setDownloadBehavior",
+                json!({"behavior": "deny", "eventsEnabled": true}),
+            )
             .await
-            .map_err(|error| redact(&error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| redact(&error.to_string()))?;
-        let url = version["webSocketDebuggerUrl"]
-            .as_str()
-            .ok_or("the browser gave no debugger URL to refuse downloads with")?;
-        let url = loopback_socket(url, self.port)?;
-        let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
-            .await
-            .map_err(|error| {
-                format!(
-                    "could not connect to the browser: {}",
-                    redact(&error.to_string())
-                )
-            })?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        cdp_call(
-            &mut socket,
-            &self.log_path,
-            id,
-            LOAD_TIMEOUT,
-            "Browser.setDownloadBehavior",
-            json!({"behavior": "deny", "eventsEnabled": true}),
-        )
-        .await
-        .map_err(|error| format!("could not make the browser refuse downloads: {error}"))?;
-        self.downloads = Some(socket);
+            .map_err(|error| format!("could not make the browser refuse downloads: {error}"))?;
         Ok(())
     }
 
     /// Reads the downloads the browser refused since the last look, and returns the new ones.
-    /// Reading stops after `DOWNLOAD_READ_LIMIT` in all, or `DOWNLOAD_EVENTS` events, so a page
-    /// that floods the connection cannot hold a call up. A connection that closes or fails is
-    /// remembered (`refusal_lost`): the browser is no longer made to refuse downloads.
+    /// Reading stops after `DOWNLOAD_READ_LIMIT` in all, or `DOWNLOAD_EVENTS` messages, so a
+    /// page that floods the connection cannot hold a call up. A pipe that closes is remembered
+    /// ([`Browser::refusal_lost`]): the browser is no longer made to refuse downloads.
     async fn collect_downloads(&mut self) -> Vec<PendingDownload> {
+        self.cdp.drain().await;
         let mut fresh = Vec::new();
-        let Some(mut socket) = self.downloads.take() else {
-            return fresh;
-        };
-        let mut lost = false;
-        let deadline = Instant::now() + DOWNLOAD_READ_LIMIT;
-        let mut events = 0;
-        while events < DOWNLOAD_EVENTS {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            let message = match tokio::time::timeout(DOWNLOAD_POLL.min(left), socket.next()).await {
-                Err(_) => break,
-                Ok(None) | Ok(Some(Err(_))) => {
-                    tracing::warn!("the browser's download-refusing connection ended");
-                    lost = true;
-                    break;
-                }
-                Ok(Some(Ok(message))) => message,
-            };
-            events += 1;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let Ok(event) = serde_json::from_str::<Value>(text.as_str()) else {
-                continue;
-            };
-            if event["method"] != "Browser.downloadWillBegin" {
-                continue;
-            }
-            let params = &event["params"];
+        for params in std::mem::take(&mut self.cdp.downloads) {
             let url = params["url"].as_str().unwrap_or_default().to_string();
             if url.is_empty() {
                 continue;
@@ -855,18 +940,14 @@ impl Browser {
                 self.pending_downloads.remove(0);
             }
         }
-        if lost {
-            self.refusal_lost = true;
-        } else {
-            self.downloads = Some(socket);
-        }
         fresh
     }
 
-    /// Whether the browser may no longer be trusted not to save files by itself: its
-    /// download-refusing connection ended. The owner drops it and starts a new browser.
+    /// Whether the browser may no longer be trusted not to save files by itself: its debugging
+    /// pipe, on which it was told to refuse downloads, closed. The owner drops it and starts a
+    /// new browser.
     pub fn refusal_lost(&self) -> bool {
-        self.refusal_lost
+        self.cdp.closed
     }
 
     /// The last URL the browser listed for tab `id`, if that tab is known.
@@ -1107,41 +1188,83 @@ pub fn browser_for_tests() -> Option<PathBuf> {
     found
 }
 
-/// Sends a CDP command on `socket` and waits for its result, skipping events in between; gives
-/// up when the browser is silent for `limit`.
-async fn cdp_call(
-    socket: &mut Socket,
-    log_path: &Path,
-    id: u64,
-    limit: Duration,
-    method: &str,
-    params: Value,
-) -> Result<Value, String> {
-    let message = json!({"id": id, "method": method, "params": params});
-    socket
-        .send(Message::Text(message.to_string().into()))
-        .await
-        .map_err(|error| error.to_string())?;
-    loop {
-        let reply = tokio::time::timeout(limit, socket.next())
-            .await
-            .map_err(|_| format!("{method} timed out; browser output: {}", log_tail(log_path)))?
-            .ok_or("the browser closed")?
-            .map_err(|error| error.to_string())?;
-        let Message::Text(text) = reply else { continue };
-        let value: Value =
-            serde_json::from_str(text.as_str()).map_err(|error| error.to_string())?;
-        if value["id"].as_u64() != Some(id) {
-            continue;
-        }
-        if let Some(error) = value.get("error") {
+/// Answers every request with an empty page, for the warm-up's throwaway page; ends when the
+/// task is aborted. Each request is read up to its blank line, for at most 5 s.
+async fn serve_blank(listener: tokio::net::TcpListener) {
+    // The connections' tasks are this task's: aborting it ends them with the listener.
+    let mut connections = tokio::task::JoinSet::new();
+    while let Ok((mut stream, _)) = listener.accept().await {
+        // Finished connections are let go of as new ones come.
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
+            let mut head = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !head.windows(4).any(|window| window == b"\r\n\r\n") && head.len() < 16 * 1024 {
+                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk)).await {
+                    Ok(Ok(read)) if read > 0 => head.extend_from_slice(&chunk[..read]),
+                    _ => return,
+                }
+            }
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\n\
+                      Connection: close\r\n\r\n",
+                )
+                .await;
+        });
+    }
+}
+
+/// A task that is aborted when this is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Waits for the browser to list its first page and returns that page's target id. The
+/// debugger can answer after the process starts, and the page after the debugger (slow starts,
+/// notably Edge on Windows), so an unanswered request or an empty list is retried until
+/// `deadline`, unless `exited` reports the browser is gone or it closes its pipe.
+async fn wait_for_page(
+    cdp: &mut Cdp,
+    deadline: Instant,
+    mut exited: impl FnMut() -> bool,
+) -> Result<String, String> {
+    let mut last_error = "the browser has no page to drive".to_string();
+    while Instant::now() < deadline {
+        if exited() {
             return Err(format!(
-                "{method}: {}",
-                error["message"].as_str().unwrap_or("failed")
+                "the browser exited before it answered on its debugging pipe ({last_error})"
             ));
         }
-        return Ok(value["result"].clone());
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match cdp
+            .call(
+                REQUEST_TIMEOUT.min(remaining),
+                None,
+                "Target.getTargets",
+                json!({}),
+            )
+            .await
+        {
+            Ok(reply) => {
+                if let Some(page) = tabs::listed(&reply["targetInfos"]).into_iter().next() {
+                    return Ok(page.id);
+                }
+            }
+            Err(_) if cdp.closed => {
+                return Err("the browser closed its debugging pipe while starting".into());
+            }
+            Err(error) => last_error = error,
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    Err(format!(
+        "the browser did not answer on its debugging pipe ({last_error})"
+    ))
 }
 
 /// `url` when it is an http or https URL the browser can open.
@@ -1171,15 +1294,6 @@ fn key_parts(key: &str) -> Option<(&'static str, u32, &'static str)> {
         "PageDown" => ("PageDown", 34, ""),
         _ => return None,
     })
-}
-
-/// A port nothing is listening on right now.
-fn free_port() -> Result<u16, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| error.to_string())
 }
 
 /// The last part of the browser's output, for error messages: at most `LOG_LINES` lines, with
@@ -1236,91 +1350,6 @@ fn names_endpoint(word: &str) -> bool {
     .any(|marker| word.contains(marker))
 }
 
-/// The debugger URL of the first page in a `/json/list` reply, if it points at the browser we
-/// started: a loopback host and the port we chose.
-fn page_socket(pages: &Value, port: u16) -> Result<Option<String>, String> {
-    let Some(url) = pages
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|target| target["type"] == "page")
-        .and_then(|target| target["webSocketDebuggerUrl"].as_str())
-    else {
-        return Ok(None);
-    };
-    loopback_socket(url, port).map(Some)
-}
-
-/// `url` when it is a debugger URL on the loopback port of the browser we started.
-fn loopback_socket(url: &str, port: u16) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|error| format!("the browser gave an unusable debugger URL: {error}"))?;
-    let local = matches!(
-        parsed.host_str(),
-        Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
-    );
-    if !local || parsed.port_or_known_default() != Some(port) {
-        return Err(
-            "the debugger URL is not on the loopback port of the browser we started".to_string(),
-        );
-    }
-    Ok(url.to_string())
-}
-
-/// Waits for the browser to list its first page and returns that page's debugger socket. The
-/// debugger can come up after the process starts, and the page target after the debugger
-/// (slow starts, notably Edge on Windows), so a refused connection or an empty list is
-/// retried until `deadline`, unless `exited` reports the browser is gone. A port file in
-/// `profile_dir` naming a different port, or a debugger URL that is not ours, fails at once.
-async fn wait_for_page(
-    port: u16,
-    profile_dir: &Path,
-    deadline: Instant,
-    mut exited: impl FnMut() -> bool,
-) -> Result<String, String> {
-    let list = format!("http://127.0.0.1:{port}/json/list");
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut last_error = "the browser has no page to drive".to_string();
-    while Instant::now() < deadline {
-        if exited() {
-            return Err(format!(
-                "the browser exited before opening its debugging port ({last_error})"
-            ));
-        }
-        if let Ok(text) = std::fs::read_to_string(profile_dir.join("DevToolsActivePort"))
-            && let Some(named) = text
-                .lines()
-                .next()
-                .and_then(|line| line.trim().parse::<u16>().ok())
-            && named != port
-        {
-            return Err(
-                "the browser listens on another port than the one we asked for".to_string(),
-            );
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let request = tokio::time::timeout(remaining, async {
-            client.get(&list).send().await?.json::<Value>().await
-        });
-        match request.await {
-            Ok(Ok(pages)) => {
-                if let Some(url) = page_socket(&pages, port)? {
-                    return Ok(url);
-                }
-            }
-            Ok(Err(error)) => last_error = error.to_string(),
-            Err(_) => break,
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!(
-        "the browser did not open its debugging port ({last_error})"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1328,169 +1357,543 @@ mod tests {
 
     use axum::Router;
     use axum::routing::get;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    enum Mock {
-        /// Reads nothing and says nothing.
+    /// What a stand-in browser does with one command.
+    enum Reply {
+        /// Answers with this result.
+        Answer(Value),
+        /// Sends this event first, then answers with the result.
+        EventThen(Value, Value),
+        /// Answers with a protocol error.
+        Refuse(&'static str),
+        /// Answers with the result, then closes the pipe.
+        AnswerThenClose(Value),
+        /// Says nothing.
         Silent,
-        /// Sends an event every 50 ms and never answers.
-        Chatty,
-        /// Answers every command with a protocol error.
-        Refusing,
-        /// Answers every command with a result.
-        Answering,
-        /// Answers one command, then closes the connection.
-        AnswerOnce,
     }
 
+    /// Each command a stand-in was sent, as "method session target-or-url", the session being
+    /// `browser` for a browser-level command.
     type Seen = Arc<Mutex<Vec<String>>>;
 
-    /// Serves one debugger socket as `mock` says, noting each command as "method url".
-    async fn serve_ws(mut ws: WebSocketStream<TcpStream>, mock: Mock, seen: Seen) {
-        let refusing = matches!(mock, Mock::Refusing);
-        let once = matches!(mock, Mock::AnswerOnce);
-        match mock {
-            Mock::Silent => std::future::pending::<()>().await,
-            Mock::Chatty => loop {
-                let event = Message::Text(r#"{"method":"Page.frameStartedLoading"}"#.into());
-                if ws.send(event).await.is_err() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            },
-            Mock::Refusing | Mock::Answering | Mock::AnswerOnce => {
-                while let Some(Ok(Message::Text(text))) = ws.next().await {
-                    let command: Value = serde_json::from_str(text.as_str()).unwrap();
-                    seen.lock().unwrap().push(format!(
-                        "{} {}",
-                        command["method"].as_str().unwrap_or_default(),
-                        command["params"]["url"].as_str().unwrap_or_default()
-                    ));
-                    let reply = if refusing {
-                        json!({"id": command["id"], "error": {"message": "Cannot navigate"}})
-                    } else {
-                        json!({"id": command["id"], "result": {"frameId": "F"}})
-                    };
-                    if ws
-                        .send(Message::Text(reply.to_string().into()))
-                        .await
-                        .is_err()
-                        || once
-                    {
-                        break;
+    /// A pipe whose other end is a stand-in browser: `answer` decides each reply, and with
+    /// `chatty` an event is sent every 50 ms as well.
+    fn mock_pipe(
+        chatty: bool,
+        mut answer: impl FnMut(&Value) -> Reply + Send + 'static,
+    ) -> (Pipe, Seen) {
+        let (pipe, mut remote) = Pipe::pair();
+        let seen = Seen::default();
+        let noted = Arc::clone(&seen);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(50));
+            let send = |value: Value| value.to_string().into_bytes();
+            loop {
+                tokio::select! {
+                    command = remote.commands.recv() => {
+                        let Some(command) = command else { break };
+                        let command: Value = serde_json::from_slice(&command).unwrap();
+                        let params = &command["params"];
+                        noted.lock().unwrap().push(format!(
+                            "{} {} {}",
+                            command["method"].as_str().unwrap_or_default(),
+                            command["sessionId"].as_str().unwrap_or("browser"),
+                            params["targetId"].as_str().or(params["url"].as_str()).unwrap_or_default()
+                        ).trim_end().to_string());
+                        let id = command["id"].clone();
+                        let (before, reply, close) = match answer(&command) {
+                            Reply::Answer(result) => (None, Some(json!({"id": id, "result": result})), false),
+                            Reply::EventThen(event, result) => {
+                                (Some(event), Some(json!({"id": id, "result": result})), false)
+                            }
+                            Reply::Refuse(message) => {
+                                (None, Some(json!({"id": id, "error": {"message": message}})), false)
+                            }
+                            Reply::AnswerThenClose(result) => {
+                                (None, Some(json!({"id": id, "result": result})), true)
+                            }
+                            Reply::Silent => (None, None, false),
+                        };
+                        for message in before.into_iter().chain(reply) {
+                            if remote.replies.send(send(message)).await.is_err() {
+                                return;
+                            }
+                        }
+                        if close {
+                            return;
+                        }
+                    }
+                    _ = tick.tick(), if chatty => {
+                        let event = json!({"method": "Page.frameStartedLoading", "params": {}});
+                        if remote.replies.send(send(event)).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
+        });
+        (pipe, seen)
+    }
+
+    /// A stand-in that answers like a browser with one page, `T0`: new pages are `T1`, `T2`, …,
+    /// attaching to target `Tn` gives session `Sn`, and every other command succeeds.
+    fn answering(command: &Value) -> Reply {
+        let params = &command["params"];
+        match command["method"].as_str().unwrap_or_default() {
+            "Target.createTarget" => Reply::Answer(json!({"targetId": "T1"})),
+            "Target.attachToTarget" => {
+                let target = params["targetId"].as_str().unwrap_or_default();
+                Reply::Answer(json!({"sessionId": target.replacen('T', "S", 1)}))
+            }
+            "Target.getTargets" => Reply::Answer(json!({"targetInfos": [
+                {"targetId": "T0", "type": "page", "url": "about:blank", "title": ""}
+            ]})),
+            _ => Reply::Answer(json!({})),
         }
     }
 
-    /// A `Browser` talking to a stand-in debugger instead of a process, with `log` as the
-    /// browser's output, and what the stand-in was sent.
-    async fn mock_browser(mock: Mock, log: &str) -> (Browser, tempfile::TempDir, Seen) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let seen = Seen::default();
-        let served = Arc::clone(&seen);
-        tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            serve_ws(ws, mock, served).await;
-        });
-        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
-            .await
-            .unwrap();
+    /// A `Browser` talking to a stand-in instead of a process, driving the page `T0` through
+    /// session `S0`, with `log` as the browser's output, and what the stand-in was sent.
+    fn mock_browser(
+        log: &str,
+        chatty: bool,
+        answer: impl FnMut(&Value) -> Reply + Send + 'static,
+    ) -> (Browser, tempfile::TempDir, Seen) {
+        let (pipe, seen) = mock_pipe(chatty, answer);
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("imperium-browser.log");
         std::fs::write(&log_path, log).unwrap();
-        let browser = Browser::assemble(log_path, None, socket, port, "T0".into());
+        let mut browser = Browser::assemble(Cdp::new(pipe, log_path), None, "T0".into());
+        browser.session = "S0".into();
         (browser, dir, seen)
     }
 
-    /// What a stand-in debugger on one port was asked to do.
-    struct Debugger {
-        port: u16,
-        /// Commands sent to the page it opened, as "method url".
-        page: Seen,
-        /// Request lines it got to close pages.
-        closed: Seen,
-    }
-
-    async fn read_request(stream: &mut TcpStream) -> String {
-        let mut data = Vec::new();
-        let mut chunk = [0u8; 512];
-        while !data.windows(4).any(|window| window == b"\r\n\r\n") {
-            let n = stream.read(&mut chunk).await.unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            data.extend_from_slice(&chunk[..n]);
-        }
-        String::from_utf8_lossy(&data).into_owned()
-    }
-
-    /// A stand-in for the browser's debugging port, HTTP and WebSocket on one port like the
-    /// real one: `PUT /json/new` opens a page whose socket behaves as `page_mock` says, and
-    /// `GET /json/close/<id>` closes it.
-    async fn mock_debugger(page_mock: Mock) -> Debugger {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let page = Seen::default();
-        let closed = Seen::default();
-        let (page_seen, closed_seen) = (Arc::clone(&page), Arc::clone(&closed));
-        tokio::spawn(async move {
-            let mut page_mock = Some(page_mock);
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head = [0u8; 16];
-                let n = stream.peek(&mut head).await.unwrap_or(0);
-                let head = &head[..n];
-                if head.starts_with(b"PUT /json/new")
-                    || head.starts_with(b"GET /json/close")
-                    || head.starts_with(b"GET /json/list")
-                    || head.starts_with(b"GET /json/vers")
-                {
-                    let request = read_request(&mut stream).await;
-                    let body = if request.starts_with("PUT") {
-                        json!({
-                            "id": "T1",
-                            "type": "page",
-                            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/T1"),
-                        })
-                        .to_string()
-                    } else if request.starts_with("GET /json/vers") {
-                        json!({
-                            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/browser/B1"),
-                        })
-                        .to_string()
-                    } else if request.starts_with("GET /json/list") {
-                        // The throwaway page is gone as soon as it is closed.
-                        "[]".to_string()
-                    } else {
-                        let line = request.lines().next().unwrap_or_default().to_string();
-                        closed_seen.lock().unwrap().push(line);
-                        "Target is closing".to_string()
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                } else if let Some(mock) = page_mock.take() {
-                    let seen = Arc::clone(&page_seen);
-                    tokio::spawn(async move {
-                        let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-                        serve_ws(ws, mock, seen).await;
-                    });
-                }
-            }
-        });
-        Debugger { port, page, closed }
+    fn lines(seen: &Seen, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|line| keep(line.as_str()))
+            .cloned()
+            .collect()
     }
 
     const LISTENING: &str =
         "DevTools listening on ws://127.0.0.1:9222/devtools/browser/0a1b2c3d-secret";
+
+    #[test]
+    fn the_debugger_is_on_the_pipe_never_a_port_and_webrtc_sends_no_direct_udp() {
+        let profile = Path::new("/data/browser");
+        for headless in [true, false] {
+            let args: Vec<String> = launch_args(profile, headless)
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.iter().any(|arg| arg == "--remote-debugging-pipe"),
+                "{args:?}"
+            );
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.starts_with("--remote-debugging-port")
+                        || arg.starts_with("--remote-debugging-address")),
+                "{args:?}"
+            );
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
+                "{args:?}"
+            );
+            assert_eq!(
+                args.iter().any(|arg| arg == "--headless=new"),
+                headless,
+                "{args:?}"
+            );
+            assert!(args.contains(&format!("--user-data-dir={}", profile.display())));
+            assert_eq!(args.last().map(String::as_str), Some("about:blank"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_the_browser_never_answers_times_out_with_its_output_but_not_its_endpoint() {
+        let log = format!("{LISTENING}\nboom happened\n");
+        let (mut browser, _dir, _) = mock_browser(&log, false, |_| Reply::Silent);
+        let started = Instant::now();
+        let error = browser
+            .call_within(Duration::from_millis(200), "Page.navigate", json!({}))
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(error.starts_with("Page.navigate timed out"), "{error}");
+        assert!(error.contains("boom happened"), "{error}");
+        assert!(
+            !error.contains("ws://") && !error.contains("secret"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commands_go_to_the_active_tabs_session_and_tab_commands_to_the_browser() {
+        let (mut browser, _dir, seen) = mock_browser("", false, answering);
+        browser.call("Page.reload", json!({})).await.unwrap();
+        browser.create_tab().await.unwrap();
+        browser.call("Page.reload", json!({})).await.unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "Page.reload S0",
+                "Target.createTarget browser about:blank",
+                "Target.attachToTarget browser T1",
+                // The old tab's session is let go once the new one is attached.
+                "Target.detachFromTarget browser",
+                "Page.enable S1",
+                "Page.bringToFront S1",
+                "Page.reload S1",
+            ]
+        );
+        assert_eq!(browser.active, 2);
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_limit_is_on_the_whole_wait_not_on_silence() {
+        // Events every 50 ms keep a silence timer from ever firing; the limit must still hold.
+        let (mut browser, _dir, _) = mock_browser(LISTENING, true, |_| Reply::Silent);
+        let started = Instant::now();
+        let error = browser
+            .warm_up_within(Duration::from_millis(400))
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("did not finish starting"), "{error}");
+        assert!(
+            !error.contains("ws://") && !error.contains("secret"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_warm_up_that_times_out_stops_serving_its_page() {
+        // The throwaway page is opened and attached, then its load never answers; events keep
+        // the connection busy, so only the warm-up's own limit ends it.
+        let (mut browser, _dir, seen) = mock_browser("", true, |command| {
+            if command["method"] == "Page.navigate" {
+                Reply::Silent
+            } else {
+                answering(command)
+            }
+        });
+        let error = browser
+            .warm_up_within(Duration::from_millis(400))
+            .await
+            .unwrap_err();
+        assert!(error.contains("did not finish starting"), "{error}");
+        let navigations = lines(&seen, |line| line.starts_with("Page.navigate"));
+        let address = navigations
+            .first()
+            .and_then(|line| line.split("http://").nth(1))
+            .map(|rest| rest.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| panic!("no warm-up navigation in {navigations:?}"));
+        // The abort lands at the server task's next turn.
+        let mut refused = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(&address).await.is_err() {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(refused, "the warm-up page is still served at {address}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_warm_up_navigation_is_not_a_failure() {
+        let (mut browser, _dir, seen) = mock_browser("", false, |command| {
+            if command["method"] == "Page.navigate" {
+                Reply::Refuse("Cannot navigate")
+            } else {
+                answering(command)
+            }
+        });
+        browser
+            .warm_up_within(Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(
+            lines(&seen, |line| line.starts_with("Page.navigate")).len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn the_warm_up_uses_a_throwaway_page_and_leaves_the_driven_one_alone() {
+        let (mut browser, _dir, seen) = mock_browser("", false, answering);
+        browser
+            .warm_up_within(Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(browser.warmed());
+        // The page being driven was navigated nowhere, so its history holds nothing of the
+        // warm-up; it was only brought to the front.
+        assert_eq!(
+            lines(&seen, |line| line.contains(" S0")),
+            ["Page.bringToFront S0"]
+        );
+        // The throwaway page loaded a page served on loopback for the moment, and was closed.
+        let navigations = lines(&seen, |line| line.starts_with("Page.navigate"));
+        assert_eq!(navigations.len(), 1, "{navigations:?}");
+        assert!(
+            navigations[0].starts_with("Page.navigate S1 http://127.0.0.1:"),
+            "{navigations:?}"
+        );
+        assert_eq!(
+            lines(&seen, |line| line.starts_with("Target.closeTarget")),
+            ["Target.closeTarget browser T1"]
+        );
+        assert_eq!(browser.ignored, ["T1"]);
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_cannot_open_a_page_does_not_fail_the_start() {
+        let (mut browser, _dir, seen) = mock_browser("", false, |command| {
+            if command["method"] == "Target.createTarget" {
+                Reply::Refuse("Not supported")
+            } else {
+                answering(command)
+            }
+        });
+        browser
+            .warm_up_within(Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(lines(&seen, |line| line.contains(" S0")).is_empty());
+        assert!(!browser.warmed());
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_never_answers_is_given_up_on_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pipe, _) = mock_pipe(false, |_| Reply::Silent);
+        let mut cdp = Cdp::new(pipe, dir.path().join("log"));
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(3);
+        let error = wait_for_page(&mut cdp, deadline, || false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("debugging pipe"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(6));
+    }
+
+    #[tokio::test]
+    async fn the_first_page_the_browser_lists_is_the_one_driven() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut asked = 0;
+        let (pipe, _) = mock_pipe(false, move |_| {
+            asked += 1;
+            // No page yet the first time; then a worker and the page.
+            if asked == 1 {
+                Reply::Answer(json!({"targetInfos": []}))
+            } else {
+                Reply::Answer(json!({"targetInfos": [
+                    {"targetId": "W1", "type": "service_worker", "url": "https://a/sw.js"},
+                    {"targetId": "P1", "type": "page", "url": "about:blank", "title": ""}
+                ]}))
+            }
+        });
+        let mut cdp = Cdp::new(pipe, dir.path().join("log"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        assert_eq!(
+            wait_for_page(&mut cdp, deadline, || false).await.unwrap(),
+            "P1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_closes_its_pipe_while_starting_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pipe, remote) = Pipe::pair();
+        drop(remote);
+        let mut cdp = Cdp::new(pipe, dir.path().join("log"));
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        let error = wait_for_page(&mut cdp, deadline, || false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("closed its debugging pipe"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_download_reported_while_another_answer_was_awaited_is_not_lost() {
+        let (mut browser, _dir, _) = mock_browser("", false, |command| {
+            if command["method"] == "Runtime.evaluate" {
+                Reply::EventThen(
+                    json!({"method": "Browser.downloadWillBegin", "params": {
+                        "url": "https://example.com/report.bin",
+                        "suggestedFilename": "report.bin"
+                    }}),
+                    json!({"result": {"value": "complete"}}),
+                )
+            } else {
+                answering(command)
+            }
+        });
+        browser.wait_until_loaded().await.unwrap();
+        let fresh = browser.collect_downloads().await;
+        assert_eq!(
+            fresh,
+            [PendingDownload {
+                url: "https://example.com/report.bin".into(),
+                filename: "report.bin".into(),
+            }]
+        );
+        assert!(!browser.refusal_lost());
+        assert!(browser.collect_downloads().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_will_not_refuse_downloads_does_not_start() {
+        let (mut browser, _dir, _) = mock_browser("", false, |_| Reply::Refuse("Not allowed"));
+        let error = browser.refuse_downloads().await.unwrap_err();
+        assert!(
+            error.contains("could not make the browser refuse downloads"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_download_refusal_is_remembered_so_the_browser_is_replaced() {
+        let (mut browser, _dir, _) = mock_browser("", false, |_| Reply::AnswerThenClose(json!({})));
+        browser.refuse_downloads().await.unwrap();
+        assert!(!browser.refusal_lost());
+        // The stand-in closed the pipe after its one answer.
+        browser.collect_downloads().await;
+        assert!(browser.refusal_lost());
+    }
+
+    /// The process ids listening on a TCP port, IPv4 or IPv6, as the operating system's own tool
+    /// reports them. Panics when the tool cannot be run: the test must not pass unseen.
+    fn listening_pids() -> Vec<u32> {
+        let run = |program: &str, args: &[&str]| {
+            let mut command = std::process::Command::new(program);
+            command.args(args);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let output = command
+                .output()
+                .unwrap_or_else(|error| panic!("could not run {program}: {error}"));
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        if cfg!(windows) {
+            // "  TCP    127.0.0.1:9222    0.0.0.0:0    LISTENING    1234"
+            run("netstat", &["-ano", "-p", "TCP"])
+                .lines()
+                .chain(run("netstat", &["-ano", "-p", "TCPv6"]).lines())
+                .filter(|line| line.contains("LISTENING"))
+                .filter_map(|line| line.split_whitespace().last()?.parse().ok())
+                .collect()
+        } else if cfg!(target_os = "macos") {
+            // `-F p`: one "p<pid>" line per process.
+            run("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "p"])
+                .lines()
+                .filter_map(|line| line.strip_prefix('p')?.parse().ok())
+                .collect()
+        } else {
+            // users:(("chrome",pid=123,fd=45))
+            run("ss", &["-Hltnp"])
+                .split("pid=")
+                .skip(1)
+                .filter_map(|rest| {
+                    rest.split(|c: char| !c.is_ascii_digit())
+                        .next()?
+                        .parse()
+                        .ok()
+                })
+                .collect()
+        }
+    }
+
+    /// `root` and every process descended from it.
+    fn process_tree(root: u32) -> Vec<u32> {
+        let listing = if cfg!(windows) {
+            let mut command = std::process::Command::new("powershell");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+            ]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            command.output()
+        } else {
+            std::process::Command::new("ps")
+                .args(["-A", "-o", "pid=", "-o", "ppid="])
+                .output()
+        }
+        .expect("could not list the processes");
+        let pairs: Vec<(u32, u32)> = String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+            })
+            .collect();
+        let mut tree = vec![root];
+        let mut index = 0;
+        while index < tree.len() {
+            let parent = tree[index];
+            for (pid, ppid) in &pairs {
+                if *ppid == parent && *pid != parent && !tree.contains(pid) {
+                    tree.push(*pid);
+                }
+            }
+            index += 1;
+        }
+        tree
+    }
+
+    /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
+    #[tokio::test]
+    async fn the_browser_listens_on_no_tcp_port() {
+        let Some(program) = browser_for_tests() else {
+            return;
+        };
+        // The listing sees a port this process holds, so an empty answer below means something.
+        let own = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        assert!(
+            listening_pids().contains(&std::process::id()),
+            "the listing does not see this test's own port"
+        );
+        drop(own);
+
+        let profile = tempfile::tempdir().unwrap();
+        let mut browser = Browser::launch(&program, profile.path(), true)
+            .await
+            .unwrap();
+        // It answers on its pipe, and has finished starting (the warm-up ran).
+        assert!(browser.view().await.unwrap().screenshot.len() > 100);
+        let tree = process_tree(browser.process_id().expect("the browser's process id"));
+        let listening: Vec<u32> = listening_pids()
+            .into_iter()
+            .filter(|pid| tree.contains(pid))
+            .collect();
+        assert!(
+            listening.is_empty(),
+            "the browser's processes {listening:?} listen on a TCP port (of {tree:?})"
+        );
+        // A browser with a debugging port writes it here; this one has none to write.
+        assert!(!profile.path().join("DevToolsActivePort").exists());
+    }
 
     #[test]
     fn the_debugging_endpoint_is_hidden_and_the_tail_is_short() {
@@ -1530,153 +1933,6 @@ mod tests {
         assert_eq!(log_tail(&path), "none");
     }
 
-    #[tokio::test]
-    async fn a_call_the_browser_never_answers_times_out_with_its_output_but_not_its_endpoint() {
-        let log = format!("{LISTENING}\nboom happened\n");
-        let (mut browser, _dir, _) = mock_browser(Mock::Silent, &log).await;
-        let started = Instant::now();
-        let error = browser
-            .call_within(Duration::from_millis(200), "Page.navigate", json!({}))
-            .await
-            .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(error.starts_with("Page.navigate timed out"), "{error}");
-        assert!(error.contains("boom happened"), "{error}");
-        assert!(
-            !error.contains("ws://") && !error.contains("secret"),
-            "{error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_warm_up_limit_is_on_the_whole_wait_not_on_silence() {
-        // Events every 50 ms keep a silence timer from ever firing; the limit must still hold.
-        let debugger = mock_debugger(Mock::Chatty).await;
-        let (mut browser, _dir, _) = mock_browser(Mock::Silent, LISTENING).await;
-        let started = Instant::now();
-        let error = browser
-            .warm_up_within(debugger.port, Duration::from_millis(400))
-            .await
-            .unwrap_err();
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "{:?}",
-            started.elapsed()
-        );
-        assert!(error.contains("did not finish starting"), "{error}");
-        assert!(
-            !error.contains("ws://") && !error.contains("secret"),
-            "{error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_refused_warm_up_navigation_is_not_a_failure() {
-        let debugger = mock_debugger(Mock::Refusing).await;
-        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
-        browser
-            .warm_up_within(debugger.port, Duration::from_secs(10))
-            .await
-            .unwrap();
-        assert_eq!(debugger.page.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn the_warm_up_uses_a_throwaway_page_and_leaves_the_driven_one_alone() {
-        let debugger = mock_debugger(Mock::Answering).await;
-        let (mut browser, _dir, driven) = mock_browser(Mock::Answering, "").await;
-        browser
-            .warm_up_within(debugger.port, Duration::from_secs(10))
-            .await
-            .unwrap();
-        assert!(browser.warmed());
-        // The page being driven was navigated nowhere, so its history holds nothing of the
-        // warm-up; it was only brought to the front.
-        assert_eq!(*driven.lock().unwrap(), ["Page.bringToFront "]);
-        let navigations = debugger.page.lock().unwrap().clone();
-        assert_eq!(
-            navigations,
-            [format!(
-                "Page.navigate http://127.0.0.1:{}/json/version",
-                debugger.port
-            )]
-        );
-        let closed = debugger.closed.lock().unwrap().clone();
-        assert_eq!(closed.len(), 1, "{closed:?}");
-        assert!(closed[0].contains("/json/close/T1"), "{closed:?}");
-    }
-
-    #[tokio::test]
-    async fn a_debugger_that_cannot_open_a_page_does_not_fail_the_start() {
-        // Nothing listens on the port, so there is no throwaway page; the start goes on.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let (mut browser, _dir, driven) = mock_browser(Mock::Answering, "").await;
-        browser
-            .warm_up_within(port, Duration::from_secs(10))
-            .await
-            .unwrap();
-        assert!(driven.lock().unwrap().is_empty());
-        assert!(!browser.warmed());
-    }
-
-    #[tokio::test]
-    async fn a_debugger_that_never_replies_is_given_up_on_at_the_deadline() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok(connection) = listener.accept().await {
-                held.push(connection);
-            }
-        });
-        let profile = tempfile::tempdir().unwrap();
-        let started = Instant::now();
-        let deadline = started + Duration::from_secs(3);
-        let error = wait_for_page(port, profile.path(), deadline, || false)
-            .await
-            .unwrap_err();
-        assert!(error.contains("debugging port"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(6));
-    }
-
-    #[test]
-    fn only_our_own_loopback_debugger_is_accepted() {
-        let list = |url: &str| json!([{"type": "page", "webSocketDebuggerUrl": url}]);
-        let ours = "ws://127.0.0.1:9222/devtools/page/A";
-        assert_eq!(
-            page_socket(&list(ours), 9222).unwrap().as_deref(),
-            Some(ours)
-        );
-        assert!(page_socket(&list("ws://localhost:9222/devtools/page/A"), 9222).is_ok());
-        assert!(page_socket(&list("ws://[::1]:9222/devtools/page/A"), 9222).is_ok());
-        assert!(page_socket(&list("ws://evil.example:9222/devtools/page/A"), 9222).is_err());
-        assert!(page_socket(&list("ws://127.0.0.1:9333/devtools/page/A"), 9222).is_err());
-        assert_eq!(page_socket(&json!([]), 9222).unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn a_port_file_naming_another_port_is_an_error() {
-        let profile = tempfile::tempdir().unwrap();
-        std::fs::write(
-            profile.path().join("DevToolsActivePort"),
-            "9333\n/devtools/x",
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let error = wait_for_page(9222, profile.path(), deadline, || false)
-            .await
-            .unwrap_err();
-        assert!(error.contains("another port"), "{error}");
-        assert!(
-            !error.contains("9333") && !error.contains("9222"),
-            "{error}"
-        );
-    }
-
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_browser_opens_reads_clicks_types_and_screenshots() {
@@ -1697,7 +1953,8 @@ mod tests {
         let mut browser = Browser::launch(&program, profile.path(), true)
             .await
             .unwrap();
-        // A Chrome that stops opening pages at /json/new would quietly skip the warm-up.
+        // A browser that stops opening pages with Target.createTarget would quietly skip the
+        // warm-up.
         assert!(browser.warmed(), "the start-up warm-up did not run");
         let text = browser.open(&url, false).await.unwrap();
         assert!(text.starts_with("Counter\nURL: http://127.0.0.1"), "{text}");
@@ -1951,32 +2208,6 @@ mod tests {
         assert!(browser.last_download().is_none());
         // Told once.
         assert!(browser.notices().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_browser_that_will_not_refuse_downloads_does_not_start() {
-        let debugger = mock_debugger(Mock::Refusing).await;
-        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
-        browser.port = debugger.port;
-        let error = browser.refuse_downloads().await.unwrap_err();
-        assert!(
-            error.contains("could not make the browser refuse downloads"),
-            "{error}"
-        );
-        assert!(browser.downloads.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_lost_download_refusal_is_remembered_so_the_browser_is_replaced() {
-        let debugger = mock_debugger(Mock::AnswerOnce).await;
-        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
-        browser.port = debugger.port;
-        browser.refuse_downloads().await.unwrap();
-        assert!(!browser.refusal_lost());
-        // The stand-in closed the connection after its one answer.
-        browser.collect_downloads().await;
-        assert!(browser.refusal_lost());
-        assert!(browser.downloads.is_none());
     }
 
     #[test]

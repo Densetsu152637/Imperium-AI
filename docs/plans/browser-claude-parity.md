@@ -919,6 +919,17 @@ the permission store once it merges, except that `browser_*` calls stay judged o
   dropped under backpressure.
 - **CDP drift across Chrome versions.** Stay on stable domains, and keep the real-browser tests on
   the CI matrix.
+- **The Windows pipe-handle inheritance race (stage 0 residual, follow-up).** Stage 0 makes the
+  browser's two pipe handles inheritable only for its `CreateProcessW` call, and its handle list
+  keeps the browser from inheriting anything else. Any other process the daemon starts in that
+  moment through Rust's `Command` (which inherits every inheritable handle) can inherit the pipe
+  ends too, and with them the debugger. A spawn lock cannot close this: Rust's own process lock is
+  private, and spawns from other crates and threads would not take ours. Duplicating the handles
+  into the browser after it is created cannot close it either: the browser reads the handle values
+  from its command line, which is fixed at creation. Candidates: start Chromium through a tiny
+  dedicated launcher process that holds no other handles (the daemon hands it only the pipe ends,
+  and it alone marks them inheritable and starts the browser), or a job object with handle
+  restrictions. Documented in [05](../05-tools-and-isolation.md#the-browsers-debugger-pipe-and-profile-implemented).
 
 ## Open decisions
 

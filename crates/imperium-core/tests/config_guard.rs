@@ -4,7 +4,7 @@
 
 use imperium_config::{Config, Layer, Paths};
 use imperium_core::DaemonState;
-use imperium_policy::permissions::{CallKind, Target, refused_write, safety_floor};
+use imperium_policy::permissions::{CallKind, Target, refused_access, refused_write, safety_floor};
 
 fn slash(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
@@ -90,4 +90,48 @@ fn the_users_own_plugin_folders_are_refused_too() {
         &own.path().join("p/hooks/hooks.json")
     )));
     assert!(!refused_write(&slash(&home.path().join("elsewhere/x.md"))));
+}
+
+#[test]
+fn the_browser_profile_is_a_secret_path_for_file_tools_and_commands() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+    let _state = DaemonState::new(paths.clone(), settings, None);
+    let profile = paths.browser_profile_dir();
+    // Made at start, so the OS tier hides it from every command, even one that started before
+    // the browser did.
+    assert!(profile.is_dir());
+    assert!(paths.daemon_credential_paths().contains(&profile));
+    // File tools refuse it for reading and writing alike.
+    for inside in ["", "Default/Cookies", "Local State"] {
+        let path = if inside.is_empty() {
+            profile.clone()
+        } else {
+            profile.join(inside)
+        };
+        assert!(refused_access(&slash(&path)), "{inside}");
+    }
+    assert!(!refused_access(&slash(
+        &paths.data_dir().join("workspaces/w/a.md")
+    )));
+    // A command that names it asks every time, however its separators are written.
+    let command = |line: String| safety_floor(CallKind::Execute, &Target::Command(line));
+    let shown = profile
+        .join("Default")
+        .join("Cookies")
+        .display()
+        .to_string();
+    assert!(command(format!("cat \"{shown}\"")));
+    assert!(command(format!("cp -r {} /tmp/x", slash(&profile))));
+    assert!(command(format!("type {}", shown.replace('/', "\\"))));
+    assert!(command(format!(
+        "python -c \"open('{}')\"",
+        shown.replace('\\', "\\\\")
+    )));
+    assert!(!command("cargo test".into()));
+    assert!(!command(format!(
+        "ls {}",
+        slash(&paths.data_dir().join("workspaces"))
+    )));
 }

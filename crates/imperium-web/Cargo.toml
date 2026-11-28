@@ -20,11 +20,27 @@ serde_json = "1.0.154"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt", "time", "process", "sync", "macros", "net", "io-util", "fs"] }
 url = "2.5.8"
-tokio-tungstenite = "0.30.0"
 tracing = "0.1.44"
 
-[lints]
-workspace = true
+[target.'cfg(unix)'.dependencies]
+# The browser's debugging pipe at fds 3 and 4 in the child (launch.rs).
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# The browser's launch with only its pipe handles inherited (launch.rs).
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+# Starting the browser with its debugging pipe needs a few C and Win32 calls, which are unsafe.
+# Only `launch.rs` opts in (`#[allow(unsafe_code)]`); the rest of the crate denies it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
 
 [dev-dependencies]
 axum = "0.8.9"

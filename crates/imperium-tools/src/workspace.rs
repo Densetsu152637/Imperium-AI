@@ -9,7 +9,9 @@ use crate::writer_trees::{WriterHandle, WriterStart};
 use crate::{Sandbox, ToolError, WriterTrees};
 use imperium_api::{PathGrant, PathMode};
 use imperium_policy::AgentProfile;
-use imperium_policy::permissions::{Permissions, Target, expand_home, refused_write};
+use imperium_policy::permissions::{
+    Permissions, Target, expand_home, refused_access, refused_write,
+};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
@@ -688,6 +690,14 @@ impl Workspace {
             resolved = self.locate_checked(path)?;
         }
         let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        // The signed-in browser profile is neither read nor written by a file tool, in any mode
+        // and whatever a rule or an answer says (see `refuse_access_under`).
+        if self.refuses_access(&resolved) {
+            return Err(ToolError::Invalid(format!(
+                "{path}: {}",
+                imperium_policy::permissions::REFUSED_ACCESS_ADVICE
+            )));
+        }
         // What the daemon loads as the user's own configuration is never written by a file tool,
         // in any mode and whatever a rule or an answer says: it would plant an extension no one
         // approved (see `refuse_writes_under`).
@@ -777,6 +787,12 @@ impl Workspace {
                 .protected
                 .iter()
                 .any(|folder| resolved.starts_with(folder))
+    }
+
+    /// Whether `resolved` is under a folder no file tool may touch (the browser profile), so a
+    /// file tool refuses it and a search leaves it out.
+    pub(crate) fn refuses_access(&self, resolved: &Path) -> bool {
+        refused_access(&plain(resolved).replace('\\', "/"))
     }
 
     /// Whether a canonical path is inside one of the folders or the scratch folder, the only
@@ -1166,6 +1182,38 @@ mod tests {
         assert!(workspace.resolve("skills/evil/SKILL.md").is_ok());
         assert!(workspace.resolve_writable("src/main.rs").is_ok());
         assert!(workspace.resolve_writable("skills-notes.md").is_ok());
+    }
+
+    #[test]
+    fn a_file_tool_neither_reads_nor_writes_the_browser_profile() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("home");
+        let profile = project.join("data").join("browser");
+        std::fs::create_dir_all(profile.join("Default")).unwrap();
+        std::fs::write(profile.join("Default").join("Cookies"), "secret").unwrap();
+        std::fs::write(project.join("notes.md"), "notes").unwrap();
+        imperium_policy::permissions::refuse_access_under(&profile);
+        // A workspace that contains the data folder (a folder of `~`) still cannot reach it.
+        let workspace = Workspace::new(&project).unwrap();
+        for path in [
+            "data/browser",
+            "data/browser/Default/Cookies",
+            "data/browser/../browser/Default/Cookies",
+            "./data/browser/Local State",
+        ] {
+            for error in [
+                workspace.resolve(path).unwrap_err().to_string(),
+                workspace.resolve_writable(path).unwrap_err().to_string(),
+            ] {
+                assert!(error.contains("sign-ins and cookies"), "{path}: {error}");
+            }
+        }
+        let absolute = profile.join("Default").join("Cookies");
+        assert!(workspace.resolve(&absolute.to_string_lossy()).is_err());
+        // Everything beside it is untouched.
+        assert!(workspace.resolve("notes.md").is_ok());
+        assert!(workspace.resolve_writable("data/browser-notes.md").is_ok());
+        assert!(workspace.resolve("data").is_ok());
     }
 
     #[test]

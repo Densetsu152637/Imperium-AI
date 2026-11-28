@@ -30,6 +30,8 @@ fn main() {
             "update_switch_install",
             "plugin_approve",
             "auto_merge_enable",
+            "browser_control",
+            "browser_act",
         ]),
     ))
     .expect("the Imperium window's build configuration is invalid");

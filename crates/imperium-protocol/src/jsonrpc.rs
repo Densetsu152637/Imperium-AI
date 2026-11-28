@@ -177,6 +177,9 @@ pub mod server_features {
     pub const CONTAINER_TIER: &str = "container_tier";
     /// vLLM in Docker (`imperium runtime vllm setup --docker`).
     pub const VLLM_DOCKER: &str = "vllm_docker";
+    /// `session.browser_control` and `session.browser_act`: the user's takeover of a session's
+    /// browser, which only the desktop app on its own machine may make.
+    pub const BROWSER_CONTROL: &str = "browser_control";
 }
 
 #[cfg(test)]

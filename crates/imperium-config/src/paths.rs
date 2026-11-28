@@ -90,10 +90,18 @@ impl Paths {
         self.data_dir.join("ipc")
     }
 
+    /// The profile of the browser agents drive (`<data>/browser`): it holds whatever the user
+    /// signed in to there, cookies included, so it is a secret path (see
+    /// [`Self::daemon_credential_paths`]).
+    pub fn browser_profile_dir(&self) -> PathBuf {
+        self.data_dir.join("browser")
+    }
+
     /// What a command an agent runs must not be able to read or open, because it would hand it
-    /// the daemon: the endpoint file (it holds the access token), the local socket's folder, the
-    /// paired phones' file, the remote daemons' endpoint files (their tokens), and the encrypted secret store with its key. The OS isolation tier
-    /// hides them (`imperium_tools::hide_from_os_sandbox`).
+    /// the daemon or the user's sign-ins: the endpoint file (it holds the access token), the
+    /// local socket's folder, the paired phones' file, the remote daemons' endpoint files (their
+    /// tokens), the encrypted secret store with its key, and the signed-in browser profile. The
+    /// OS isolation tier hides them (`imperium_tools::hide_from_os_sandbox`).
     pub fn daemon_credential_paths(&self) -> Vec<PathBuf> {
         vec![
             self.daemon_endpoint_file(),
@@ -104,6 +112,8 @@ impl Paths {
             self.data_dir.join("secrets.key"),
             self.data_dir.join("secrets.enc"),
             self.data_dir.join("secrets.lock"),
+            // The browser's cookies and saved sign-ins.
+            self.browser_profile_dir(),
         ]
     }
 }
@@ -138,6 +148,7 @@ mod tests {
             "/opt/imperium/data/remotes",
             "/opt/imperium/data/secrets.key",
             "/opt/imperium/data/secrets.enc",
+            "/opt/imperium/data/browser",
         ] {
             assert!(
                 credentials.contains(&PathBuf::from(expected)),

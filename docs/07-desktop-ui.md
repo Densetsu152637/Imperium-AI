@@ -309,7 +309,12 @@ the others and follow the open session.
   tab on screen and the plus button opens a new one (`switch_tab`, `close_tab`, `new_tab` in
   `session.browser_act`). The strip wraps onto more rows and long titles end in an ellipsis, so
   the panel never scrolls sideways. Downloads are not shown here: the browser refuses them and the agent's
-  `browser_download` result tells the transcript what was saved.
+  `browser_download` result tells the transcript what was saved. Both calls go through the app's
+  own `browser_control` and `browser_act` commands, not the webview's daemon connection: the
+  daemon answers them only to the desktop app's process on its local socket, so a mod's page
+  cannot drive the signed-in browser
+  ([05](05-tools-and-isolation.md#the-browsers-debugger-pipe-and-profile-implemented)). Outside
+  the desktop app (the web build) the takeover is refused.
 
 Both panels use the shared states: the "You are driving", preview-command and error messages
 are Notices, and an empty panel is the compact empty state. Their toolbars wrap, and under 22 rem

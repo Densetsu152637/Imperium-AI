@@ -29,8 +29,8 @@ pub(crate) struct Reconciled {
     pub excess: Vec<String>,
 }
 
-/// The pages in a `/json/list` reply: real pages only (not workers, extensions or the debugger's
-/// own front end), in the browser's order.
+/// The pages in the `targetInfos` of a `Target.getTargets` reply: real pages only (not workers,
+/// extensions or the debugger's own front end), in the browser's order.
 pub(crate) fn listed(reply: &Value) -> Vec<Listed> {
     reply
         .as_array()
@@ -38,7 +38,7 @@ pub(crate) fn listed(reply: &Value) -> Vec<Listed> {
         .flatten()
         .filter(|target| target["type"] == "page")
         .filter_map(|target| {
-            let id = target["id"].as_str().filter(|id| is_target_id(id))?;
+            let id = target["targetId"].as_str().filter(|id| is_target_id(id))?;
             let url = target["url"].as_str().unwrap_or_default();
             if url.starts_with("devtools://") {
                 return None;
@@ -52,8 +52,8 @@ pub(crate) fn listed(reply: &Value) -> Vec<Listed> {
         .collect()
 }
 
-/// Whether `id` looks like a target id (letters, digits, `-` and `_`), so it can be put in a
-/// debugger URL without changing its meaning.
+/// Whether `id` looks like a target id (letters, digits, `-` and `_`): anything else the browser
+/// lists is not a page of ours.
 pub(crate) fn is_target_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -128,11 +128,11 @@ mod tests {
     #[test]
     fn only_real_pages_are_listed() {
         let reply = json!([
-            {"id": "A", "type": "page", "url": "http://a/", "title": "A"},
-            {"id": "W", "type": "service_worker", "url": "http://a/sw.js"},
-            {"id": "D", "type": "page", "url": "devtools://devtools/bundled/inspector.html"},
-            {"id": "bad id/..", "type": "page", "url": "http://b/"},
-            {"id": "B", "type": "page", "url": "http://b/"}
+            {"targetId": "A", "type": "page", "url": "http://a/", "title": "A"},
+            {"targetId": "W", "type": "service_worker", "url": "http://a/sw.js"},
+            {"targetId": "D", "type": "page", "url": "devtools://devtools/bundled/inspector.html"},
+            {"targetId": "bad id/..", "type": "page", "url": "http://b/"},
+            {"targetId": "B", "type": "page", "url": "http://b/"}
         ]);
         let ids: Vec<String> = listed(&reply).into_iter().map(|page| page.id).collect();
         assert_eq!(ids, ["A", "B"]);

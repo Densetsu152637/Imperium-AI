@@ -12,8 +12,10 @@ mod archive;
 pub mod block;
 pub mod browser;
 pub mod cache;
+mod cdp;
 mod download;
 pub mod html;
+mod launch;
 pub mod preview;
 #[cfg(test)]
 mod resilience_tests;

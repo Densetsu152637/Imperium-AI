@@ -1,20 +1,23 @@
 // The session's browser: the page after the agent's latest action, which the user can take over.
 // While the user drives, clicks on the page, typing, scrolling, and the address bar act in the
 // agent's browser (`session.browser_act`) and the agent's browser tools are refused; *Give back
-// to the agent* returns it. Each action returns a fresh screenshot, so the page updates on
+// to the agent* returns it. Both go through the app's own commands (sessions/browserTakeover.ts):
+// the daemon answers them only to the desktop app's process, never to the webview's connection. Each action returns a fresh screenshot, so the page updates on
 // interaction rather than streaming. Each open tab shows in a strip above the page with its own
 // latest screenshot; the user can look at any tab, and while driving can open, switch, and close
 // tabs (the page the agent's tools work on is the active one).
 
 import { ArrowLeft, ArrowRight, Plus, RotateCw, X } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useId, useRef, useState } from "react";
-import type { BrowserAction, BrowserActResult, BrowserControlResult } from "@imperium/protocol";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { BrowserAction } from "@imperium/protocol";
 
 import { EmptyState } from "../components/EmptyState";
 import { IconButton } from "../components/IconButton";
 import { Notice } from "../components/Notice";
 import { type TabItem, Tabs, tabPanelProps } from "../components/Tabs";
 import type { DaemonClient } from "../daemon/client";
+import { actInBrowser, controlBrowser } from "../sessions/browserTakeover";
 import { browserAddress, clickFraction, keyAction, shownTab } from "../sessions/preview";
 import type { SessionState } from "../sessions/sessions";
 
@@ -22,6 +25,10 @@ import type { SessionState } from "../sessions/sessions";
 const TYPE_DELAY_MS = 200;
 
 const message = (failure: unknown): string => (failure instanceof Error ? failure.message : String(failure));
+
+/** The app's own command bridge; outside the desktop app (a plain browser) there is none. */
+const appInvoke = (command: string, args: Record<string, unknown>): Promise<unknown> =>
+  isTauri() ? invoke(command, args) : Promise.reject(new Error("The browser can be taken over only in the desktop app."));
 
 export function BrowserPanel({ session, client }: { session: SessionState | null; client: DaemonClient | null }) {
   const sessionId = session?.summary.session_id ?? null;
@@ -46,7 +53,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
       if (!client || !sessionId) return;
       queue.current = queue.current.then(async () => {
         try {
-          await client.call<BrowserActResult>("session.browser_act", { session_id: sessionId, action });
+          await actInBrowser(appInvoke, sessionId, action);
           setError(null);
         } catch (failure) {
           setError(message(failure));
@@ -100,7 +107,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
     if (!client || !sessionId) return;
     setWorking(true);
     try {
-      await client.call<BrowserControlResult>("session.browser_control", { session_id: sessionId, user });
+      await controlBrowser(appInvoke, sessionId, user);
       setError(null);
     } catch (failure) {
       setError(message(failure));

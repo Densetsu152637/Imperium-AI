@@ -1,3 +1,5 @@
+use imperium_protocol::jsonrpc::server_features;
+
 use super::*;
 
 impl Connection {
@@ -319,14 +321,29 @@ impl Connection {
                     Ok(SessionAgentCancelResult {})
                 })
             }
+            // The user's takeover of the signed-in browser: the desktop app's alone (see
+            // `Connection::browser_takeover_gate`). The agents' own browser tools run in the
+            // daemon and never come through here.
+            // The gate is checked once the params are known to be well formed, so a malformed
+            // call is told so whoever sends it; nothing runs before the gate passes.
             SessionBrowserControl::NAME => {
                 call_later::<SessionBrowserControl, _>(c.params.take(), c.later, |params| {
-                    crate::browser_control::control(Arc::clone(&self.state), params)
+                    let gate = self.browser_takeover_gate();
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        gate?;
+                        crate::browser_control::control(state, params).await
+                    }
                 })
             }
             SessionBrowserAct::NAME => {
                 call_later::<SessionBrowserAct, _>(c.params.take(), c.later, |params| {
-                    crate::browser_control::act(Arc::clone(&self.state), params)
+                    let gate = self.browser_takeover_gate();
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        gate?;
+                        crate::browser_control::act(state, params).await
+                    }
                 })
             }
             SessionSuggestionRespond::NAME => {
@@ -432,6 +449,21 @@ impl Connection {
 }
 
 impl Connection {
+    /// Whether this connection may take over or drive a session's browser
+    /// (`session.browser_control`, `session.browser_act`). The browser is signed in to whatever
+    /// the user signed in to, and a driven browser skips every approval its tools ask for, so
+    /// only the desktop app installed beside `imperium-core`, on the local socket, may: refused
+    /// on a server (`-32010`) before any caller is looked at, then for a paired device, a mod's
+    /// page (loopback TCP), a plain token holder and any other local process, an agent's
+    /// commands included.
+    pub(super) fn browser_takeover_gate(&self) -> Result<(), ErrorObject> {
+        self.refuse_on_server(server_features::BROWSER_CONTROL)?;
+        self.require_desktop_app_for(
+            "drive a session's browser",
+            "take over or drive a session's browser",
+        )
+    }
+
     /// An error unless this connection may start evaluation sessions.
     pub(super) fn eval_forbidden(&self) -> Result<(), ErrorObject> {
         if self.may_eval() {

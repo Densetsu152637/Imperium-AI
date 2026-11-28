@@ -3077,6 +3077,7 @@ dependencies = [
  "imperium-policy",
  "imperium-protocol",
  "imperium-tools",
+ "libc",
  "reqwest",
  "same-file",
  "serde",
@@ -3084,9 +3085,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tracing",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
