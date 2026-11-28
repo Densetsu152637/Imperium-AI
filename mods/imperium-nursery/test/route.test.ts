@@ -151,29 +151,46 @@ test("nursery: an event for a session without a pet (archived) does not make one
   expect(n.entries.size).toBe(0);
 });
 
-test("nursery: your pet is always there, hears every session, and cannot be taken out", () => {
+test("nursery: your pet is always there, follows only the selected session, and cannot be taken out", () => {
   const n = new Nursery("nursery", deps);
   n.setResident("pet", "Clawd", T0);
   expect(n.entries.get(RESIDENT)?.label).toBe("Clawd");
-  n.snapshots([session("a", [agent("root", "idle")], "Alpha"), session("b", [agent("root", "idle")], "Beta")], null, T0);
+  const both = [session("a", [agent("root", "idle")], "Alpha"), session("b", [agent("root", "idle")], "Beta")];
+  n.snapshots(both, "a", T0);
   const t = T0 + 10_000;
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBeNull();
-  // Either session's work makes it busy; it is idle only when both are.
-  n.event(ev("root", "turn_started", {}, "a"), t);
+  const mine = () => busyOf(n.entries.get(RESIDENT)!.arbiter);
+  const of = (id: string) => busyOf(n.entries.get(sessionKey(id))!.arbiter);
+  expect(mine()).toBeNull();
+  // Work in the other session moves only that session's pet.
   n.event(ev("root", "turn_started", {}, "b"), t);
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBe("working");
-  n.event(ev("root", "turn_completed", { usage: {}, steps: 1 }, "a"), t + 1000);
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBe("working");
-  n.event(ev("root", "turn_completed", { usage: {}, steps: 1 }, "b"), t + 2000);
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBeNull();
-  // A permission request in a subagent makes it wait; the session's pet shows it too.
+  expect(of("b")).toBe("working");
+  expect(of("a")).toBeNull();
+  expect(mine()).toBeNull();
+  // The selected session's work moves its pet and your pet, and nothing else.
+  n.event(ev("root", "turn_started", {}, "a"), t + 100);
+  expect(mine()).toBe("working");
+  n.event(ev("root", "turn_completed", { usage: {}, steps: 1 }, "b"), t + 1000);
+  expect(mine()).toBe("working");
+  expect(of("a")).toBe("working");
+  n.event(ev("root", "turn_completed", { usage: {}, steps: 1 }, "a"), t + 2000);
+  expect(mine()).toBeNull();
+  // A permission request in an unselected session makes only its own pet wait.
   n.event(ev("t1", "permission_requested", { request_id: 1, tool: "x", summary: "" }, "b"), t + 3000);
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBe("waiting");
-  expect(busyOf(n.entries.get(sessionKey("b"))!.arbiter)).toBe("waiting");
-  expect(busyOf(n.entries.get(sessionKey("a"))!.arbiter)).toBeNull();
-  // A snapshot that no longer lists the session ends what it held on your pet.
-  n.snapshots([session("a", [agent("root", "idle")], "Alpha")], null, t + 4000);
-  expect(busyOf(n.entries.get(RESIDENT)!.arbiter)).toBeNull();
+  expect(of("b")).toBe("waiting");
+  expect(of("a")).toBeNull();
+  expect(mine()).toBeNull();
+  // Selecting that session makes your pet pick up its state; selecting the other lets it go.
+  n.snapshots([session("a", [agent("root", "idle")], "Alpha"), session("b", [agent("root", "idle"), agent("t1", "waiting")], "Beta")], "b", t + 3500);
+  expect(mine()).toBe("waiting");
+  n.snapshots([session("a", [agent("root", "idle")], "Alpha"), session("b", [agent("root", "idle"), agent("t1", "waiting")], "Beta")], "a", t + 3600);
+  expect(mine()).toBeNull();
+  expect(of("b")).toBe("waiting");
+  // A snapshot that no longer lists the followed session ends what it held on your pet.
+  n.snapshots(both, "b", t + 3700);
+  n.event(ev("root", "turn_started", {}, "b"), t + 3800);
+  expect(mine()).toBe("working");
+  n.snapshots([session("a", [agent("root", "idle")], "Alpha")], "b", t + 4000);
+  expect(mine()).toBeNull();
   // It cannot be taken out, and it is first.
   n.take(RESIDENT);
   n.take(sessionKey("a"));
@@ -183,6 +200,64 @@ test("nursery: your pet is always there, hears every session, and cannot be take
   // Changing it keeps the entry and changes the pet.
   n.setResident("other", "Other", t + 5000);
   expect(n.entries.get(RESIDENT)).toMatchObject({ petId: "other", label: "Other" });
+});
+
+test("nursery: an error in one session leaves the other session's pet and your pet alone", () => {
+  const n = new Nursery("nursery", deps);
+  n.setResident("pet", "Clawd", T0);
+  n.snapshots([session("a", [agent("root", "working")], "Alpha"), session("b", [agent("root", "idle")], "Beta")], "a", T0);
+  const t = T0 + 5000;
+  const before = JSON.stringify(n.entries.get(sessionKey("a"))!.arbiter);
+  const resident = JSON.stringify(n.entries.get(RESIDENT)!.arbiter);
+  n.event(ev("root", "turn_failed", { message: "boom" }, "b"), t);
+  n.event(ev("root", "tool_finished", { call_id: "c", ok: false, output: "denied" }, "b"), t + 10);
+  n.event(ev("root", "memory_saved", { name: "m", scope: "user" }, "b"), t + 20);
+  expect(shown(n, sessionKey("b"), t + 30)).toBe("failed");
+  expect(JSON.stringify(n.entries.get(sessionKey("a"))!.arbiter)).toBe(before);
+  expect(JSON.stringify(n.entries.get(RESIDENT)!.arbiter)).toBe(resident);
+  // Events for a session that no longer exists change nothing and make no pet.
+  n.event(ev("root", "turn_started", {}, "gone"), t + 40);
+  expect(n.entries.has(sessionKey("gone"))).toBe(false);
+  expect(JSON.stringify(n.entries.get(RESIDENT)!.arbiter)).toBe(resident);
+});
+
+test("nursery: switching, deselecting or archiving the followed session leaves nothing behind on your pet", () => {
+  const list = (archivedA = false) => [session("a", [agent("root", "idle")], "Alpha", { archived: archivedA }), session("b", [agent("root", "idle")], "Beta")];
+  const make = () => {
+    const n = new Nursery("nursery", deps);
+    n.setResident("pet", "Clawd", T0);
+    n.snapshots(list(), "a", T0);
+    return n;
+  };
+  const mine = (n: Nursery) => busyOf(n.entries.get(RESIDENT)!.arbiter);
+  const t = T0 + 5000;
+  // A failure and an eating overlay in A, then the selection moves to B.
+  const n = make();
+  n.event(ev("root", "turn_started", {}, "a"), t);
+  n.event(ev("root", "memory_saved", { name: "m", scope: "user" }, "a"), t + 10);
+  n.event(ev("root", "turn_failed", { message: "x" }, "a"), t + 20);
+  expect(shown(n, RESIDENT, t + 30)).toBe("failed");
+  n.snapshots(list(), "b", t + 40);
+  expect(shown(n, RESIDENT, t + 50)).not.toBe("failed");
+  expect(mine(n)).toBeNull();
+  expect(n.entries.get(RESIDENT)!.overlayEnds).toEqual({});
+  expect(n.entries.get(RESIDENT)!.review).toEqual({});
+  // Selection goes to null.
+  const m = make();
+  m.event(ev("root", "turn_started", {}, "a"), t);
+  expect(mine(m)).toBe("working");
+  m.snapshots(list(), null, t + 10);
+  expect(mine(m)).toBeNull();
+  m.event(ev("root", "turn_started", {}, "a"), t + 20);
+  expect(mine(m)).toBeNull();
+  // The selected session is archived.
+  const k = make();
+  k.event(ev("root", "turn_started", {}, "a"), t);
+  expect(mine(k)).toBe("working");
+  k.snapshots(list(true), "a", t + 10);
+  expect(mine(k)).toBeNull();
+  k.event(ev("root", "turn_started", {}, "a"), t + 20);
+  expect(mine(k)).toBeNull();
 });
 
 test("nursery: pets are born in session order, your pet first, so older sessions stand behind newer ones", () => {
@@ -285,7 +360,7 @@ test("reviewer subagents draw review instead of working", () => {
   expect(isReviewer("", "Profile: implementer")).toBe(false);
   const n = new Nursery("nursery", deps);
   n.setResident("pet", "Pet", T0);
-  n.snapshots([session("s1", [agent("root", "working"), agent("t1", "working", "Profile: critic")])], null, T0);
+  n.snapshots([session("s1", [agent("root", "working"), agent("t1", "working", "Profile: critic")])], "s1", T0);
   expect(n.entries.get(sessionKey("s1"))!.arbiter.sources.t1?.base).toBe("review");
   expect(n.entries.get(RESIDENT)!.arbiter.sources["s1:t1"]?.base).toBe("review");
 });

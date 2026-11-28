@@ -30,9 +30,10 @@ transcript text.
   playing `jumping` or `failed`. Each pet hears only its own agent's events.
 - **Nursery** (panel `nursery`, left column): one room with three kinds of pets.
   - **Your pet** is always there and cannot be taken out. Choose it with the *Your pet* select
-    (any installed pet; the first one is the default, stored as `resident`). It reacts to every
-    unarchived session's activity combined (working while any session works, waiting while any
-    asks for permission), as the old single pet panel did.
+    (any installed pet; the first one is the default, stored as `resident`). It follows only the
+    session selected in the app (working while it works, waiting while it asks for permission),
+    and is idle when none is selected. Other sessions never move it, and no session's activity
+    moves another session's pet; the pets only share the room, where they may still play together.
   - **One pet per unarchived session** (not for persistent agent sessions), labelled with the session title, with a badge for its
     working subagents. It hears all of its session's events, so a subagent that needs you makes
     it show `alert`. A new session's pet pops in; archiving the session makes its pet walk out
