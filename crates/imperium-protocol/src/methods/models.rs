@@ -116,8 +116,8 @@ pub struct LocalModelRow {
     /// thinking switch, think tags, or `reasoning_effort`), else its name.
     #[serde(default)]
     pub reasoning: bool,
-    /// `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
-    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    /// `llamacpp` for GGUF files, `vllm` for Hugging Face folders, `ncm` for NCM safetensors.
+    #[ts(type = "\"llamacpp\" | \"vllm\" | \"ncm\"")]
     pub runtime: String,
     pub path: String,
     /// The repository it came from, such as `unsloth/Qwen3-8B-GGUF`, from the Hugging Face
@@ -651,7 +651,7 @@ pub struct HfFilesResult {
 pub struct HfVariant {
     /// The quantisation, such as `Q4_K_M`, or `safetensors`.
     pub name: String,
-    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    #[ts(type = "\"llamacpp\" | \"vllm\" | \"ncm\"")]
     pub runtime: String,
     /// The id the model will have in `models.local`.
     pub model_id: String,
@@ -992,7 +992,7 @@ pub struct ModelConfigResult {
 pub struct LocalModelConfig {
     /// The id in `models.local`.
     pub id: String,
-    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    #[ts(type = "\"llamacpp\" | \"vllm\" | \"ncm\"")]
     pub runtime: String,
     /// What the app's settings file sets; null fields take the effective value from elsewhere.
     pub saved: LocalLaunchSettings,

@@ -9,7 +9,7 @@ import type { SelectOption } from "../components/Select";
 import { rowById, rowBySpecOrId } from "./spec.ts";
 import { chooserModels, type ModelGroup, type ModelMarks } from "./modelPrefs.ts";
 
-const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };
+const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM", ncm: "NCM" };
 
 /** The spec a local model is used by: `<runtime>:<id>`. */
 export const localSpec = (row: LocalModelRow): string => `${row.runtime}:${row.id}`;
@@ -53,7 +53,7 @@ export function memoryPlan(row: LocalModelRow): string {
  */
 export function localDescription(row: LocalModelRow): string {
   const parts: string[] = [];
-  parts.push(row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?"));
+  parts.push(row.quantization ?? (row.runtime !== "llamacpp" ? "safetensors" : "?"));
   if (row.context_length) parts.push(`${tokensShort(row.context_length)} ctx`);
   if (row.context > 0) {
     parts.push(`up to ${tokensShort(row.context)}/agent${row.context_auto ? " (auto)" : ""}`);

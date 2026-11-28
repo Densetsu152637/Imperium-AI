@@ -2,7 +2,7 @@ use imperium_api::Pricing;
 use imperium_api::{Availability, LocalModels};
 use imperium_config::{
     Capability, LLAMACPP_ENDPOINT, Location, Preference, RoutingRule, RoutingSettings, SecretError,
-    SecretName, Settings, Tier, VLLM_ENDPOINT,
+    SecretName, Settings, Tier,
 };
 use imperium_models::Endpoint;
 
@@ -84,7 +84,7 @@ pub fn resolve_model(
         .find(|entry| entry.spec == spec);
     let context_window = row.and_then(|entry| entry.context_window).map(u64::from);
     let reasoning = row.and_then(imperium_config::CatalogEntry::reasoning_setting);
-    if endpoint_id == LLAMACPP_ENDPOINT || endpoint_id == VLLM_ENDPOINT {
+    if imperium_config::is_local_endpoint(endpoint_id) {
         return Ok(ResolvedModel {
             spec: spec.to_string(),
             endpoint: Endpoint {

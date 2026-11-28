@@ -41,6 +41,9 @@ pub struct LocalRuntime {
     launcher: Option<Arc<ProcessLauncher>>,
     /// Whether vLLM models can load here: Linux, or Windows with vLLM set up in WSL2.
     vllm_available: bool,
+    /// The data folder, where an approved `ncm-server` is recorded
+    /// ([`imperium_local::ncm_runtime`]); `None` in tests.
+    ncm_data: Option<PathBuf>,
 }
 
 fn set_server(
@@ -103,6 +106,7 @@ impl LocalRuntime {
             server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
             launcher: None,
             vllm_available: VLLM_NATIVE,
+            ncm_data: None,
         }
     }
 
@@ -136,7 +140,9 @@ impl LocalRuntime {
             PathBuf::from(&vllm.command),
             paths.data_dir().join("logs"),
         )
-        .with_slot_dir(paths.data_dir().join("swap"));
+        .with_slot_dir(paths.data_dir().join("swap"))
+        // NCM models run only the ncm-server the user approved, never one found on PATH.
+        .with_ncm_data_dir(paths.data_dir().to_path_buf());
         let mut vllm_available = VLLM_NATIVE;
         // On Windows vLLM runs in WSL2 when the managed environment was set up there (or the
         // command points into WSL); anything else leaves its models unavailable.
@@ -167,6 +173,9 @@ impl LocalRuntime {
         let runtimes = Runtimes {
             vllm: vllm.clone(),
             vllm_available,
+            ncm: settings.runtime.ncm.clone(),
+            // Read when the daemon starts, like the rest of runtime.ncm.
+            ncm_cuda: imperium_local::ncm_runtime::approved_cuda(paths.data_dir()),
         };
         let supervisor = Supervisor::start(
             found.models,
@@ -195,9 +204,27 @@ impl LocalRuntime {
             server: Arc::new(Mutex::new((pack, server))),
             launcher: Some(launcher),
             vllm_available,
+            ncm_data: Some(paths.data_dir().to_path_buf()),
         };
         local.detect_if_missing(paths, settings);
         Some(local)
+    }
+
+    /// Why an NCM model cannot load, if it cannot: its file's own problem, or no approved
+    /// `ncm-server` (there are no releases yet; the user builds and approves one).
+    fn ncm_problem(&self, model: &imperium_local::scan::LocalModel) -> Option<String> {
+        if model.format != Format::NcmSafetensors {
+            return model.info.load_problem.clone();
+        }
+        if let Some(problem) = &model.info.load_problem {
+            return Some(problem.clone());
+        }
+        let data = self.ncm_data.as_deref()?;
+        match imperium_local::ncm_runtime::approved(data) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(imperium_local::ncm_runtime::HOW_TO_INSTALL.to_string()),
+            Err(problem) => Some(problem),
+        }
     }
 
     /// The hardware the models are planned against.
@@ -336,50 +363,49 @@ impl LocalRuntime {
 
     pub fn listing(&self) -> LocalModelListResult {
         let loaded = self.supervisor.loaded();
-        let models =
-            self.supervisor
-                .models()
-                .iter()
-                .map(|model| {
-                    let footprint = self.supervisor.footprint(model);
-                    let launch = self.supervisor.launch(&model.id);
-                    let placement = self.supervisor.placement_when_idle(model);
-                    let status = loaded.iter().find(|l| l.model_id == model.id);
-                    let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
-                    let estimate = if status.is_some() {
-                        None
-                    } else {
-                        self.supervisor.estimate(model)
-                    };
-                    // A pool cut to fit beside the loaded models is all one agent could use.
-                    let planned_pool = estimate.map_or(launch.pool_tokens, |(_, pool)| pool);
-                    let planned_context = if planned_pool < launch.pool_tokens {
-                        launch.context.min(planned_pool)
-                    } else {
-                        launch.context
-                    };
-                    LocalModelRow {
+        let models = self
+            .supervisor
+            .models()
+            .iter()
+            .map(|model| {
+                let footprint = self.supervisor.footprint(model);
+                let launch = self.supervisor.launch(&model.id);
+                let placement = self.supervisor.placement_when_idle(model);
+                let status = loaded.iter().find(|l| l.model_id == model.id);
+                let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
+                let estimate = if status.is_some() {
+                    None
+                } else {
+                    self.supervisor.estimate(model)
+                };
+                // A pool cut to fit beside the loaded models is all one agent could use.
+                let planned_pool = estimate.map_or(launch.pool_tokens, |(_, pool)| pool);
+                let planned_context = if planned_pool < launch.pool_tokens {
+                    launch.context.min(planned_pool)
+                } else {
+                    launch.context
+                };
+                LocalModelRow {
                     id: model.id.clone(),
                     alias: None,
                     reasoning: imperium_api::LocalModels::reasons(&*self.supervisor, &model.id)
                         .unwrap_or_else(|| imperium_api::reasoning_by_name(&model.id)),
-                    runtime: match model.format {
-                        Format::Gguf => "llamacpp".into(),
-                        Format::Safetensors => "vllm".into(),
-                    },
+                    runtime: model.format.endpoint().into(),
                     path: model.path.display().to_string(),
                     repo: model.repo.clone(),
                     mmproj: model.mmproj.as_ref().map(|path| path.display().to_string()),
-                    problem: (model.format == Format::Safetensors && !self.vllm_available).then(|| {
-                        let message = if cfg!(windows) {
-                            "vLLM, which serves Hugging Face folders, runs inside WSL2 on \
+                    problem: self.ncm_problem(model).or_else(|| {
+                        (model.format == Format::Safetensors && !self.vllm_available).then(|| {
+                            let message = if cfg!(windows) {
+                                "vLLM, which serves Hugging Face folders, runs inside WSL2 on \
                              Windows: run `imperium runtime vllm setup --wsl`, or use a GGUF \
                              build of this model"
-                        } else {
-                            "vLLM, which serves Hugging Face folders, runs on Linux or WSL2 \
+                            } else {
+                                "vLLM, which serves Hugging Face folders, runs on Linux or WSL2 \
                              only; use a GGUF build of this model here"
-                        };
-                        message.to_string()
+                            };
+                            message.to_string()
+                        })
                     }),
                     architecture: model.info.architecture.clone(),
                     quantization: model.info.quantization().map(str::to_string),
@@ -418,8 +444,8 @@ impl LocalRuntime {
                     enabled: true,
                     own_enabled: true,
                 }
-                })
-                .collect();
+            })
+            .collect();
         let budget = self.supervisor.budget();
         let scanned = self.scanned.lock().unwrap_or_else(PoisonError::into_inner);
         let (folders, skipped) = &*scanned;
@@ -691,6 +717,7 @@ mod tests {
             server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
             launcher: None,
             vllm_available: VLLM_NATIVE,
+            ncm_data: None,
         };
         let row = |listing: &LocalModelListResult, id: &str| {
             listing

@@ -19,9 +19,9 @@ alias: string | null,
  */
 reasoning: boolean, 
 /**
- * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
+ * `llamacpp` for GGUF files, `vllm` for Hugging Face folders, `ncm` for NCM safetensors.
  */
-runtime: "llamacpp" | "vllm", path: string, 
+runtime: "llamacpp" | "vllm" | "ncm", path: string, 
 /**
  * The repository it came from, such as `unsloth/Qwen3-8B-GGUF`, from the Hugging Face
  * cache or the `<publisher>/<repo>` folders above the file.

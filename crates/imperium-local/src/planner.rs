@@ -81,6 +81,21 @@ impl Footprint {
     /// What `model` needs started with `launch`: the KV cache is one pool of `pool_tokens`,
     /// whatever the slots.
     pub fn of(model: &LocalModel, launch: &ModelLaunch) -> Self {
+        if let Some(shape) = &model.info.ncm {
+            // ncm-server casts dense weights to f32 on the CPU (bf16 on CUDA, as stored) and
+            // allocates its whole cache at launch; planned at f32 so either device fits. A
+            // quantised file (`ncm_quant`) loads as it is stored. Never split by layer.
+            let weights_factor = if shape.quant.is_some() { 1 } else { 2 };
+            return Footprint {
+                weights_bytes: model.size_bytes.saturating_mul(weights_factor),
+                kv_bytes: crate::ncm::cache_bytes(shape, u64::from(launch.pool_tokens), 4)
+                    .unwrap_or(u64::MAX / 4),
+                layers: None,
+                max_gpu_layers: None,
+                draft: DraftMemory::default(),
+                overhead_bytes: RUNTIME_OVERHEAD_BYTES,
+            };
+        }
         let kv_bytes = model
             .info
             .kv_bytes_per_token_kv(
@@ -591,6 +606,35 @@ mod tests {
             extra_args: Vec::new(),
             draft: None,
         }
+    }
+
+    #[test]
+    fn an_ncm_model_is_one_piece_with_its_weights_by_how_they_are_stored() {
+        let shape = crate::ncm::NcmShape {
+            arch: crate::ncm::NcmArch::Ncm,
+            vocab_size: 32000,
+            layers: 16,
+            width: 1024,
+            k: 4,
+            quant: None,
+        };
+        let mut model = kv_model();
+        model.size_bytes = GIB / 2;
+        model.format = crate::scan::Format::NcmSafetensors;
+        model.info.ncm = Some(shape.clone());
+        let dense = Footprint::of(&model, &launch(1, 32768, "f16", "f16"));
+        assert_eq!(dense.weights_bytes, GIB);
+        assert_eq!(dense.layers, None);
+        assert_eq!(
+            dense.kv_bytes,
+            crate::ncm::cache_bytes(&shape, 32768, 4).unwrap()
+        );
+        model.info.ncm = Some(crate::ncm::NcmShape {
+            quant: Some("q4-g64".into()),
+            ..shape
+        });
+        let quantised = Footprint::of(&model, &launch(1, 32768, "f16", "f16"));
+        assert_eq!(quantised.weights_bytes, GIB / 2);
     }
 
     #[test]

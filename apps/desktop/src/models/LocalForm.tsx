@@ -40,7 +40,8 @@ export function LocalForm({
   onChange: (patch: Partial<LocalDraft>) => void;
   onResetAll: () => void;
 }) {
-  const vllm = model.runtime === "vllm";
+  // llama.cpp-only settings (cache types, layers, drafts) do not apply to vLLM or NCM models.
+  const vllm = model.runtime !== "llamacpp";
   const eff = model.effective;
   const estimate = preview ?? model;
   const spec = (key: string) => {
@@ -48,7 +49,7 @@ export function LocalForm({
     if (!found) throw new Error(`no setting ${key}`);
     return found;
   };
-  const noVllm = (key: string): string | undefined => (vllm && spec(key).llamacppOnly ? "Not used by vLLM models." : undefined);
+  const noVllm = (key: string): string | undefined => (vllm && spec(key).llamacppOnly ? `Not used by ${model.runtime === "ncm" ? "NCM" : "vLLM"} models.` : undefined);
   const text = (key: keyof LocalDraft, placeholder: number | null, options: { disabled?: boolean; hint?: ReactNode } = {}) => {
     const setting = spec(key);
     return (

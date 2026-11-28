@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use crate::backend::{LLAMA_CPP, VLLM};
+use crate::backend::{LLAMA_CPP, NCM, VLLM};
 use crate::supervisor::{
     LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer,
     SpeculatingFuture, StopFuture,
@@ -23,6 +23,12 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long saving or restoring a slot may take: a long context is gigabytes of KV cache.
 const SLOT_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_millis(250);
+/// How often a loaded `ncm-server` is asked whether it still serves ([`watch_health`]), and how
+/// long one answer may take.
+const NCM_HEALTH_EVERY: Duration = Duration::from_secs(2);
+const NCM_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+/// `/health` timeouts in a row after which a loaded `ncm-server` is taken for hung.
+const NCM_HUNG_AFTER: u32 = 3;
 
 /// What the launcher asks the daemon around starting `llama-server`, so the runtime is
 /// installed when a model first needs it rather than when the app starts.
@@ -59,6 +65,9 @@ pub struct ProcessLauncher {
     logs: PathBuf,
     /// Where llama.cpp servers save slots when their model is swapped out.
     slots: Option<PathBuf>,
+    /// The data folder, whose `runtimes/ncm-server` holds the approved `ncm-server` copy
+    /// ([`crate::ncm_runtime`]); `None` until set, when NCM models cannot load.
+    ncm_data: Mutex<Option<PathBuf>>,
     http: reqwest::Client,
 }
 
@@ -73,8 +82,29 @@ impl ProcessLauncher {
             hooks: Mutex::new(None),
             logs,
             slots: None,
+            ncm_data: Mutex::new(None),
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Runs NCM models with the `ncm-server` approved under `data_dir`
+    /// ([`crate::ncm_runtime::verify`]), checked again at every launch.
+    pub fn with_ncm_data_dir(self, data_dir: PathBuf) -> Self {
+        *self.ncm_data.lock().unwrap_or_else(PoisonError::into_inner) = Some(data_dir);
+        self
+    }
+
+    /// The approved `ncm-server` copy, verified for one launch (hashed off the async threads).
+    async fn verified_ncm(&self) -> Result<crate::ncm_runtime::Verified, String> {
+        let data = self
+            .ncm_data
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| crate::ncm_runtime::HOW_TO_INSTALL.to_string())?;
+        tokio::task::spawn_blocking(move || crate::ncm_runtime::verify(&data))
+            .await
+            .map_err(|error| format!("checking the approved ncm-server failed: {error}"))?
     }
 
     /// Saves the slots of models swapped out to `dir` (see [`Launcher::slot_dir`]).
@@ -165,7 +195,34 @@ impl ProcessLauncher {
     }
 
     async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
-        let mut program = self.program(spec.backend.id())?;
+        // An NCM model runs the approved copy of ncm-server, hashed through a handle held for
+        // the server's life, from its own folder; nothing beside the binary the user named is
+        // loaded.
+        let ncm = if spec.backend.id() == NCM {
+            let verified = self.verified_ncm().await?;
+            if !verified.approval.cuda
+                && spec
+                    .args()
+                    .windows(2)
+                    .any(|pair| pair[0] == "--device" && pair[1] == "cuda")
+            {
+                return Err(format!(
+                    "the approved ncm-server ({}) was approved as a build without CUDA, so it \
+                     cannot run this model on the GPU: set runtime.ncm.device to auto or cpu, or \
+                     build it with `--features cuda` and approve it again with `imperium runtime \
+                     ncm use <path>`",
+                    verified.approval.source.display()
+                )
+                .into());
+            }
+            Some(verified)
+        } else {
+            None
+        };
+        let mut program = match &ncm {
+            Some(verified) => verified.program.clone(),
+            None => self.program(spec.backend.id())?,
+        };
         let hooks = (spec.backend.id() == LLAMA_CPP)
             .then(|| self.hooks())
             .flatten();
@@ -227,7 +284,8 @@ impl ProcessLauncher {
         };
         let program = program.as_path();
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
-        let log_path = self.logs.join(format!("llama-{}.log", spec.model_id));
+        let prefix = if ncm.is_some() { "ncm" } else { "llama" };
+        let log_path = self.logs.join(format!("{prefix}-{}.log", spec.model_id));
         let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         let mut command = Command::new(program);
         command
@@ -248,7 +306,19 @@ impl ProcessLauncher {
         for variable in crate::backend::scrubbed_env(spec) {
             command.env_remove(&variable);
         }
-        if container.is_none() && in_wsl.is_none() {
+        if let Some(allowlist) = spec.backend.env_allowlist() {
+            // Only what the server needs: no secrets, no CUBECL_* switches.
+            command.env_clear();
+            command.envs(crate::backend::allowed_env(
+                allowlist,
+                std::env::vars_os()
+                    .filter_map(|(name, value)| Some((name.into_string().ok()?, value))),
+                cfg!(windows),
+            ));
+        }
+        if let Some(verified) = &ncm {
+            command.current_dir(&verified.dir);
+        } else if container.is_none() && in_wsl.is_none() {
             library_path(&mut command, program);
         }
         if spec.backend.id() == VLLM {
@@ -278,6 +348,26 @@ impl ProcessLauncher {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
                 container,
                 wsl: wsl_guard,
+                // ncm-server keeps running after an internal error but answers 503 to
+                // everything: watched, it counts as crashed and is loaded again.
+                watch: ncm.as_ref().map(|_| {
+                    let poisoned = Arc::new(Mutex::new(None));
+                    let task = watch_health(
+                        self.http.clone(),
+                        base.clone(),
+                        HealthLimits {
+                            every: NCM_HEALTH_EVERY,
+                            timeout: NCM_HEALTH_TIMEOUT,
+                            hung_after: NCM_HUNG_AFTER,
+                        },
+                        Arc::clone(&poisoned),
+                    );
+                    HealthWatch {
+                        poisoned,
+                        _task: AbortOnDrop(task),
+                    }
+                }),
+                _held: ncm.map(|verified| verified.held),
                 pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
@@ -350,6 +440,11 @@ struct ProcessServer {
     container: Option<ContainerGuard>,
     /// The `vllm` process inside WSL2 of a model run there; killed by [`Server::stop`] or on drop.
     wsl: Option<WslGuard>,
+    /// The handle the approved `ncm-server` copy was hashed through, held while the server
+    /// runs so the file cannot be replaced under it (Windows).
+    _held: Option<std::fs::File>,
+    /// The `/health` watch of an `ncm-server` ([`watch_health`]).
+    watch: Option<HealthWatch>,
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
     /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
@@ -472,8 +567,18 @@ impl Server for ProcessServer {
     }
 
     /// Asks the OS whether the process is still there (a non-blocking `try_wait`); a child
-    /// [`Server::stop`] has taken was stopped on purpose, not crashed.
+    /// [`Server::stop`] has taken was stopped on purpose, not crashed. An `ncm-server` that
+    /// answered 503 after it was ready has stopped serving and counts as crashed too.
     fn exited(&self) -> Option<String> {
+        if let Some(watch) = &self.watch
+            && let Some(why) = watch
+                .poisoned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        {
+            return Some(why);
+        }
         let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
         match child.as_mut()?.try_wait() {
             Ok(Some(status)) => Some(format!("the server exited ({status})")),
@@ -481,6 +586,105 @@ impl Server for ProcessServer {
             Ok(None) | Err(_) => None,
         }
     }
+}
+
+/// The `/health` watch of a loaded `ncm-server`: what it found, and its task, stopped with the
+/// server.
+struct HealthWatch {
+    /// Why the server stopped serving, once it answered 503.
+    poisoned: Arc<Mutex<Option<String>>>,
+    _task: AbortOnDrop,
+}
+
+/// Aborts a task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// How [`watch_health`] asks: every `every`, each answer within `timeout`, and `hung_after`
+/// timeouts in a row taken for a hung server.
+#[derive(Debug, Clone, Copy)]
+struct HealthLimits {
+    every: Duration,
+    timeout: Duration,
+    hung_after: u32,
+}
+
+/// Whether something accepts a TCP connection at `root` (`http://host:port`) within `limit`.
+async fn accepts(root: &str, limit: Duration) -> bool {
+    let address = root.trim_start_matches("http://").trim_end_matches('/');
+    matches!(
+        tokio::time::timeout(limit, tokio::net::TcpStream::connect(address)).await,
+        Ok(Ok(_))
+    )
+}
+
+/// Asks `GET <root>/health` every `limits.every` until the server answers 503, or times out
+/// `limits.hung_after` times in a row, then records why in `poisoned` and stops. A loaded
+/// `ncm-server` answers 503 to every request, `/health` included, once its engine hit an internal
+/// error, while the process keeps running; a hung one answers nothing. The supervisor then treats
+/// it as crashed ([`Server::exited`]), stops it and loads the model again at its next call. Any
+/// answer resets the count; a refused connection is not counted (an exited process is seen by
+/// the process check).
+fn watch_health(
+    http: reqwest::Client,
+    root: String,
+    limits: HealthLimits,
+    poisoned: Arc<Mutex<Option<String>>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut timeouts = 0_u32;
+        loop {
+            tokio::time::sleep(limits.every).await;
+            let response = match http
+                .get(format!("{root}/health"))
+                .timeout(limits.timeout)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    timeouts = 0;
+                    response
+                }
+                Err(error) if error.is_timeout() => {
+                    // A refused or unreachable port can also time out (Windows retries a
+                    // refused connect), and is left to the process check: count only a server
+                    // that accepts the connection and then does not answer.
+                    if !accepts(&root, limits.timeout).await {
+                        continue;
+                    }
+                    timeouts += 1;
+                    if timeouts >= limits.hung_after {
+                        *poisoned.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+                            "the server is hung: /health did not answer within {} ms {timeouts} \
+                             times in a row",
+                            limits.timeout.as_millis()
+                        ));
+                        return;
+                    }
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                continue;
+            }
+            let body = response.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| value["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or(body);
+            let message: String = message.chars().take(300).collect();
+            *poisoned.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+                "the server stopped serving after an internal error (503: {message})"
+            ));
+            return;
+        }
+    })
 }
 
 /// A model's Docker container, removed when this is dropped unless [`ContainerGuard::remove`]
@@ -821,9 +1025,132 @@ mod tests {
         lines(log)
     }
 
+    #[tokio::test]
+    async fn an_ncm_server_answering_503_after_it_was_ready_counts_as_crashed() {
+        use std::sync::atomic::AtomicUsize;
+        // ncm-server after an internal error: 200 while it serves, then 503 to everything.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(move || {
+                let counted = Arc::clone(&counted);
+                async move {
+                    if counted.fetch_add(1, Ordering::SeqCst) < 2 {
+                        (axum::http::StatusCode::OK, r#"{"status":"ok"}"#.to_string())
+                    } else {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            r#"{"error":{"code":503,"message":"the model stopped after an internal error: boom","type":"unavailable_error"}}"#.to_string(),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let served = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let poisoned = Arc::new(Mutex::new(None));
+        let watch = HealthWatch {
+            poisoned: Arc::clone(&poisoned),
+            _task: AbortOnDrop(watch_health(
+                reqwest::Client::new(),
+                root.clone(),
+                HealthLimits {
+                    every: Duration::from_millis(20),
+                    timeout: Duration::from_secs(5),
+                    hung_after: 3,
+                },
+                Arc::clone(&poisoned),
+            )),
+        };
+        let server = ProcessServer {
+            _held: None,
+            watch: Some(watch),
+            container: None,
+            wsl: None,
+            pid: None,
+            child: Mutex::new(None),
+            base_url: format!("{root}/v1"),
+            root,
+            http: reqwest::Client::new(),
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while server.exited().is_none() {
+            assert!(tokio::time::Instant::now() < deadline, "503 never seen");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let why = server.exited().unwrap();
+        assert!(
+            why.contains("internal error") && why.contains("boom"),
+            "{why}"
+        );
+        assert!(calls.load(Ordering::SeqCst) >= 3);
+        served.abort();
+    }
+
+    #[tokio::test]
+    async fn a_loaded_server_whose_health_keeps_timing_out_counts_as_hung() {
+        // Accepts connections and answers `/health` only after far longer than the timeout.
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                "late"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let served = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let poisoned = Arc::new(Mutex::new(None));
+        let task = watch_health(
+            reqwest::Client::new(),
+            root,
+            HealthLimits {
+                every: Duration::from_millis(10),
+                timeout: Duration::from_millis(50),
+                hung_after: 3,
+            },
+            Arc::clone(&poisoned),
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while poisoned.lock().unwrap().is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never taken for hung"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let why = poisoned.lock().unwrap().clone().unwrap();
+        assert!(why.contains("hung") && why.contains("3 times"), "{why}");
+        task.abort();
+        served.abort();
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_answer_is_not_taken_for_a_poisoned_one() {
+        let poisoned = Arc::new(Mutex::new(None));
+        // Nothing listens there.
+        let task = watch_health(
+            reqwest::Client::new(),
+            "http://127.0.0.1:9".into(),
+            HealthLimits {
+                every: Duration::from_millis(10),
+                timeout: Duration::from_millis(100),
+                hung_after: 1,
+            },
+            Arc::clone(&poisoned),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        task.abort();
+        assert!(poisoned.lock().unwrap().is_none());
+    }
+
     #[cfg(unix)]
     fn server_with(container: Option<ContainerGuard>) -> ProcessServer {
         ProcessServer {
+            _held: None,
+            watch: None,
             container,
             wsl: None,
             pid: None,
@@ -925,6 +1252,7 @@ mod tests {
     #[cfg(unix)]
     fn wsl_server(guard: WslGuard) -> ProcessServer {
         ProcessServer {
+            _held: None,
             wsl: Some(guard),
             ..server_with(None)
         }

@@ -57,23 +57,23 @@ pub(crate) fn set_config(
             })
             .ok_or_else(|| format!("local model {}: no such model in models.folders", update.id))?;
         let settings = &update.settings;
-        if model.format == imperium_local::scan::Format::Safetensors
+        if model.format != imperium_local::scan::Format::Gguf
             && (settings.cache_type_k.is_some()
                 || settings.cache_type_v.is_some()
                 || settings.flash_attn.is_some()
                 || settings.max_gpu_layers.is_some())
         {
             return Err(format!(
-                "local model {}: cache types, flash attention and GPU layers do not apply to a vLLM model",
-                update.id
+                "local model {}: cache types, flash attention and GPU layers do not apply to a {} model",
+                update.id,
+                runtime_name(model.format)
             ));
         }
-        if model.format == imperium_local::scan::Format::Safetensors
-            && settings.draft_model.is_some()
-        {
+        if model.format != imperium_local::scan::Format::Gguf && settings.draft_model.is_some() {
             return Err(format!(
-                "local model {}: a draft model does not apply to a vLLM model",
-                update.id
+                "local model {}: a draft model does not apply to a {} model",
+                update.id,
+                runtime_name(model.format)
             ));
         }
         if settings.draft_model.as_deref() == Some(update.id.as_str()) {
@@ -205,8 +205,17 @@ pub(crate) struct CardChange {
     pub after: Option<String>,
 }
 
+/// The name of the runtime that serves `format`, for messages.
+fn runtime_name(format: imperium_local::scan::Format) -> &'static str {
+    match format {
+        imperium_local::scan::Format::Gguf => "llama.cpp",
+        imperium_local::scan::Format::Safetensors => "vLLM",
+        imperium_local::scan::Format::NcmSafetensors => "NCM",
+    }
+}
+
 /// Finds where `model` keeps its card: a model table row by id (or by spec), else a local model
-/// by id (or by its `llamacpp:` / `vllm:` spec).
+/// by id (or by its `llamacpp:` / `vllm:` / `ncm:` spec).
 pub(crate) fn card_target(state: &DaemonState, model: &str) -> Result<(String, CardKind), String> {
     let model = model.trim();
     let settings = state.settings();
@@ -216,6 +225,7 @@ pub(crate) fn card_target(state: &DaemonState, model: &str) -> Result<(String, C
     let local_id = model
         .strip_prefix("llamacpp:")
         .or_else(|| model.strip_prefix("vllm:"))
+        .or_else(|| model.strip_prefix("ncm:"))
         .unwrap_or(model);
     let local = state.local_runtime().and_then(|local| {
         local
@@ -579,11 +589,10 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                     supervisor.config_estimate(model, &settings.launch_of(&model.id));
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
-                let vllm = model.format == imperium_local::scan::Format::Safetensors;
-                let spec = format!("{}:{}", if vllm { "vllm" } else { "llamacpp" }, model.id);
+                let spec = format!("{}:{}", model.format.endpoint(), model.id);
                 LocalModelConfig {
                     id: model.id.clone(),
-                    runtime: if vllm { "vllm" } else { "llamacpp" }.into(),
+                    runtime: model.format.endpoint().into(),
                     saved: from_local(
                         saved_entry(saved, &["runtime", "llamacpp", "models"], &model.id)
                             .unwrap_or_default(),

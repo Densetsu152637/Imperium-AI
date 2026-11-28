@@ -2,7 +2,7 @@
 //! (anything reached over an endpoint, which spends the user's keys and money) only when its
 //! spec is listed in `api.openai_compatible.expose` and is a row of the model table.
 
-use imperium_config::{LLAMACPP_ENDPOINT, Settings, VLLM_ENDPOINT};
+use imperium_config::{Settings, VLLM_ENDPOINT};
 
 use crate::DaemonState;
 
@@ -81,7 +81,7 @@ pub(crate) fn find(state: &DaemonState, id: &str) -> Result<Candidate, String> {
 }
 
 pub(crate) fn is_local_endpoint(endpoint: &str) -> bool {
-    endpoint == LLAMACPP_ENDPOINT || endpoint == VLLM_ENDPOINT
+    imperium_config::is_local_endpoint(endpoint)
 }
 
 /// Whether the model's server takes `tools`. llama.cpp is always started with `--jinja`, which

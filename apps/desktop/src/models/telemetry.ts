@@ -36,7 +36,7 @@ export type TelemetryRow = {
 type Work = { models: string[]; calls: ModelCall[] };
 
 /** Runtimes the daemon starts on this machine; their specs are `<runtime>:<model>`. */
-const LOCAL_RUNTIMES = ["llamacpp", "vllm"];
+const LOCAL_RUNTIMES = ["llamacpp", "vllm", "ncm"];
 
 /**
  * The name a model goes by in telemetry: its alias (the table row's, else one of `aliases` for

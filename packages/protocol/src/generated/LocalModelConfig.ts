@@ -9,7 +9,7 @@ export type LocalModelConfig = {
 /**
  * The id in `models.local`.
  */
-id: string, runtime: "llamacpp" | "vllm", 
+id: string, runtime: "llamacpp" | "vllm" | "ncm", 
 /**
  * What the app's settings file sets; null fields take the effective value from elsewhere.
  */

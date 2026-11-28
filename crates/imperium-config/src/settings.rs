@@ -264,6 +264,19 @@ pub const LLAMACPP_ENDPOINT: &str = "llamacpp";
 /// `vllm:<folder name>`.
 pub const VLLM_ENDPOINT: &str = "vllm";
 
+/// The endpoint id that names NCM models (Princeps) served by a supervised `ncm-server`, as in
+/// `ncm:<weight file stem>`.
+pub const NCM_ENDPOINT: &str = "ncm";
+
+/// The endpoint ids of the runtimes the daemon supervises: a spec on one of them names a local
+/// model in `models.folders`.
+pub const LOCAL_ENDPOINTS: [&str; 3] = [LLAMACPP_ENDPOINT, VLLM_ENDPOINT, NCM_ENDPOINT];
+
+/// Whether `endpoint` is one of [`LOCAL_ENDPOINTS`].
+pub fn is_local_endpoint(endpoint: &str) -> bool {
+    LOCAL_ENDPOINTS.contains(&endpoint)
+}
+
 /// Why `isolation.tier = "container"` is refused in server mode (`daemon.server`).
 pub const CONTAINER_TIER_ON_SERVER: &str = "isolation.tier = \"container\" is unavailable on a \
      server (daemon.server): it needs the Docker socket, which is root on the host; use \"os\" or \
@@ -304,7 +317,7 @@ impl Settings {
                  pointed at another source"
             ));
         }
-        for reserved in [LLAMACPP_ENDPOINT, VLLM_ENDPOINT] {
+        for reserved in LOCAL_ENDPOINTS {
             if self.endpoints.contains_key(reserved) {
                 return Err(format!(
                     "endpoints.{reserved} is reserved for local models in models.folders"
@@ -316,9 +329,10 @@ impl Settings {
             if !seen.insert(entry.id.as_str()) {
                 return Err(format!("models.catalog: id {:?} is used twice", entry.id));
             }
-            let served_locally = entry.spec.split_once(':').is_some_and(|(endpoint, _)| {
-                endpoint == LLAMACPP_ENDPOINT || endpoint == VLLM_ENDPOINT
-            });
+            let served_locally = entry
+                .spec
+                .split_once(':')
+                .is_some_and(|(endpoint, _)| is_local_endpoint(endpoint));
             if served_locally && entry.location != Location::Local {
                 return Err(format!(
                     "models.catalog: {:?} runs on this machine, so its location must be local",
@@ -533,6 +547,7 @@ impl Settings {
                 dir.display().to_string()
             ));
         }
+        self.runtime.ncm.validate()?;
         let swap_gain = self.runtime.llamacpp.swap_gain;
         if !swap_gain.is_finite() || swap_gain < 1.0 {
             return Err(format!(
@@ -2040,6 +2055,90 @@ pub struct RuntimeSettings {
     pub llamacpp: LlamaCppSettings,
     #[serde(default)]
     pub vllm: VllmSettings,
+    #[serde(default)]
+    pub ncm: NcmSettings,
+}
+
+/// `ncm-server` serves NCM weight files (Princeps). There are no release builds yet: it runs
+/// only from a binary the user built and approved (`imperium runtime ncm use <path>`), which is
+/// copied into the data folder and re-hashed at every launch.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NcmSettings {
+    /// The `ncm-server` the user built and approved, as they named it; what runs is the approved
+    /// copy in `<data>/runtimes/ncm-server/user/<sha256>/`. Unset, NCM models cannot load. Never
+    /// searched for on `PATH`.
+    pub custom_path: Option<PathBuf>,
+    /// `auto` (CUDA when the model fits on the GPU, else the CPU), `cuda`, or `cpu`.
+    pub device: String,
+    /// Weight-only quantisation at load: `none` (the file as it is), `q8`, or `q4`.
+    pub quant: String,
+    /// Self-speculative decoding (`--speculate`); off by default, as the NCM session advises.
+    pub speculate: bool,
+    /// Most tokens one call may use: `auto` (the model's ceiling, capped to what fits) or a
+    /// number. Prefill, not memory, is the cost of a long context.
+    pub context: ContextLimit,
+    /// Extra arguments passed to every `ncm-server`; `--host` and `--port` are refused.
+    pub extra_args: Vec<String>,
+}
+
+/// `runtime.ncm.context` by default: 32k tokens per call.
+pub const NCM_DEFAULT_CONTEXT: u32 = 32_768;
+
+impl Default for NcmSettings {
+    fn default() -> Self {
+        NcmSettings {
+            custom_path: None,
+            device: "auto".into(),
+            quant: "none".into(),
+            speculate: false,
+            context: ContextLimit::Tokens(NCM_DEFAULT_CONTEXT),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+/// Whether `arg` moves where a server listens: `--host`, `--port`, their `=` forms, and any
+/// abbreviation a flag parser could take for them (`--ho`, `--po`, ...).
+pub fn moves_listener(arg: &str) -> bool {
+    let flag = arg.split('=').next().unwrap_or(arg).to_ascii_lowercase();
+    let Some(name) = flag.strip_prefix("--") else {
+        return false;
+    };
+    name.len() >= 2 && ("host".starts_with(name) || "port".starts_with(name))
+}
+
+impl NcmSettings {
+    /// Checks the choices and that `extra_args` cannot move the server off `127.0.0.1`.
+    pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.device.as_str(), "auto" | "cuda" | "cpu") {
+            return Err(format!(
+                "runtime.ncm.device must be auto, cuda or cpu, not {:?}",
+                self.device
+            ));
+        }
+        if !matches!(self.quant.as_str(), "none" | "q8" | "q4") {
+            return Err(format!(
+                "runtime.ncm.quant must be none, q8 or q4, not {:?}",
+                self.quant
+            ));
+        }
+        if let Some(path) = &self.custom_path
+            && !path.is_absolute()
+        {
+            return Err(format!(
+                "runtime.ncm.custom_path must be an absolute path, not {:?}",
+                path.display().to_string()
+            ));
+        }
+        if let Some(arg) = self.extra_args.iter().find(|arg| moves_listener(arg)) {
+            return Err(format!(
+                "runtime.ncm.extra_args cannot set {arg:?}: ncm-server always listens on 127.0.0.1 \
+                 at a port Imperium picks"
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// vLLM serves Hugging Face model folders (Linux, WSL2 including from Windows, or a remote host).

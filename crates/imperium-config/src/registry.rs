@@ -169,6 +169,12 @@ pub static SETTINGS: &[SettingDef] = &[
     def("runtime.vllm.version", "vLLM version", STRING, "The vLLM release the managed environment installs (`imperium runtime vllm setup`); empty is the one Imperium pins."),
     def("runtime.vllm.docker_image", "vLLM Docker image", STRING, "The Docker image the managed environment pulls (`imperium runtime vllm setup --docker`); empty is the one Imperium pins."),
     def("runtime.vllm.wsl_distro", "vLLM WSL distribution", STRING, "On Windows, the WSL2 distribution vLLM runs in (`imperium runtime vllm setup --wsl`); empty is WSL's default distribution."),
+    def("runtime.ncm.custom_path", "ncm-server", PathKind, "The ncm-server you built (cargo build --release -p ncm-server --features cuda in Imperium-Models models/ncm), for Princeps (ncm:) models. Set it with `imperium runtime ncm use <path>` at a terminal, which shows its SHA-256 without running it and, once you confirm, copies it into Imperium's data folder and records whether it has CUDA; that copy is what runs. There are no ncm-server releases yet, and none is looked for on PATH."),
+    choice("runtime.ncm.device", "NCM device", &["auto", "cuda", "cpu"], "Where ncm-server runs a model: auto (CUDA when the approved build has it and the model fits on the GPU, else the CPU), cuda, or cpu."),
+    choice("runtime.ncm.quant", "NCM quantisation", &["none", "q8", "q4"], "Weight-only quantisation ncm-server applies at load. A file that is already quantised loads as it is with none."),
+    def("runtime.ncm.speculate", "NCM speculative decoding", Bool, "Self-speculative greedy decoding (--speculate, CUDA, a model with a draft head). Off by default."),
+    def("runtime.ncm.context", "NCM context per call", STRING, "Most tokens one call to an NCM model may use: auto (the model's ceiling, capped to what fits) or a number of tokens. Default 32768: prefill, not memory, is what a long context costs."),
+    def("runtime.ncm.extra_args", "Extra ncm-server arguments", StringList, "Arguments added to every ncm-server. --host and --port are refused: it always listens on 127.0.0.1."),
     def("hardware.vram_mb", "VRAM override (MB)", Integer, "Overrides the probed GPU memory; empty uses the probe."),
     def("hardware.ram_mb", "RAM override (MB)", Integer, "Overrides the probed system memory; empty uses the probe."),
     def("mcp.trusted_projects", "Trusted MCP projects", PathList, "Project folders whose .mcp.json servers may start."),
@@ -564,7 +570,7 @@ fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(toml_edit::Array::from_iter(items).into())
     };
-    if def.key == "runtime.llamacpp.context" {
+    if def.key == "runtime.llamacpp.context" || def.key == "runtime.ncm.context" {
         // `auto` or a whole number, written as the number.
         let limit = match value {
             Json::String(text) => crate::ContextLimit::parse(text)?,
@@ -798,6 +804,10 @@ mod tests {
                 SettingKind::Bool => default.is_boolean(),
                 SettingKind::Integer => default.is_i64() || default.is_u64(),
                 SettingKind::Number => default.is_number(),
+                // A context limit is `auto` or a number of tokens.
+                SettingKind::String if def.key.ends_with(".context") => {
+                    default.is_string() || default.is_u64()
+                }
                 SettingKind::String | SettingKind::Path => default.is_string(),
                 SettingKind::Enum => default.as_str().is_some_and(|v| def.options.contains(&v)),
                 SettingKind::PathList | SettingKind::StringList => default.is_array(),

@@ -3344,6 +3344,7 @@ Commands:
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
   use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+  ncm         The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
   help        Print this message or the help of the given subcommand(s)
 
 Options:
@@ -3508,6 +3509,76 @@ Print this message or the help of the given subcommand(s)
 
 Usage: imperium runtime vllm help help
 
+===== imperium runtime ncm =====
+The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
+
+Usage: imperium runtime ncm [OPTIONS] <COMMAND>
+
+Commands:
+  use     Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+  status  Show the approved ncm-server and whether its copy is intact
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime ncm use =====
+Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+
+Usage: imperium runtime ncm use [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime ncm status =====
+Show the approved ncm-server and whether its copy is intact
+
+Usage: imperium runtime ncm status [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+  -h, --help
+          Print help
+
+===== imperium runtime ncm help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime ncm help [COMMAND]
+
+Commands:
+  use     Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+  status  Show the approved ncm-server and whether its copy is intact
+  help    Print this message or the help of the given subcommand(s)
+
+===== imperium runtime ncm help use =====
+Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+
+Usage: imperium runtime ncm help use
+
+===== imperium runtime ncm help status =====
+Show the approved ncm-server and whether its copy is intact
+
+Usage: imperium runtime ncm help status
+
+===== imperium runtime ncm help help =====
+Print this message or the help of the given subcommand(s)
+
+Usage: imperium runtime ncm help help
+
 ===== imperium runtime help =====
 Print this message or the help of the given subcommand(s)
 
@@ -3519,6 +3590,7 @@ Commands:
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
   use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+  ncm         The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
   help        Print this message or the help of the given subcommand(s)
 
 ===== imperium runtime help install =====
@@ -3565,6 +3637,25 @@ Usage: imperium runtime help vllm status
 Remove the managed environment (its folder, or the Docker image)
 
 Usage: imperium runtime help vllm remove
+
+===== imperium runtime help ncm =====
+The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
+
+Usage: imperium runtime help ncm [COMMAND]
+
+Commands:
+  use     Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+  status  Show the approved ncm-server and whether its copy is intact
+
+===== imperium runtime help ncm use =====
+Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+
+Usage: imperium runtime help ncm use
+
+===== imperium runtime help ncm status =====
+Show the approved ncm-server and whether its copy is intact
+
+Usage: imperium runtime help ncm status
 
 ===== imperium runtime help help =====
 Print this message or the help of the given subcommand(s)
@@ -4651,6 +4742,7 @@ Commands:
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
   use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
+  ncm         The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
 
 ===== imperium help runtime install =====
 Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
@@ -4696,6 +4788,25 @@ Usage: imperium help runtime vllm status
 Remove the managed environment (its folder, or the Docker image)
 
 Usage: imperium help runtime vllm remove
+
+===== imperium help runtime ncm =====
+The ncm-server for NCM (Princeps) models (`ncm:<id>`). There are no release builds yet: build it (`cargo build --release -p ncm-server --features cuda` in Imperium-Models models/ncm) and approve it with `use`. Nothing is searched for on PATH or downloaded
+
+Usage: imperium help runtime ncm [COMMAND]
+
+Commands:
+  use     Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+  status  Show the approved ncm-server and whether its copy is intact
+
+===== imperium help runtime ncm use =====
+Approve an ncm-server you built, at a terminal (there is no --yes): shows its path, size and SHA-256 without running it, then copies it into Imperium's data folder (the copy is what runs, re-checked at every launch), records whether it has CUDA, and sets runtime.ncm.custom_path
+
+Usage: imperium help runtime ncm use
+
+===== imperium help runtime ncm status =====
+Show the approved ncm-server and whether its copy is intact
+
+Usage: imperium help runtime ncm status
 
 ===== imperium help mcp-serve =====
 Serve the Claude harness: an MCP server on standard input and output that lets an external agent such as Claude Code start sessions, follow them and answer their permission requests through this daemon. Register it in `.mcp.json`. With `--tools` it serves Imperium's own tools instead (files, search, web, memory), each run in an Imperium session under the user's permission rules

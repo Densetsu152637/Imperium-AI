@@ -6,7 +6,7 @@
 use toml_edit::{InlineTable, Item, Table, value};
 
 use crate::registry::edit_user_file;
-use crate::{EndpointSettings, LLAMACPP_ENDPOINT, Paths, SecretName, SetError, VLLM_ENDPOINT};
+use crate::{EndpointSettings, Paths, SecretName, SetError, is_local_endpoint};
 
 /// Whether `id` may name an endpoint: 1-40 lowercase letters, digits, `_` or `-`, starting with
 /// a letter or digit, and not one of the names reserved for local models.
@@ -17,8 +17,7 @@ pub fn valid_endpoint_id(id: &str) -> bool {
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && id.len() <= 40
         && id.chars().all(allowed)
-        && id != LLAMACPP_ENDPOINT
-        && id != VLLM_ENDPOINT
+        && !is_local_endpoint(id)
 }
 
 /// Writes `[endpoints.<id>]` with `base_url` and, when given, `api_key = { secret = ... }`,
