@@ -15,8 +15,9 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-# An advisory is ignored only with a reason, one entry each. The first group was in the workspace
-# before code mode added this check; the last two (zip 8.6.0 through the Monty worker's type checker) are what stage 1b's owned loop removes.
+# An advisory is ignored only with a reason, one entry each. All were in the workspace before code
+# mode added this check. The two Monty-only ones (zip 8.6.0 through the worker's type checker) went
+# with stage 1b, whose own worker loop leaves the type checker out.
 ignore = [
   { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained. Present in the workspace before code mode (stage 1a added the check); triage separately." },
   { id = "RUSTSEC-2026-0594", reason = "cookie nonces repeat in processes that fork. Present in the workspace before code mode (stage 1a added the check); triage separately." },
@@ -36,10 +37,8 @@ ignore = [
   { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
   { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
   { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
-  { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313), and also zip 0.6.6 via monty-typeshed; present before code mode, so not only Monty-related. The 4.6.1 copy stays until the updater can move (MSRV 1.90); the 0.6.6 copy until Monty drops it." },
+  { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related (the zip 0.6.6 copy via monty-typeshed went with stage 1b). Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
   { id = "RUSTSEC-2026-0548", reason = "zip 4.6.1, now used only through tauri-plugin-updater 2.12.0 (imperium-local is on zip 9.8.2 since #313); present before code mode, not Monty-related. Stays until the updater can move off zip 4.6.1 (its newer zip needs MSRV 1.90)." },
-  { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
-  { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 via monty-type-checking, which reads only Monty's bundled typeshed archive; revisit if the worker drops the type checker (code-mode plan F12)." },
 ]
 
 [licenses]

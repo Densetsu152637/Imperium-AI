@@ -4,22 +4,96 @@
 
 mod common;
 
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use common::{BOUND, session_members, spec, wait_until, work_dir};
 use imperium_pty::Pty;
 
+/// How many more tasks than the user has now the bomb may start.
+const HEADROOM: usize = 400;
+
+/// The bomb, run by bash. It caps itself first and refuses to start without the cap.
+///
+/// The cap is `RLIMIT_NPROC`, which counts the user's *tasks* (threads included), so the count it
+/// starts from is of tasks (`ps -L`), not processes. It is set with bash's `ulimit -u`: dash,
+/// Ubuntu's `/bin/sh`, has no `-u` (its process limit is `-p`), so when this ran under `sh` the
+/// `ulimit` failed, the script went on and the bomb ran uncapped. On a GitHub runner that filled
+/// the pids cgroup the runner's own agent shares (`pids.max` about 19,000); the agent's Go runtime
+/// died on `newosproc` and it shut the runner down mid-job. So the script checks that the limit
+/// took and exits before the bomb if it did not.
+///
+/// The kernel does not enforce `RLIMIT_NPROC` for uid 0 (nor with `CAP_SYS_RESOURCE` or
+/// `CAP_SYS_ADMIN`): the limit reads back but the bomb would run uncapped. So the script refuses
+/// to start as root, before the `ulimit`. A non-root user with one of those capabilities is not
+/// detected; CI runs as an ordinary user.
+///
+/// The shell then stays (`exec sleep`, which needs no fork once the cap is reached): a shell that
+/// exits ends the terminal, and the supervisor would kill the bomb before it spreads.
+fn script() -> String {
+    format!(
+        "[ \"$(id -u)\" != 0 ] || {{ echo NO-CAP-ROOT; exit 99; }}; \
+         n=$(ps -L -u \"$(id -u)\" -o lwp= | wc -l); cap=$((n + {HEADROOM})); \
+         ulimit -u \"$cap\" && [ \"$(ulimit -u)\" = \"$cap\" ] || {{ echo NO-CAP-LIMIT; exit 99; }}; \
+         echo \"CAP:$cap:E\"; b() {{ b | b & }}; b; exec sleep 60"
+    )
+}
+
+/// Waits for the script to report its cap; a refusal fails the test at once, with the reason.
+fn wait_for_cap(pty: &Pty) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let text = common::output(pty);
+        assert!(
+            !text.contains("NO-CAP-ROOT"),
+            "the fork bomb refused to start: it runs as root, where RLIMIT_NPROC is not enforced; \
+             run this test as an ordinary user"
+        );
+        assert!(
+            !text.contains("NO-CAP-LIMIT"),
+            "the fork bomb refused to start: `ulimit -u` did not take; output: {text:?}"
+        );
+        if common::number_between(&text, "CAP:", ":E").is_some() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the fork bomb's cap; output so far: {text:?}"
+        );
+        sleep(Duration::from_millis(25));
+    }
+}
+
 #[test]
 fn an_exponential_fork_bomb_is_ended() {
     let dir = work_dir();
-    // `ulimit -u` caps this process tree at 400 more processes than the user has now, so the
-    // bomb cannot starve the machine; inside the cap it forks as fast as it can.
-    let script = "n=$(ps -u $(id -u) -o pid= | wc -l); ulimit -u $((n + 400)); b() { b | b & }; b";
-    let pty = Pty::spawn(spec("/bin/sh", &["-c", script], dir.path())).unwrap();
+    let script = script();
+    let pty = Pty::spawn(spec("/bin/bash", &["-c", &script], dir.path())).unwrap();
     let supervisor = pty.pid().unwrap();
-    wait_until("the bomb to spread", || {
-        session_members(supervisor).len() > 100
-    });
+    // The cap is in force before the bomb's first fork, or the test stops here.
+    wait_for_cap(&pty);
+    let deadline = Instant::now() + BOUND;
+    while session_members(supervisor).len() <= 100 {
+        if Instant::now() >= deadline {
+            let text = common::output(&pty);
+            let tail: String = text
+                .chars()
+                .skip(text.chars().count().saturating_sub(1500))
+                .collect();
+            panic!(
+                "the bomb did not spread: {} processes in the session; output ends {tail:?}",
+                session_members(supervisor).len()
+            );
+        }
+        sleep(Duration::from_millis(25));
+    }
+    // Capped, the bomb levels off near its headroom; uncapped it reaches thousands in a second.
+    sleep(Duration::from_secs(1));
+    let spread = session_members(supervisor).len();
+    assert!(
+        spread <= HEADROOM + 200,
+        "the bomb outgrew its cap: {spread} processes in the terminal's session"
+    );
     let started = Instant::now();
     pty.end();
     assert!(

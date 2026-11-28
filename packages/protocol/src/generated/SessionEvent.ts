@@ -21,7 +21,17 @@ import type { ToolLoadVia } from "./ToolLoadVia";
 /**
  * Something that happened in a session, in order.
  */
-export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
+export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "thinking_delta", text: string, 
+/**
+ * When the fragment was produced, in milliseconds since the Unix epoch; a client
+ * takes a run's start and, if the daemon died before `thinking_finished`, its end
+ * from these. Absent from a client that does not send it.
+ */
+at_ms?: number, } | { "type": "thinking_finished", 
+/**
+ * Time from the run's first fragment to its end.
+ */
+duration_ms: number, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
 /**
  * The call's JSON arguments as the model wrote them, truncated for display; absent in
  * history recorded before arguments were sent.
@@ -77,7 +87,24 @@ prompt_tokens: number | null,
 /**
  * Prompt tokens served from the provider's cache.
  */
-cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "task_spawned", task_id: string, brief: string, model: string, 
+cached_tokens: number, 
+/**
+ * The context window the model table's row sets for the model (its `context_window`),
+ * the most the view shows the context filling to. Absent when the row sets none; a
+ * client then falls back to `context_window`.
+ */
+configured_window?: number, 
+/**
+ * Tokens held back for the reply: the `max_tokens` the call was sent with. Absent when
+ * the call set no cap (hosted models usually set none).
+ */
+reserved_output_tokens?: number, 
+/**
+ * Tokens of context a local server holds for this agent (its slot's `n_ctx`, within
+ * the `--ctx-size` pool), used or not. Absent for hosted models and when the server
+ * reported none.
+ */
+allocated_context?: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "task_spawned", task_id: string, brief: string, model: string, 
 /**
  * A short name for the task (3 to 6 words), from the delegator or derived from the
  * brief; shown instead of the task id. Empty in journals written before titles.

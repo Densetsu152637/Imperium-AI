@@ -41,6 +41,66 @@ fn a_job_that_calls_setsid_is_gone_after_end() {
     wait_gone("the setsid job", job);
 }
 
+/// Ending a terminal signals only what the terminal started. A process that shares this test
+/// harness's session and process group (as every step of a CI job shares its runner's, and every
+/// child of the daemon shares the daemon's) outlives the supervisor's kill-all and the daemon's
+/// session sweep, unstopped. A background job, a `setsid` job and a fork loop give the kill-all
+/// and the sweep work to do; the loop is bounded (300 rounds), so a supervisor that failed to end
+/// it could not grow it for ever.
+#[test]
+fn ending_a_terminal_leaves_the_daemons_own_session_alone() {
+    /// Kills and reaps the sibling on every way out of the test, a failed assertion included.
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let dir = work_dir();
+    let mut sibling = Reaped(
+        Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let me = std::process::id();
+    assert_eq!(
+        stat_field(sibling.0.id(), 2),
+        stat_field(me, 2),
+        "same group"
+    );
+    assert_eq!(
+        stat_field(sibling.0.id(), 3),
+        stat_field(me, 3),
+        "same session"
+    );
+    let pty = Pty::spawn(spec(BASH, &BASH_ARGS, dir.path())).unwrap();
+    pty.write(
+        b"sleep 60 & setsid sleep 60 & (for i in $(seq 300); do sleep 60 & sleep 0.01; done) & echo GO-$((6*7))\n",
+    )
+    .unwrap();
+    wait_for(&pty, "GO-42");
+    let supervisor = pty.pid().unwrap();
+    wait_until("the loop to be forking", || {
+        session_members(supervisor).len() > 5
+    });
+    pty.end();
+    wait_until("the terminal's session to be empty", || {
+        session_members(supervisor).is_empty()
+    });
+    // Late signals (a sweep still running) would land in this window.
+    sleep(Duration::from_millis(500));
+    let state = stat_field(sibling.0.id(), 0);
+    assert!(
+        matches!(state.as_deref(), Some("S" | "R")),
+        "the harness's sibling was stopped or ended (state {state:?})"
+    );
+    assert!(sibling.0.try_wait().unwrap().is_none(), "the sibling ended");
+}
+
 #[test]
 fn closing_the_pty_master_leaves_no_setsid_grandchild() {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};

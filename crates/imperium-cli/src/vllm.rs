@@ -81,6 +81,7 @@ fn installer_variables(vars: impl Iterator<Item = (String, String)>) -> Vec<Stri
 pub fn setup(docker: bool, in_wsl: bool, yes: bool, version: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    crate::local::refuse_while_local_off(&settings, "setting up vLLM")?;
     let mode = if docker {
         Mode::Docker
     } else if in_wsl {

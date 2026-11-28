@@ -133,6 +133,7 @@ pub static SETTINGS: &[SettingDef] = &[
     live(def("workspaces.root", "Working folders", PathKind, "The folder that holds a working folder for every environment: its Memory.md and a scratch folder per session (deleted when the session is archived). Changing it moves what is there. Empty: <data>/workspaces.")),
     live(def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>.")),
     live(def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models, LM Studio and Hugging Face cache folders, and Hugging Face model folders; scanned again at once when changed.")),
+    live(def("models.local.enabled", "Local models", Bool, "Local models (llama.cpp, vLLM) are off until you turn them on: while off, none is routed to, picked for a session, started, downloaded or installed, though they and their runtimes stay listed (as off) and can be set up. Each model also has its own switch; a local model runs only when both are on. The daemon writes it once, at the first start of the version that introduced it: on if you had set up local models before (a model folder or download folder with models, a local model row, per-model settings, a custom llama-server, a local default), else off. After that an unset value means off, and adding a folder or a download folder never turns it on. Downloads and runtime installs are refused while it is off. An agent cannot turn it on.")),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
     live(choice("models.effort", "Reasoning effort", &["low", "medium", "high", "max"], "How hard models that can reason think before answering, for new sessions; each session can change its own. Models that cannot reason are sent nothing.")),
     live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
@@ -217,9 +218,15 @@ pub static SETTINGS: &[SettingDef] = &[
     def("isolation.container_image", "Container image", STRING, "Image commands run in for the container tier."),
     def("isolation.network", "Network in sandbox", Bool, "Whether sandboxed and container commands may use the network."),
     def("web.enabled", "Web tools", Bool, "Offer web_fetch (and web_search with a provider) to agents."),
-    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search."),
+    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search. With none, web_search tells the agent to ask you to set one up: give a SearXNG URL below, or a Brave, Tavily, Kagi or Exa key (the key settings below hold keychain secret names; store the key itself with `imperium secret set <name>`)."),
     def("web.searxng_url", "SearXNG URL", STRING, "A SearXNG instance with the JSON format enabled."),
-    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key."),
+    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key; a provider's own key below wins over it."),
+    def("web.search_fallback", "Search fallback providers", StringList, "Providers tried in this order after the one above when it is blocked, fails or finds nothing: searxng, brave, tavily, kagi, or exa. The result says which one answered. Empty: no fallback."),
+    def("web.brave_key", "Brave Search API key", SecretRef, "Keychain secret holding your Brave Search API key."),
+    def("web.tavily_key", "Tavily API key", SecretRef, "Keychain secret holding your Tavily key."),
+    def("web.kagi_key", "Kagi API token", SecretRef, "Keychain secret holding your Kagi Search API token."),
+    def("web.exa_key", "Exa API key", SecretRef, "Keychain secret holding your Exa key."),
+    def("web.archive_fallback", "Archived copies of blocked pages", Bool, "Off by default. When web_fetch meets a CAPTCHA or bot-protection challenge, ask the Wayback Machine (web.archive.org) for a copy; the result says it is archived and when. Sends only the page's URL, and only for public pages: never for URLs with credentials, single-label or private-network names (.local, .internal, .corp, .lan, .home.arpa), private or loopback addresses, or names that resolve to them."),
     def("web.allow_domains", "Allowed domains", StringList, "Domains web_fetch reads without asking (subdomains included)."),
     def("web.cache_ttl_s", "Fetch cache lifetime (seconds)", Integer, "How long web_fetch reuses a page it has read; 0 turns the cache off. Pages with Cache-Control no-store, private or no-cache, cookies, or authentication are never cached."),
     def("web.cache_max_mb", "Fetch cache size (MB)", Integer, "The most disk the web_fetch cache may use; the oldest pages go first. 0 turns the cache off."),
@@ -360,6 +367,11 @@ fn state(def: &'static SettingDef, config: &Config, defaults: &Json) -> SettingS
         .and_then(|explained| explained.source.cloned())
         .unwrap_or(Source::Default);
     let value = match explained {
+        // Unset, `models.local.enabled` follows whether local models were set up before.
+        None if def.key == "models.local.enabled" => config.settings().map_or_else(
+            |_| default.clone(),
+            |settings| Json::Bool(settings.models.local.enabled),
+        ),
         Some(explained) => match def.kind {
             SettingKind::SecretRef => secret_name(&toml_to_json(explained.value)),
             _ => toml_to_json(explained.value),
@@ -450,6 +462,51 @@ pub fn set_user_setting(
     };
     let config = edit_user_file(paths, env, |document| edit(document, key, new))?;
     Ok(state(def, &config, &default_values()))
+}
+
+/// The one-time migration of the local-models switch (`models.local.enabled`), run at the
+/// daemon's first start of the version that introduced it. With the switch unset in every layer
+/// and no `models.local.migrated`, it writes the switch to the user's file explicitly: true when
+/// local models were set up before ([`crate::Settings::has_local_setup`], or a non-empty
+/// download folder such as `<data>/models`), else false. It also sets `models.local.migrated`,
+/// after which an unset switch means off and nothing is inferred. Returns the value written,
+/// or `None` when it had already run or the switch was set explicitly (which only records the
+/// marker).
+pub fn migrate_local_switch(
+    paths: &Paths,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<Option<bool>, SetError> {
+    let env: Vec<(String, String)> = env.into_iter().collect();
+    let config = load(paths, None, env.clone()).map_err(|error| SetError::UserFile {
+        path: paths.user_config_file(),
+        message: error.to_string(),
+    })?;
+    let done = config
+        .explain("models.local.migrated")
+        .is_some_and(|set| set.value.as_bool() == Some(true));
+    if done {
+        return Ok(None);
+    }
+    let explicit = config.explain("models.local.enabled").is_some();
+    let mut written = None;
+    if !explicit {
+        // Unmigrated, so this infers from the settings.
+        let settings = config.settings().map_err(|error| SetError::UserFile {
+            path: paths.user_config_file(),
+            message: error.to_string(),
+        })?;
+        let downloads = settings.models.download_dir(paths.data_dir());
+        let downloaded =
+            std::fs::read_dir(&downloads).is_ok_and(|mut found| found.next().is_some());
+        written = Some(settings.models.local.enabled || downloaded);
+    }
+    edit_user_file(paths, env, |document| {
+        if let Some(on) = written {
+            edit(document, "models.local.enabled", Some(on.into()))?;
+        }
+        edit(document, "models.local.migrated", Some(true.into()))
+    })?;
+    Ok(written)
 }
 
 /// Applies `change` to the user's `config.toml` (creating it when missing) and saves it, keeping
@@ -634,6 +691,87 @@ mod tests {
         env.iter()
             .map(|(name, value)| (name.to_string(), value.to_string()))
             .collect()
+    }
+
+    fn user_text(paths: &Paths) -> String {
+        std::fs::read_to_string(paths.user_config_file()).unwrap_or_default()
+    }
+
+    fn switch(paths: &Paths) -> bool {
+        load(paths, None, [])
+            .unwrap()
+            .settings()
+            .unwrap()
+            .models
+            .local
+            .enabled
+    }
+
+    #[test]
+    fn the_migration_writes_the_switch_once_on_for_an_existing_setup_and_off_for_a_new_one() {
+        // An existing user with a model folder: on, written once.
+        let (_home, paths) = home();
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        std::fs::write(
+            paths.user_config_file(),
+            "[models]\nfolders = ['/models']\n",
+        )
+        .unwrap();
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), Some(true));
+        let written = user_text(&paths);
+        assert!(written.contains("enabled = true"), "{written}");
+        assert!(written.contains("migrated = true"), "{written}");
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), None, "runs once");
+        assert_eq!(user_text(&paths), written, "the second run changes nothing");
+        assert!(switch(&paths));
+
+        // A new user: off, written, and nothing turns it on afterwards.
+        let (_home, paths) = home();
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), Some(false));
+        assert!(user_text(&paths).contains("enabled = false"));
+        assert!(!switch(&paths));
+        // After the migration, nothing is inferred: a model folder or download folder added
+        // later leaves the switch off, and so does removing the switch.
+        set_user_setting(
+            &paths,
+            "models.folders",
+            &serde_json::json!(["/models"]),
+            [],
+        )
+        .unwrap();
+        assert!(!switch(&paths), "a folder does not turn local models on");
+        set_user_setting(&paths, "models.local.enabled", &serde_json::json!(true), []).unwrap();
+        assert!(switch(&paths));
+        set_user_setting(&paths, "models.local.enabled", &serde_json::Value::Null, []).unwrap();
+        assert!(!switch(&paths), "unset means off once migrated");
+        let state = entry(&paths, "models.local.enabled", &[]);
+        assert_eq!(state.value, serde_json::Value::Bool(false));
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), None);
+
+        // An explicit value is kept; only the marker is recorded.
+        let (_home, paths) = home();
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        std::fs::write(
+            paths.user_config_file(),
+            "[models]\nfolders = ['/models']\n[models.local]\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), None);
+        assert!(!switch(&paths));
+        assert!(user_text(&paths).contains("migrated = true"));
+    }
+
+    #[test]
+    fn a_download_folder_with_models_counts_as_an_existing_setup() {
+        let (_home, paths) = home();
+        let models = paths.data_dir().join("models").join("owner").join("repo");
+        std::fs::create_dir_all(&models).unwrap();
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), Some(true));
+        assert!(switch(&paths));
+        // An empty one does not.
+        let (_home, paths) = home();
+        std::fs::create_dir_all(paths.data_dir().join("models")).unwrap();
+        assert_eq!(migrate_local_switch(&paths, []).unwrap(), Some(false));
     }
 
     #[test]
@@ -878,6 +1016,44 @@ default_method = \"rebase\"
     }
 
     #[test]
+    fn search_fallbacks_and_provider_keys_are_settings_and_keys_are_secret_names() {
+        let (_home, paths) = home();
+        let web = |paths: &Paths| {
+            load(paths, None, owned(&[]))
+                .unwrap()
+                .settings()
+                .unwrap()
+                .web
+        };
+        let fresh = web(&paths);
+        assert!(fresh.search_fallback.is_empty() && !fresh.archive_fallback);
+        assert!(fresh.brave_key.is_none() && fresh.exa_key.is_none());
+
+        set_user_setting(
+            &paths,
+            "web.search_fallback",
+            &Json::from(vec!["brave", "searxng"]),
+            [],
+        )
+        .unwrap();
+        set_user_setting(&paths, "web.brave_key", &Json::from("brave-main"), []).unwrap();
+        set_user_setting(&paths, "web.archive_fallback", &Json::from(true), []).unwrap();
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(
+            text.contains("brave_key = { secret = \"brave-main\" }"),
+            "{text}"
+        );
+        let saved = web(&paths);
+        assert_eq!(saved.search_fallback, ["brave", "searxng"]);
+        assert_eq!(saved.brave_key.unwrap().secret.as_str(), "brave-main");
+        assert!(saved.archive_fallback);
+        // A key is only ever a name; a value that is not a valid secret name is refused.
+        let error =
+            set_user_setting(&paths, "web.tavily_key", &Json::from("Bad Name"), []).unwrap_err();
+        assert!(matches!(error, SetError::InvalidValue { .. }), "{error}");
+    }
+
+    #[test]
     fn set_creates_a_missing_user_file() {
         let (_home, paths) = home();
         set_user_setting(&paths, "pets.enabled", &Json::from(false), []).unwrap();
@@ -958,6 +1134,11 @@ default_method = \"rebase\"
         // Well-typed but rejected by the loaded configuration: the file is restored.
         let error = set_user_setting(&paths, "daemon.port", &Json::from(70000), []).unwrap_err();
         assert!(matches!(error, SetError::Rejected(_)), "{error}");
+        unchanged();
+        let error = set_user_setting(&paths, "web.search_fallback", &Json::from(vec!["bing"]), [])
+            .unwrap_err();
+        assert!(matches!(error, SetError::Rejected(_)), "{error}");
+        assert!(error.to_string().contains("web.search_fallback"), "{error}");
         unchanged();
         let error = set_user_setting(&paths, "models.download_dir", &Json::from("relative"), [])
             .unwrap_err();

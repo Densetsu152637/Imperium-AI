@@ -38,6 +38,33 @@ per second, cost) followed by that call's `context_breakdown` ([context
 management](#context-management)), and `turn_completed` (token usage, cost, model calls) or
 `turn_failed`.
 
+### Thinking (display only, implemented)
+
+A model that reasons streams its reasoning (`reasoning_content`, or `reasoning` on some
+OpenAI-compatible services) before its reply. The engine passes each fragment on as a
+`thinking_delta` session event and closes the run with `thinking_finished` (`duration_ms`:
+from the run's first fragment to the first reply text, or to the end of the call when it went on
+to tool calls or no reply). A turn can hold several runs, around its tool calls, and each has its
+own pair. Both events are journaled, so a reopened or replayed session shows the same blocks
+and durations. The text is display-only: it is not part of the reply that is stored as the
+assistant message, so it never goes back to a model in a later request, a compaction summary
+or a title prompt, and it is not saved to memory, indexed by session search, put in an export
+(`session.export`) or put in a notification. A
+model client reports reasoning through `ChatClient::stream_deltas` (the default delivers reply text
+only, so a client that does not stream reasoning shows none); the OpenAI-compatible and llama.cpp
+clients do. Anthropic's extended thinking, sent as a `thinking` request, is not mapped yet: its
+text arrives in a field this parser does not read, which is a follow-up. A headless
+`imperium run` result and its prompt hashes carry no thinking.
+
+`imperium chat` prints `thinking…` as soon as a run begins and, on a terminal, finishes that same
+line with `(10 seconds)`, after a space, when it ends (the duration is worded: `less than a second`, `1 second`,
+`1 minute`, `2 minutes 5 seconds`); piped, it prints the whole line `thinking… (10 seconds)` once,
+at the end. `--show-thinking` prints the text as it streams after `thinking…`, and the summary
+line after it. `thinking_delta` carries the `at_ms` of its fragment, so a client can time a run
+whose `thinking_finished` never came (the daemon died mid-run). Subagents' thinking stays out of the terminal, as
+their replies do. The desktop app shows each run as a collapsed block
+([07](07-desktop-ui.md#thinking-implemented)).
+
 **Model clients (implemented):** the agent calls its model through a `ChatClient`
 (`imperium-models`), built for the turn from the session's `ChatClients` by the endpoint's `kind`
 ([configuration](10-configuration.md)): it streams a completion with its usage and may offer the
@@ -729,7 +756,12 @@ adding the line is planned; the form is fixed now so training data matches.
 **Context breakdown (implemented):** after every model call, the agent that made it emits
 `context_breakdown`: what that call's request held, by category, against the model's context
 window, like Claude Code's `/context`. Each agent (the root and every subagent) reports its own
-calls, under its agent id.
+calls, under its agent id. The event also carries the model table's `context_window`
+(`configured_window`), the reply room the call reserved (`reserved_output_tokens`, its
+`max_tokens`) and, for a local model, the context its server holds for the agent
+(`allocated_context`), each left out when unknown, so a client can show the request, the
+pre-allocated buffer and the unallocated rest against the configured maximum
+([07](07-desktop-ui.md#setting-up-models-implemented)).
 
 The agent records what each part of a message is as it builds it, so the request divides into
 labelled segments without guessing: the system prompt's parts (base instruction, skill and

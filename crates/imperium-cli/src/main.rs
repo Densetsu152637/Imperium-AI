@@ -23,6 +23,7 @@ mod resources;
 mod schedule;
 mod session;
 mod settings;
+mod thinking;
 mod vllm;
 mod workflow;
 mod workspaces;
@@ -91,6 +92,10 @@ enum Command {
         /// commands run only under isolation.tier = os or container.
         #[arg(long, conflicts_with = "worktree")]
         read_only: bool,
+        /// Print a thinking model's reasoning as it streams. Without it a run of thinking is one
+        /// line, `thinking… (10 seconds)`.
+        #[arg(long)]
+        show_thinking: bool,
     },
     /// Manage sessions (also `sessions`).
     #[command(alias = "sessions")]
@@ -333,6 +338,8 @@ enum FoldersCommand {
     Add { path: PathBuf },
     /// Stop scanning a folder; nothing in it is touched.
     Remove { path: PathBuf },
+    /// Scan the folders again and say what was found. Turns nothing on.
+    Rescan,
 }
 
 #[derive(Debug, Subcommand)]
@@ -930,6 +937,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             worktree,
             subfolder,
             read_only,
+            show_thinking,
         } => chat::run(
             env,
             project,
@@ -938,6 +946,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
             subfolder,
             read_only,
+            show_thinking,
         ),
         Command::Session { command } => match command {
             SessionCommand::List { archived } => session::list(archived),
@@ -1062,6 +1071,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 None | Some(FoldersCommand::List) => local::folders(),
                 Some(FoldersCommand::Add { path }) => local::add_folder(&path),
                 Some(FoldersCommand::Remove { path }) => local::remove_folder(&path),
+                Some(FoldersCommand::Rescan) => local::rescan(),
             },
             ModelsCommand::Use { model } => local::use_model(model),
             ModelsCommand::Test { model, prompt } => local::test_model(model, prompt),

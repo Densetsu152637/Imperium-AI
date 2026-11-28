@@ -208,6 +208,10 @@ pub(crate) async fn offer(
     if !suggestions.enabled() {
         return Outcome::Off;
     }
+    // A suggestion is a local model to download: with local models off, nothing is offered.
+    if !state.settings().models.local.enabled {
+        return Outcome::Nothing("local models are off (models.local.enabled)".into());
+    }
     if !suggestions.claim(session_id, detected.need) {
         return Outcome::AlreadyAsked;
     }

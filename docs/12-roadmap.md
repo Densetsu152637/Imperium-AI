@@ -433,7 +433,10 @@ and `environments.agent_update` (protocol 0.28)
     links in the folder, the safety floor, an inert-extension allowlist, the web domain and
     `robots.txt` rules and the per-agent local-files lock. Not built: downloading through the browser's own session
     (cookies), a download list in the desktop panel, scripted `blob:` downloads, caching search
-    results, and a per-call "fetch fresh" option.
+    results, and a per-call "fetch fresh" option. Planned: a rework of the browser to work like
+    Claude's (a live pane the user can take over, accessibility-tree reads with element
+    references, per-site approval, and enforced rules on credentials, CAPTCHAs and
+    consequential actions) ([plan](plans/browser-claude-parity.md)).
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a
     connection choose which notification topics it receives, only ever narrowing what it may
     receive anyway; and `daemon.socket` (on by default since evaluation runs and plugin approvals need it) also serves the same protocol, with
@@ -571,7 +574,10 @@ and `environments.agent_update` (protocol 0.28)
     available — still in training* and offers no download button; once a source is set, the
     button lists the repository's files and starts the ordinary `models.download`. The card is
     dismissible, the dismissal is remembered in the app's settings, and it never shows while any
-    model is present. No protocol change
+    model is present. Local models are off by default (`models.local.enabled`, see
+    [04](04-models-and-routing.md#local-models-are-off-by-default-implemented)), so first run
+    suggests no house model, downloads or starts nothing local until the user turns them on; the
+    house models stay listed in the Local models panel, shown as off. No protocol change
     ([07](07-desktop-ui.md#house-models-on-first-run-implemented)). *Not built, to be fleshed
     out when the models are fully trained:* choosing between sizes and quantisations from the
     machine's hardware, download progress and resume on the card itself, checksum verification,
@@ -900,7 +906,8 @@ and `environments.agent_update` (protocol 0.28)
     their own. It builds on the per-subagent harnesses, system prompts and workflows of
     [item 58](#next-in-order), so it comes after item 58. The workflow, the rejection counting
     and the handover are app work; training and building Consul and Emperor themselves are
-    research work. No plan yet.
+    research work. No plan for the workflow yet; the rejection count and the escalation hook it
+    binds to are stage 5 of the [Princeps plan](plans/princeps-local-model.md) (item 67).
 <!-- markdownlint-disable-next-line MD029 -->
 65. **Programmatic tool calling (code mode)** (planned). An agent can write a short Python program
     (`run_script`) in which each of its tools is a function. The program runs in Monty, a
@@ -935,8 +942,35 @@ and `environments.agent_update` (protocol 0.28)
     confirmation per tab, and harness files (`.imperium/`, `.claude/`, `.mcp.json`,
     `.claude-plugin/`) ask on every save. An agent's full-file `write_file` is refused when the
     file changed since that agent last read it. A paired phone gets no editor, and mods cannot
-    wrap or drive it, the same as item 55's panels
+    wrap or drive it, the same as item 55's panels. The editor also lints as you type:
+    language servers (rust-analyzer, TypeScript and ESLint, Ruff and others the user has
+    installed) run in the daemon, capped like every other process, and only in projects the
+    user trusts, because they run the project's own code; untrusted projects get built-in
+    syntax checks. When an agent changes a file that decides what they run (`build.rs`, an
+    ESLint config and the like), the project's servers pause until the user reviews the change
+    and resumes them, and Rust build scripts and proc macros stay off until the user turns them
+    on. Problems show as squiggles, in the gutter and in a Problems list; quick fixes
+    and format on save are edits the user reviews and saves. Agents can read diagnostics but
+    fix code with their own edits. Nothing is installed without the user's approval of that
+    install. Editor themes include high-contrast ones and can be imported from VS Code theme
+    files as data
     ([plan](plans/text-editor.md)).
+<!-- markdownlint-disable-next-line MD029 -->
+67. **Princeps local model and harness profiles** (planned). Emperor and Consul are no longer two
+    models (user decision 2026-11-26): there is one local model, Princeps, a Next Concept Model
+    served by `ncm-server` from Imperium-Models, in two sizes: Princeps (`princeps-ncm-1b`, about
+    1B, the default where it fits) and Princeps-Lite (`princeps-lite-ncm-250m`, the research
+    model, for small machines, with the evaluation-only baseline `princeps-lite-tok-250m`).
+    Emperor (the root agent) and Consul (the critic) become two harness profiles over it. The app
+    work: an `ncm:` runtime backend; for now (no releases yet) a user-built `ncm-server` at a path
+    only the user sets, copied on approval and hash-checked at each launch, and later one
+    installed only on the user's action from a pinned release, checked against SHA-256s pinned in
+    this repository and unpacked under the llama.cpp extraction rules; both sizes in the
+    house-model catalogue in place of item 44's two entries; one loaded model serving both
+    profiles; harness profiles as item 58's first slice; item 64's rejection count and escalation
+    hook with no workflow bound; and `--profile` with server timings in headless evals. The
+    harness content belongs to the Imperium Harnesses session, the server and weights to the NCM
+    session ([plan](plans/princeps-local-model.md)).
 <!-- markdownlint-disable-next-line MD029 -->
 68. **Resource caps on every child process** (planned). No process Imperium starts can exhaust
     the host. A CAS test process grew to about 20 GB on a 64 GB Windows machine and took it to
@@ -956,8 +990,27 @@ and `environments.agent_update` (protocol 0.28)
     setting that raises it. The existing CAS and code-mode limits are reused, not doubled. CI
     runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
     themselves ([plan](plans/resource-caps.md)).
+<!-- markdownlint-disable-next-line MD029 -->
+69. **Built-in reference MCP server** (planned). Imperium ships an offline reference server as a
+    built-in [MCP](05-tools-and-isolation.md#mcp) server, so a small local model (Princeps in
+    particular) looks words and APIs up instead of guessing them from its weights. One `lookup`
+    tool spans several sources: a dictionary (WordNet, plus Wiktionary for definitions,
+    inflections, spelling and synonyms), and offline documentation a coding agent uses (the Rust
+    standard library and crate docs, MDN, the Python docs). Each answer names its source and
+    version. It is a deferred tool under `tool_loading=auto`, so its schema costs nothing until a
+    model asks for it, and it is listed under Connectors as built in, where it can be turned
+    off. The data packs are downloaded on first use, pinned and verified by hash, and stored under
+    `<data>`; they are read-only, and the server runs in a cap unit
+    ([item 68](#next-in-order)) with no network after the download. Licences: WordNet is
+    permissive; Wiktionary data is CC BY-SA, so Imperium ships its attribution, and a derived
+    pack is shared under the same licence. Princeps training data gets tool-use traces in which
+    the model calls `lookup` instead of inventing a definition or signature
+    ([item 67](#next-in-order)). An eval through `imperium run --headless --json` measures
+    definition and API-signature accuracy and the unnecessary-call rate, with and without the
+    tool; the server stays only if it helps.
 
-Custom agents come from customised open-weight models (Emperor and Consul), or from agent files
+Custom agents come from Imperium's own open-weight model (Princeps, run under the Emperor and
+Consul harness profiles, [item 67](#next-in-order)), or from agent files
 ([item 48](#next-in-order)), rather than a separate agent builder, and checkpoints are git-based
 rather than a separate snapshot store.
 

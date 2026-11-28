@@ -1,8 +1,9 @@
-//! The sandboxed worker behind `run_script` (code mode, stage 1a of `docs/plans/code-mode.md`).
+//! The sandboxed worker behind `run_script` (code mode, stage 1 of `docs/plans/code-mode.md`).
 //!
 //! One worker process serves exactly one program. It confines itself before it reads a single
-//! request ([`confine`]) and fails closed when it cannot ([`EXIT_CONFINEMENT_FAILED`]); only then
-//! does it run the `monty-proto` worker loop ([`serve`]) over stdin and stdout. The daemon side
+//! request (Linux and macOS; on Windows it checks the confinement the daemon applied at launch,
+//! [`confine`]) and fails closed when it cannot ([`EXIT_CONFINEMENT_FAILED`]); only then does it
+//! run its protocol loop over `monty::MontyRun` ([`serve`]) on stdin and stdout. The daemon side
 //! of the protocol is the `imperium-script` crate.
 
 pub mod confine;

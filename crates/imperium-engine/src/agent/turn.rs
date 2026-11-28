@@ -303,6 +303,8 @@ impl Agent {
             let mut uncapped = false;
             // What the reservation counted for the prompt, to compare with what it was.
             let mut estimate: u32;
+            // The reply room the call that finished was sent with (`max_tokens`).
+            let mut reserved_output: Option<u32>;
             let (client, queue_wait, started, first_text, result) = loop {
                 // A used-up budget stops spend here, before each call, mid-turn included.
                 if let Some(message) = self.budget_stop().await {
@@ -339,28 +341,51 @@ impl Agent {
                     effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
+                reserved_output = request.max_tokens;
                 let started = Instant::now();
                 let mut first_text = None;
+                // When the current run of reasoning fragments began; ends with the reply.
+                let mut thinking_since: Option<Instant> = None;
                 let emitter = &self.shared.emitter;
                 let id = &self.id;
-                let mut on_text = |text: &str| {
-                    first_text.get_or_insert_with(Instant::now);
-                    emitter.emit(
-                        id,
-                        SessionEvent::TextDelta {
-                            text: text.to_string(),
-                        },
-                    );
+                let mut on_delta = |delta: StreamDelta<'_>| match delta {
+                    StreamDelta::Thinking(text) => {
+                        thinking_since.get_or_insert_with(Instant::now);
+                        emitter.emit(
+                            id,
+                            SessionEvent::ThinkingDelta {
+                                text: text.to_string(),
+                                at_ms: Some(imperium_api::time::unix_ms()),
+                            },
+                        );
+                    }
+                    StreamDelta::Text(text) => {
+                        if let Some(since) = thinking_since.take() {
+                            emitter.emit(id, thinking_finished(since));
+                        }
+                        first_text.get_or_insert_with(Instant::now);
+                        emitter.emit(
+                            id,
+                            SessionEvent::TextDelta {
+                                text: text.to_string(),
+                            },
+                        );
+                    }
                 };
                 // The request is cancelled when the user stops the session (it is sent again on
                 // resume) or, for a pausable subagent, steers the root.
                 let mut stop = self.shared.controls.stop_signal();
                 let streamed = tokio::select! {
-                    result = client.stream(request, &mut on_text) => Streamed::Done(result),
+                    result = client.stream_deltas(request, &mut on_delta) => Streamed::Done(result),
                     () = maybe_signalled(self.pause.as_mut()) => Streamed::Paused,
                     Ok(_) = stop.wait_for(|stopped| *stopped) => Streamed::Stopped,
                 };
                 drop(lease);
+                // Thinking that no reply text followed (the call went on to tool calls, failed
+                // or was cut off) ends with the call.
+                if let Some(since) = thinking_since.take() {
+                    self.emit(thinking_finished(since));
+                }
                 let result = match streamed {
                     Streamed::Done(result) => result,
                     Streamed::Paused => return self.pause_turn(total, step - 1, &reply),
@@ -476,6 +501,7 @@ impl Agent {
                         client: client.as_ref(),
                         model: &self.model,
                         usage: completion.usage,
+                        reserved_output,
                     },
                     &Request {
                         messages: &self.messages,
@@ -1101,6 +1127,13 @@ pub(super) fn generation_speed(
         tokens_per_sec,
         measured.filter(|_| tokens_per_sec.is_some()),
     )
+}
+
+/// The event that ends a run of thinking that began at `since`.
+fn thinking_finished(since: Instant) -> SessionEvent {
+    SessionEvent::ThinkingFinished {
+        duration_ms: millis(since.elapsed()),
+    }
 }
 
 pub(super) fn millis(duration: std::time::Duration) -> u64 {

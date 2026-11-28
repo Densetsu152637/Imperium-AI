@@ -138,6 +138,26 @@ resolved once on `.session` (`--col-max`, a registered length) so a rule's own f
 - **Waiting:** the *Working…* line, the core's wait line (spinner, text, elapsed time and one action)
   and steering marks use the same type scale; the spinner and dots stop under reduced motion.
 
+### Thinking (implemented)
+
+A model's reasoning (`thinking_delta` and `thinking_finished`,
+[03](03-agent-engine.md#thinking-display-only-implemented)) is one quiet row in the transcript, and
+in a subagent's log, collapsed by default and never showing its text until it is opened. While
+the model thinks the row reads *Thinking…* with a small pulsing dot and the time so far; once
+the run ends it reads *Thought for 10 seconds* (*less than a second*, *1 second*, *1 minute*,
+*2 minutes 5 seconds*; the same wording as `imperium chat`). The row is a button with
+`aria-expanded`, so Enter and Space open and close it as a click does, and a screen reader
+announces *Thinking* or *Thought for 10 seconds*, not the ticking time. Opening it shows the
+full text, still streaming while the run goes on, under a hairline like a tool call's
+arguments; opening it again hides the text. Each block opens on its own, a block starts closed
+whenever it is drawn, and nothing is remembered between sessions. The text is built into the page
+only while open, so it is in no tooltip, preview, session title or notification, and a turn's
+several runs (around tool calls) are separate rows. A run whose `thinking_finished` never came
+(the daemon died) is closed when its turn ends, fails or pauses, or the next turn starts: it reads
+*Thought for N seconds* from the fragments' own timestamps (`at_ms`, so a replayed session and the
+time shown after reopening do not use this window's clock), or plainly *Thought* when it has none
+(`apps/desktop/src/sessions/thinking.ts`, `components/ThinkingBlock.tsx`).
+
 ### Tool calls (implemented)
 
 Every tool call, the session's own in the transcript and each subagent's in its log
@@ -1889,6 +1909,17 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   name, base URL, API key, and an optional model, which then becomes the default; the key goes to
   the system keychain, `models.add_endpoint`). The cards stack in a narrow column and sit side by
   side in a wide one; failures show as `Notice`s.
+- **Local models off by default.** A card at the top of the panel holds the *Enabled* switch of
+  `models.local.enabled`. While it is off the card says so, with how to turn them on, and lists the
+  house models (Emperor, Consul) as *off*; the models below carry an *off* badge, their *Use* and
+  *Test* buttons are disabled, and setup (*Add folder*, *Download*, the download form) waits for
+  the switch. Each model row also has its own *Enabled* switch (*Use this model*), kept while the
+  global one is off. The Models panel says the local rows are off, and the new-session view
+  suggests no house model and offers no setup that downloads. See
+  [04](04-models-and-routing.md#local-models-are-off-by-default-implemented).
+- **Rescan.** *Rescan* calls `models.rescan` (a plain re-read of `models.local` does not scan),
+  shows a spinner while it works and then how many models it found and which are new or gone, or
+  the error. It lists models as off when the switch is off and enables and starts nothing.
 - **Layout.** The Local models panel lists the models first, with a small, quiet *Rescan* (scan
   the folders again) and *Configure* above them; then the skipped items and the Hugging Face
   download form; and the *llama.cpp runtime* card at the bottom. It shows no free-memory summary
@@ -1979,11 +2010,24 @@ agent's context was on its latest model call, as a slim bar (amber from 70%, red
 percentage). Pressing it opens the *Context window* section, which shows, for the
 selected agent (root first, then each subagent by task id, chosen from a list when there is
 more than one), what that agent's latest call read, from its `context_breakdown` event
-([03](03-agent-engine.md#context-management)): a bar segmented by category against the window
-with the free space last, and a table listing every category by name with its tokens and share
-of the window (or of the request when the window is unknown), the free space, and the total.
+([03](03-agent-engine.md#context-management)): one bar from 0 to the configured maximum in
+three regions. **Used** is the request by category, each category coloured. The **pre-allocated
+buffer** is context reserved but not yet used, drawn hatched: the room held back for the reply
+(the call's `max_tokens`, `reserved_output_tokens`) and, for a local model, whatever its server
+allocated to the agent beyond the request (`allocated_context`, within its `--ctx-size` pool),
+whichever is larger; a hosted model with no reply cap has no buffer. **Unallocated** is the rest
+up to the maximum, drawn empty. The maximum is the model table's `context_window`
+(`configured_window`); when the row sets none, the context window the model reports, and the
+notes under the table say so; when neither is known, the bar spans what is allocated and nothing
+is unallocated. Allocation never exceeds the maximum, and a request over it fills the bar and is
+reported as over. The heading reads `used / allocated / max tokens`; a table lists every
+category by name with its tokens and share of the maximum, then the used total, the buffer, the
+allocated total, the unallocated space and the maximum (the pure computation is
+`sessions/contextRegions.ts`). A daemon before protocol 0.69 sends none of the new fields, so
+the buffer is empty and the maximum falls back to the reported window.
 Colour only repeats what the table says in words: the bar has a text label, and each
-segment and swatch is named. Below it, the counting method in words (*Exact, counted with the
+segment and swatch is named; the buffer is hatched, not only tinted, and keeps a visible hatch
+in forced colours. Below it, the counting method in words (*Exact, counted with the
 model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.

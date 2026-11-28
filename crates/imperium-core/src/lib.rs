@@ -13,6 +13,7 @@ mod browser_control;
 mod budgets;
 pub use budgets::{CallGate, CallUsage};
 mod checkpoints;
+pub mod code_mode;
 mod config;
 mod config_changes;
 mod connectors;

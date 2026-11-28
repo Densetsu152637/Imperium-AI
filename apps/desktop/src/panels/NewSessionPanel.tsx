@@ -43,6 +43,8 @@ type Props = {
   onSelectEnvironment: (id: string) => void;
   models: ModelRow[];
   localModels: LocalModelRow[];
+  /** `models.local.enabled`: local models are on. While off, first run skips them. */
+  localOn?: boolean;
   /** `models.default` as the daemon applies it (from `models.local`); undefined until known. */
   defaultModel?: string | null;
   /** Whether the daemon has reported the model table and the local models; false hides the house-model card. */
@@ -83,6 +85,7 @@ export function NewSessionPanel({
   onSelectEnvironment,
   models,
   localModels,
+  localOn = true,
   defaultModel,
   modelsLoaded,
   client,
@@ -122,7 +125,7 @@ export function NewSessionPanel({
   // A default that is switched off ("Use this model") counts as none: a session cannot start on it.
   const defaultIsOff = configuredDefault !== null && modelIsOff(configuredDefault, models, localModels);
   const defaultSpec = defaultIsOff ? null : configuredDefault;
-  const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem);
+  const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem && row.enabled);
   const needsSetup = client !== null && !defaultSpec && !usable;
   const houseModels = needsSetup
     ? houseModelSuggestion(
@@ -131,6 +134,7 @@ export function NewSessionPanel({
           localFound: localModels.length,
           defaultModel: defaultSpec,
           loaded: modelsLoaded,
+          localEnabled: localOn,
         },
         settings.houseModelsDismissed,
       )
@@ -202,7 +206,7 @@ export function NewSessionPanel({
           onStarted={onModelsChanged}
         />
       )}
-      {needsSetup && <ModelSetup client={client} onChanged={onModelsChanged} onDownload={onOpenLocalModels} />}
+      {needsSetup && <ModelSetup client={client} onChanged={onModelsChanged} onDownload={onOpenLocalModels} localOff={!localOn} />}
 
       <form
         className="composer"

@@ -54,7 +54,7 @@ pub use paths::{Paths, PathsError};
 pub use permissions::{AutoPermissionSettings, PermissionSettings, save_permissions};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
-    set_user_setting, setting,
+    migrate_local_switch, set_user_setting, setting,
 };
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
@@ -70,8 +70,8 @@ pub use settings::{
     ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HarnessMode, HarnessSettings,
     HookSettings, ImageSettings, InitiativeSettings, IsolationSettings, KnowledgeSettings,
     LLAMACPP_ENDPOINT, LOCAL_ENDPOINTS, ListModelsScope, LlamaCppSettings, LoadSettings,
-    LocalWhisperSettings, Location, MarketplaceSettings, McpServerSettings, McpSettings,
-    MediaServiceSettings, MediaSettings, MemorySettings, MemoryWrite, ModelPlacement,
+    LocalModelsSettings, LocalWhisperSettings, Location, MarketplaceSettings, McpServerSettings,
+    McpSettings, MediaServiceSettings, MediaSettings, MemorySettings, MemoryWrite, ModelPlacement,
     ModelSettings, NCM_DEFAULT_CONTEXT, NCM_ENDPOINT, NcmSettings, OFFICIAL_MARKETPLACE,
     OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings, PetSettings, PhoneSettings, PluginSettings,
     PolicySettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
@@ -80,4 +80,4 @@ pub use settings::{
     VoiceTranscription, WebSettings, WorkflowSettings, WorkspacesSettings, WritePolicy,
     default_workspaces_root, is_local_endpoint, moves_listener, same_marketplace_source,
 };
-pub use settings::{SuggestionCandidate, default_suggestions};
+pub use settings::{SuggestionCandidate, default_suggestions, is_local_spec};

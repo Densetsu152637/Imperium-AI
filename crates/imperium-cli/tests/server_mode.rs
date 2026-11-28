@@ -9,6 +9,8 @@ fn a_server_refuses_to_set_up_vllm_in_docker() {
     let output = Command::new(env!("CARGO_BIN_EXE_imperium"))
         .env("IMPERIUM_HOME", home.path())
         .env("IMPERIUM_DAEMON__SERVER", "true")
+        // Local models are off by default, and setting vLLM up is refused while they are.
+        .env("IMPERIUM_MODELS__LOCAL__ENABLED", "true")
         .env("IMPERIUM_NO_DAEMON_SPAWN", "1")
         .args(["runtime", "vllm", "setup", "--docker", "--yes"])
         .stdin(Stdio::null())

@@ -89,6 +89,17 @@ pub struct LocalModelListResult {
     pub skipped: Vec<SkippedModel>,
     pub hardware: Option<HardwareInfo>,
     pub runtime: Option<RuntimeInfo>,
+    /// `models.local.enabled`: the global switch. False (the default for a new setup) means no
+    /// local model is routed to, picked for a session, started, downloaded or installed; the
+    /// models below are still listed, each `enabled` showing its own switch. A model runs only
+    /// when this and its own switch are both on. A daemon older than protocol 0.70 does not send
+    /// it; clients then read it as on.
+    #[serde(default = "local_enabled_default")]
+    pub local_enabled: bool,
+}
+
+fn local_enabled_default() -> bool {
+    true
 }
 
 /// A GGUF model found in a model folder.
@@ -177,10 +188,16 @@ pub struct LocalModelRow {
     /// Of those, tokens reserved by calls running now.
     #[serde(default)]
     pub pool_reserved_tokens: u32,
-    /// False when the user switched the model off ("Use this model" in the model configuration
-    /// dialog, `models.disabled`): it is not routed to, offered to agents, or selectable.
+    /// False when the model may not be used: the user switched it off ("Use this model" in the
+    /// model configuration dialog, `models.disabled`), or local models are off
+    /// (`models.local.enabled`, see [`LocalModelListResult::local_enabled`]). It is not routed
+    /// to, offered to agents, or selectable.
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The model's own switch alone, whatever the global one says: false when the user switched
+    /// this model off. A model runs when `own_enabled` and the global switch are both on.
+    #[serde(default = "yes")]
+    pub own_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -255,6 +272,35 @@ impl Method for ModelFolderRemove {
     const NAME: &'static str = "models.remove_folder";
     type Params = ModelFolderParams;
     type Result = LocalModelListResult;
+}
+
+/// `models.rescan`: scans the model folders (`models.folders` and the download folder) again
+/// and says what was found. Nothing is turned on or started: with local models off
+/// (`models.local.enabled`) the models are listed as off.
+#[derive(Debug)]
+pub struct ModelRescan;
+
+impl Method for ModelRescan {
+    const NAME: &'static str = "models.rescan";
+    type Params = ModelRescanParams;
+    type Result = ModelRescanResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRescanParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRescanResult {
+    /// The listing after the scan, as `models.local` gives it.
+    pub listing: LocalModelListResult,
+    /// How many models the scan found.
+    pub found: u32,
+    /// Ids of models the scan found that the listing did not have before.
+    pub added: Vec<String>,
+    /// Ids of models the listing had before that the scan no longer finds.
+    pub removed: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
