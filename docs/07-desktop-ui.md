@@ -2004,11 +2004,24 @@ agent's context was on its latest model call, as a slim bar (amber from 70%, red
 percentage). Pressing it opens the *Context window* section, which shows, for the
 selected agent (root first, then each subagent by task id, chosen from a list when there is
 more than one), what that agent's latest call read, from its `context_breakdown` event
-([03](03-agent-engine.md#context-management)): a bar segmented by category against the window
-with the free space last, and a table listing every category by name with its tokens and share
-of the window (or of the request when the window is unknown), the free space, and the total.
+([03](03-agent-engine.md#context-management)): one bar from 0 to the configured maximum in
+three regions. **Used** is the request by category, each category coloured. The **pre-allocated
+buffer** is context reserved but not yet used, drawn hatched: the room held back for the reply
+(the call's `max_tokens`, `reserved_output_tokens`) and, for a local model, whatever its server
+allocated to the agent beyond the request (`allocated_context`, within its `--ctx-size` pool),
+whichever is larger; a hosted model with no reply cap has no buffer. **Unallocated** is the rest
+up to the maximum, drawn empty. The maximum is the model table's `context_window`
+(`configured_window`); when the row sets none, the context window the model reports, and the
+notes under the table say so; when neither is known, the bar spans what is allocated and nothing
+is unallocated. Allocation never exceeds the maximum, and a request over it fills the bar and is
+reported as over. The heading reads `used / allocated / max tokens`; a table lists every
+category by name with its tokens and share of the maximum, then the used total, the buffer, the
+allocated total, the unallocated space and the maximum (the pure computation is
+`sessions/contextRegions.ts`). A daemon before protocol 0.69 sends none of the new fields, so
+the buffer is empty and the maximum falls back to the reported window.
 Colour only repeats what the table says in words: the bar has a text label, and each
-segment and swatch is named. Below it, the counting method in words (*Exact, counted with the
+segment and swatch is named; the buffer is hatched, not only tinted, and keeps a visible hatch
+in forced colours. Below it, the counting method in words (*Exact, counted with the
 model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.
