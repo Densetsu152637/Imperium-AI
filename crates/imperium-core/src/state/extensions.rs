@@ -694,3 +694,37 @@ mod environment_plugin_folder_tests {
         assert!(!imperium_policy::permissions::refused_write(&beside));
     }
 }
+
+#[cfg(test)]
+mod refused_configuration_tests {
+    use imperium_config::{Config, Layer, Paths};
+    use imperium_policy::permissions::refused_write;
+
+    use super::*;
+
+    fn shown(path: std::path::PathBuf) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    #[test]
+    fn config_toml_models_toml_and_the_installed_runtimes_are_refused_to_file_tools() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let _state = DaemonState::new(paths.clone(), settings, None);
+        for guarded in [
+            paths.user_config_file(),
+            paths.app_models_file(),
+            paths.data_dir().join("runtimes"),
+            paths
+                .data_dir()
+                .join("runtimes")
+                .join("llama.cpp/b1/llama-server"),
+        ] {
+            let guarded = shown(guarded);
+            assert!(refused_write(&guarded), "{guarded}");
+        }
+        let beside = shown(paths.config_dir().join("config.toml.bak"));
+        assert!(!refused_write(&beside), "{beside}");
+    }
+}

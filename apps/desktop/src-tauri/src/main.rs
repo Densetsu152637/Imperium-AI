@@ -13,6 +13,7 @@ mod mod_frames;
 mod plugin_approval;
 mod store;
 mod update;
+mod user_call;
 
 use tauri::Manager;
 
@@ -120,6 +121,7 @@ fn main() {
             update::update_switch_install,
             plugin_approval::plugin_approve,
             auto_merge::auto_merge_enable,
+            user_call::user_call,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

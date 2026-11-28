@@ -327,43 +327,26 @@ async fn runtime_status_explains_a_missing_server_and_set_server_saves_the_path(
             .contains("No llama.cpp runtime yet")
     );
 
-    let error = call(
-        &mut socket,
-        "runtime.set_server",
-        json!({"path": home.path().join("missing.exe").display().to_string()}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error["code"], -32602);
+    // Naming a server to launch is the user's own process on the local socket: loopback TCP, which
+    // this test uses, is refused (the desktop app calls it through its own local connection).
+    for path in [
+        home.path().join("missing.exe"),
+        home.path().join("llama-server.exe"),
+    ] {
+        let error = call(
+            &mut socket,
+            "runtime.set_server",
+            json!({"path": path.display().to_string()}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error["code"], -32602);
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("process of your own"), "{message}");
+    }
+    assert_eq!(daemon.settings().runtime.llamacpp.custom_path, None);
 
-    // A file that is not a program is saved but explained.
-    let fake = home.path().join("llama-server.exe");
-    std::fs::write(&fake, "not a program").unwrap();
-    let status = call(
-        &mut socket,
-        "runtime.set_server",
-        json!({"path": fake.display().to_string()}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(status["source"], "custom");
-    assert_eq!(status["installed"], true);
-    assert_eq!(status["runs"], false);
-    assert!(
-        status["problem"]
-            .as_str()
-            .unwrap()
-            .contains("could not be started")
-    );
-    assert_eq!(
-        user_file(home.path())["runtime"]["llamacpp"]["custom_path"].as_str(),
-        Some(fake.display().to_string().as_str())
-    );
-    assert_eq!(
-        daemon.settings().runtime.llamacpp.custom_path.as_deref(),
-        Some(fake.as_path())
-    );
-
+    // Going back to the installed runtime names no program, and is not held back.
     let status = call(&mut socket, "runtime.set_server", json!({"path": null}))
         .await
         .unwrap();

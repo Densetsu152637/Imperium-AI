@@ -226,6 +226,9 @@ pub struct Connection {
     /// The process id of the other end and when (Unix seconds) the connection was accepted, for
     /// a connection on the local socket.
     peer: Option<(u32, u64)>,
+    /// The process id the daemon is judged by when a caller must be a person's own process
+    /// (its own, outside a test).
+    daemon_pid: u32,
     /// The identity of the other end of a local-socket connection, for plugin approvals.
     identity: Option<Arc<crate::app_identity::Peer>>,
     /// The plugin-approval challenges issued to this connection and not yet answered.
@@ -259,6 +262,7 @@ impl Connection {
             client_name: None,
             eval_sessions: Arc::default(),
             peer: None,
+            daemon_pid: std::process::id(),
             identity: None,
             challenges: crate::app_identity::Challenges::default(),
             auto_merge_challenges: crate::automerge::Challenges::default(),
@@ -269,6 +273,15 @@ impl Connection {
             pr_watch: None,
             lease: None,
         }
+    }
+
+    /// This connection judged as if the daemon had process id `daemon_pid`, so a test can stand
+    /// a child process in for a person's own terminal.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_daemon_pid(mut self, daemon_pid: u32) -> Self {
+        self.daemon_pid = daemon_pid;
+        self
     }
 
     /// This connection, with the process id of its other end and when it was accepted (a
@@ -309,6 +322,7 @@ impl Connection {
             client_name: None,
             eval_sessions: Arc::default(),
             peer: None,
+            daemon_pid: std::process::id(),
             identity: None,
             challenges: crate::app_identity::Challenges::default(),
             auto_merge_challenges: crate::automerge::Challenges::default(),
@@ -1039,6 +1053,209 @@ mod tests {
             json!({"key": "endpoints.x.base_url", "value": "u"}),
         ));
         assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
+    }
+
+    #[test]
+    fn a_setting_that_names_a_runtime_binary_needs_a_process_of_the_users_own() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        // No local-socket peer: an agent over TCP, a mod, a phone.
+        let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        for (id, key, value) in [
+            (
+                2,
+                "runtime.llamacpp.custom_path",
+                json!("/opt/evil/llama-server"),
+            ),
+            (3, "runtime.llamacpp.extra_args", json!(["--x"])),
+            (4, "runtime.vllm.command", json!("/opt/evil/vllm")),
+            (5, "runtime.ncm.custom_path", json!("/opt/evil/ncm")),
+            (6, "runtime.ncm.extra_args", json!(["--x"])),
+            (7, "runtime.llamacpp.update_external", json!("auto")),
+            (9, "mcp.trusted_projects", json!(["/tmp/x"])),
+            // Unset is a null value: refused the same.
+            (10, "mcp.trusted_projects", json!(null)),
+            (11, "runtime.llamacpp.custom_path", json!(null)),
+            (12, "runtime.ncm", json!({})),
+        ] {
+            let refused = connection.handle_text(&request(
+                id,
+                ConfigSet::NAME,
+                json!({"key": key, "value": value}),
+            ));
+            assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS), "{key}");
+        }
+        assert!(!paths.user_config_file().exists());
+        // An ordinary runtime setting is not held back.
+        let set = result(connection.handle_text(&request(
+            8,
+            ConfigSet::NAME,
+            json!({"key": "runtime.llamacpp.idle_unload_s", "value": 60}),
+        )));
+        assert_eq!(set["entry"]["value"], 60);
+    }
+
+    /// Whether the immediate reply is the refusal of a call only the user's own process may make.
+    fn refused_as_not_the_users(handled: &Handled) -> bool {
+        match handled.response.as_ref().map(|response| &response.outcome) {
+            Some(Outcome::Error(error)) => error.message == config::USER_ONLY,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn saved_server_arguments_and_a_chosen_server_need_the_users_own_process() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let mut connection =
+            Connection::new(DaemonState::new(Paths::under(home.path()), settings, None));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        // A path to launch: refused for a client with no local peer (TCP, a phone, a mod).
+        let chosen = connection.handle_text(&request(
+            2,
+            RuntimeSetServer::NAME,
+            json!({"path": "/opt/evil/llama-server"}),
+        ));
+        assert!(refused_as_not_the_users(&chosen));
+        // Saved `extra_args` of a local model: the same.
+        let save = |id: i64, dry_run: bool| {
+            request(
+                id,
+                ModelSetConfig::NAME,
+                json!({
+                    "local": [{"id": "m", "settings": {"extra_args": ["--x"]}}],
+                    "table": [],
+                    "dry_run": dry_run,
+                }),
+            )
+        };
+        assert!(refused_as_not_the_users(
+            &connection.handle_text(&save(3, false))
+        ));
+        // A dry run saves nothing, and settings without `extra_args` are not held back.
+        assert!(!refused_as_not_the_users(
+            &connection.handle_text(&save(4, true))
+        ));
+        let plain = connection.handle_text(&request(
+            5,
+            ModelSetConfig::NAME,
+            json!({"local": [], "table": [], "hidden": ["a:b"]}),
+        ));
+        assert!(!refused_as_not_the_users(&plain));
+    }
+
+    /// A process that lives a few seconds, as a child of this one (a stand-in for a person's
+    /// terminal when the daemon is judged to be some other process).
+    fn bystander() -> std::process::Child {
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("ping");
+            command.args(["-n", "6", "127.0.0.1"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("5");
+            command
+        };
+        command
+            .env_remove(imperium_tools::SPAWNED_MARK)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_local_peer_that_is_not_the_daemons_child_may_change_a_runtime_setting() {
+        let mut person = bystander();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let call = |daemon_pid: u32| {
+            let home = tempfile::tempdir().unwrap();
+            let paths = Paths::under(home.path());
+            let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+            let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None))
+                .with_peer(Some((person.id(), now)))
+                .with_daemon_pid(daemon_pid);
+            connection.handle_text(&request(
+                1,
+                Handshake::NAME,
+                handshake_params(PROTOCOL_VERSION.major),
+            ));
+            let handled = connection.handle_text(&request(
+                2,
+                ConfigSet::NAME,
+                json!({"key": "runtime.llamacpp.backend", "value": "cpu"}),
+            ));
+            (home, paths, handled)
+        };
+        // The daemon is some other process: the peer is a person's own, and the change is made.
+        let (_home, paths, handled) = call(u32::MAX - 1);
+        let response = handled.deferred.expect("a deferred reply").await;
+        match response.outcome {
+            Outcome::Result(result) => assert_eq!(result["entry"]["value"], "cpu"),
+            other => panic!("expected the change to be made, got {other:?}"),
+        }
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(text.contains("backend = \"cpu\""), "{text}");
+        // This process is the daemon: the same peer is its child, an agent's shell, and is refused.
+        let (_home, paths, handled) = call(std::process::id());
+        let response = handled.deferred.expect("a deferred reply").await;
+        match response.outcome {
+            Outcome::Error(error) => assert_eq!(error.message, config::USER_ONLY),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!paths.user_config_file().exists());
+        let _ = person.kill();
+        let _ = person.wait();
+    }
+
+    #[tokio::test]
+    async fn a_local_peer_that_is_not_the_daemons_child_may_choose_a_server() {
+        let mut person = bystander();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let fake = home.path().join("llama-server-fake");
+        std::fs::write(&fake, "not a program").unwrap();
+        let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None))
+            .with_peer(Some((person.id(), now)))
+            .with_daemon_pid(u32::MAX - 1);
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        let handled = connection.handle_text(&request(
+            2,
+            RuntimeSetServer::NAME,
+            json!({"path": fake.display().to_string()}),
+        ));
+        let response = handled.deferred.expect("a deferred reply").await;
+        match response.outcome {
+            Outcome::Result(result) => assert_eq!(result["source"], "custom"),
+            other => panic!("expected the server to be saved, got {other:?}"),
+        }
+        let _ = person.kill();
+        let _ = person.wait();
     }
 
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) {

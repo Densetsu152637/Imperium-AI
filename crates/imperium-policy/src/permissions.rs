@@ -228,6 +228,16 @@ impl Permissions {
                 floored: true,
             };
         }
+        // So is a command that changes what only the user may (the trusted projects).
+        if let (CallKind::Execute, Target::Command(line)) = (kind, target)
+            && crate::floor::command_refused(line)
+        {
+            return Judgement {
+                decision: Decision::Refuse(Refusal::Protected),
+                rule,
+                floored: true,
+            };
+        }
         let floored = floor_override.unwrap_or_else(|| safety_floor(kind, target));
         let mut decision = decide_call(self.mode(), kind, rule, floored);
         let mut floored = floored;
@@ -329,6 +339,9 @@ pub enum Refusal {
     Rule,
     /// The session is in plan mode, which only reads.
     Plan,
+    /// A command would change what only the user may (`mcp.trusted_projects`): refused in every
+    /// mode, whatever a rule or an answer says.
+    Protected,
     /// A file tool would write what the daemon loads as the user's own configuration
     /// ([`refuse_writes_under`]): refused in every mode, whatever a rule or an answer says.
     Configuration,
@@ -403,6 +416,46 @@ pub fn decide_call(
     }
 }
 
+/// Whether a settings key (`runtime.llamacpp.custom_path`, `runtime.ncm`, ...) names a runtime
+/// binary, a path, extra arguments, a version, an image or the update policy, or is a whole
+/// `runtime` table: what the daemon would launch or fetch. The command-line floor and the
+/// daemon's `config.set` both use it. Case-insensitive; a false alarm only asks or refuses.
+pub fn runtime_binary_key(key: &str) -> bool {
+    const RISKY: &[&str] = &[
+        "custom_path",
+        "command",
+        "extra_args",
+        "update",
+        "auto_install",
+        "find_existing",
+        "backend",
+        "version",
+        "docker_image",
+        "wsl_distro",
+    ];
+    let key = key.to_ascii_lowercase();
+    let Some(tail) = key.strip_prefix("runtime") else {
+        return false;
+    };
+    if tail.is_empty() || matches!(tail, ".llamacpp" | ".vllm" | ".ncm") {
+        return true;
+    }
+    tail.starts_with('.') && RISKY.iter().any(|name| tail.contains(name))
+}
+
+/// Whether a settings key is `mcp.trusted_projects` (or the table holding it, `mcp`): the user's
+/// own list of folders whose MCP servers may start. Case-insensitive.
+pub fn trusted_projects_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "mcp" || key.starts_with("mcp.trusted_projects")
+}
+
+/// Whether only a process of the user's own may change this settings key through the daemon:
+/// a runtime binary, path, arguments or update policy, or the trusted projects.
+pub fn user_only_setting(key: &str) -> bool {
+    runtime_binary_key(key) || trusted_projects_key(key)
+}
+
 /// Folders the daemon asks the floor to guard, as normalised text (see [`protect_dir`]).
 static PROTECTED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
@@ -472,6 +525,28 @@ pub fn refused_write(absolute: &str) -> bool {
             under(&path, entry)
                 || (cfg!(any(windows, target_os = "macos")) && under(&upper, &entry.to_uppercase()))
         })
+}
+
+/// Folders a command line may not name without asking: the installed runtimes, whose binaries
+/// file tools may not write and a command (`cp x <data>/runtimes/...`) could. Process-wide, like
+/// [`REFUSED_WRITES`].
+static COMMAND_GUARDED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Makes any command line that names `dir` (as given or as it resolves) something the safety
+/// floor asks about every time. A line is read as text, so a path built by the shell (`$X/...`) is
+/// not seen: a stated limit.
+pub fn guard_commands_naming(dir: &std::path::Path) {
+    register(&COMMAND_GUARDED_DIRS, dir);
+}
+
+/// Whether `line` names a folder given to [`guard_commands_naming`].
+fn command_names_guarded_dir(line: &str) -> bool {
+    let flat = normalise_dir(&line.replace(['"', '\''], ""));
+    COMMAND_GUARDED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|dir| flat.contains(dir.as_str()))
 }
 
 /// Whether `absolute` is a file a project uses to add extensions or change what the daemon
@@ -595,7 +670,9 @@ const FLOOR_PATHS: &[&str] = &[
 /// or program does.
 pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
     match (kind, target) {
-        (CallKind::Execute, Target::Command(line)) => crate::floor::dangerous_command(line),
+        (CallKind::Execute, Target::Command(line)) => {
+            crate::floor::dangerous_command(line) || command_names_guarded_dir(line)
+        }
         (CallKind::Edit, Target::Path { absolute, .. }) => {
             let fold = cfg!(any(windows, target_os = "macos"));
             let in_git = absolute.split('/').any(|part| {
@@ -1635,6 +1712,108 @@ mod tests {
             assert!(!refused_write(allowed), "{allowed}");
         }
         assert!(REFUSED_WRITE_ADVICE.contains("install_extension"));
+    }
+
+    #[test]
+    fn runtime_binary_keys_are_told_from_ordinary_runtime_settings() {
+        for key in [
+            "runtime",
+            "runtime.ncm",
+            "Runtime.LlamaCpp",
+            "runtime.vllm",
+            "runtime.ncm.custom_path",
+            "runtime.ncm.extra_args",
+            "runtime.llamacpp.custom_path",
+            "runtime.llamacpp.update_external",
+            "runtime.llamacpp.models.m.extra_args",
+            "runtime.vllm.command",
+            "runtime.vllm.docker_image",
+        ] {
+            assert!(runtime_binary_key(key), "{key}");
+        }
+        for key in [
+            "runtime.llamacpp.context",
+            "runtime.llamacpp.idle_unload_s",
+            "runtime.vllm.max_gpu_memory_utilization",
+            "models.default",
+            "policy.personality",
+        ] {
+            assert!(!runtime_binary_key(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn writes_into_the_installed_runtimes_folder_are_refused_in_every_mode() {
+        refuse_writes_under(std::path::Path::new("/floor-runtime-data/runtimes"));
+        for refused in [
+            "/floor-runtime-data/runtimes",
+            "/floor-runtime-data/runtimes/llamacpp/b1/llama-server",
+            "/floor-runtime-data/runtimes/vllm.env",
+        ] {
+            assert!(refused_write(refused), "{refused}");
+            for mode in PermissionMode::ALL {
+                let permissions =
+                    Permissions::new(SharedRules::new(Vec::new()), SharedRules::new(Vec::new()))
+                        .with_mode(mode);
+                let target = Target::Path {
+                    absolute: refused.to_string(),
+                    relative: None,
+                };
+                let judged = permissions.judge("write_file", &target, CallKind::Edit, None);
+                assert_eq!(
+                    judged.decision,
+                    Decision::Refuse(Refusal::Configuration),
+                    "{mode} {refused}"
+                );
+                // Reading is never covered.
+                let read = permissions.judge("read_file", &target, CallKind::Read, None);
+                assert_ne!(
+                    read.decision,
+                    Decision::Refuse(Refusal::Configuration),
+                    "{mode} {refused}"
+                );
+            }
+        }
+        for open in [
+            "/floor-runtime-data/runtimes-notes/x",
+            "/elsewhere/floor-runtime-data/runtimes/x",
+            "/floor-runtime-data/plugins/x",
+        ] {
+            assert!(!refused_write(open), "{open}");
+        }
+    }
+
+    #[test]
+    fn a_command_naming_the_installed_runtimes_folder_asks_in_every_mode() {
+        guard_commands_naming(std::path::Path::new("/guard-cmd-data/runtimes"));
+        let bs = char::from(92);
+        let windows_style = format!("cp x {bs}guard-cmd-data{bs}runtimes{bs}llama-server");
+        for line in [
+            "cp evil /guard-cmd-data/runtimes/llama-server".to_string(),
+            "cd /guard-cmd-data/runtimes && cp evil llama-server".to_string(),
+            "cp evil '/guard-cmd-data/runtimes/llama-server'".to_string(),
+            "cp evil \"/guard-cmd-data/runtimes/llama-server\"".to_string(),
+            windows_style,
+        ] {
+            let target = Target::Command(line.clone());
+            assert!(safety_floor(CallKind::Execute, &target), "{line}");
+            for mode in PermissionMode::ALL {
+                if mode == PermissionMode::Plan {
+                    continue;
+                }
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, Some(RuleAction::Allow), true),
+                    Decision::Ask { sticky: false },
+                    "{mode} {line}"
+                );
+            }
+        }
+        for line in ["ls /elsewhere/data", "cp a b", "echo runtimes"] {
+            assert!(
+                !safety_floor(CallKind::Execute, &Target::Command(line.into())),
+                "{line}"
+            );
+        }
     }
 
     #[test]

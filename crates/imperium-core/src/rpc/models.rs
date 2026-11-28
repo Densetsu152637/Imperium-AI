@@ -27,6 +27,57 @@ impl Connection {
             ModelConfig::NAME => call::<ModelConfig>(c.params.take(), |_: ModelConfigParams| {
                 Ok(crate::model_config::config(&self.state))
             }),
+            // A saved `extra_args` is a command-line tail the daemon starts a model server with
+            // (models.toml): only a person's own process on the local socket may change it.
+            ModelSetConfig::NAME
+                if c.params.as_ref().is_some_and(|params| {
+                    serde_json::from_value::<ModelSetConfigParams>(params.clone()).is_ok_and(
+                        |params| {
+                            !params.dry_run
+                                && params
+                                    .local
+                                    .iter()
+                                    .any(|update| update.settings.extra_args.is_some())
+                        },
+                    )
+                }) =>
+            {
+                match self.peer {
+                    None => call::<ModelSetConfig>(c.params.take(), |_: ModelSetConfigParams| {
+                        Err(ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            super::config::USER_ONLY,
+                        ))
+                    }),
+                    peer => call_later::<ModelSetConfig, _>(
+                        c.params.take(),
+                        c.later,
+                        |params: ModelSetConfigParams| {
+                            let state = Arc::clone(&self.state);
+                            let daemon_pid = self.daemon_pid;
+                            async move {
+                                if !super::config::local_user(Arc::clone(&state), peer, daemon_pid)
+                                    .await
+                                {
+                                    return Err(ErrorObject::new(
+                                        codes::INVALID_PARAMS,
+                                        super::config::USER_ONLY,
+                                    ));
+                                }
+                                tokio::task::spawn_blocking(move || {
+                                    crate::model_config::set_config(&state, params).map_err(
+                                        |message| ErrorObject::new(codes::INVALID_PARAMS, message),
+                                    )
+                                })
+                                .await
+                                .map_err(|error| {
+                                    ErrorObject::new(codes::INTERNAL_ERROR, error.to_string())
+                                })?
+                            }
+                        },
+                    ),
+                }
+            }
             ModelSetConfig::NAME => {
                 call::<ModelSetConfig>(c.params.take(), |params: ModelSetConfigParams| {
                     crate::model_config::set_config(&self.state, params)
@@ -63,6 +114,38 @@ impl Connection {
                 let state = Arc::clone(&self.state);
                 async move { Ok(crate::onboarding::runtime_status(state).await) }
             }),
+            // Naming a `llama-server` to launch is the user's own call; going back to the
+            // installed runtime (no path) is not.
+            RuntimeSetServer::NAME
+                if c.params
+                    .as_ref()
+                    .and_then(|params| params.get("path"))
+                    .is_some_and(|path| !path.is_null()) =>
+            {
+                match self.peer {
+                    None => call::<RuntimeSetServer>(c.params.take(), |_| {
+                        Err(ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            super::config::USER_ONLY,
+                        ))
+                    }),
+                    peer => call_later::<RuntimeSetServer, _>(c.params.take(), c.later, |params| {
+                        let state = Arc::clone(&self.state);
+                        let daemon_pid = self.daemon_pid;
+                        async move {
+                            if !super::config::local_user(Arc::clone(&state), peer, daemon_pid)
+                                .await
+                            {
+                                return Err(ErrorObject::new(
+                                    codes::INVALID_PARAMS,
+                                    super::config::USER_ONLY,
+                                ));
+                            }
+                            crate::onboarding::set_server(state, params).await
+                        }
+                    }),
+                }
+            }
             RuntimeSetServer::NAME => {
                 call_later::<RuntimeSetServer, _>(c.params.take(), c.later, |params| {
                     crate::onboarding::set_server(Arc::clone(&self.state), params)

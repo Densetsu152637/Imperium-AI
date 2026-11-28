@@ -25,6 +25,7 @@ import { useSettings } from "../settings/settings";
 import "./modelConfig.css";
 import { LocalForm } from "./LocalForm";
 import { TableForm } from "./TableForm";
+import { callAsUser } from "../daemon/userCall";
 
 export type ModelDialogTarget = { tab: "local" | "table"; id?: string };
 
@@ -217,7 +218,7 @@ export function ModelConfigDialog({
         await client.call("models.use", { model: newDefault });
         switchedDefault = newDefault;
       }
-      const result = await client.call<ModelConfigResult>("models.set_config", params);
+      const result = await callAsUser<ModelConfigResult>(client, "models.set_config", params);
       onSaved();
       if (close) {
         onClose();

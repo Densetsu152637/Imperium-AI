@@ -1325,6 +1325,9 @@ pub(super) fn denied_by_rule(summary: &str) -> String {
 pub(super) fn refused(why: Refusal, summary: &str) -> String {
     match why {
         Refusal::Rule => denied_by_rule(summary),
+        Refusal::Protected => format!(
+            "{summary} was refused: it changes something only the user may change (the trusted projects). Ask the user to do it themselves, with `imperium config set` from their own terminal."
+        ),
         Refusal::Configuration => format!(
             "{summary} was not run: {}.",
             imperium_policy::permissions::REFUSED_WRITE_ADVICE

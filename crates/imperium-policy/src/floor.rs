@@ -43,6 +43,10 @@ fn dangerous_line(line: &str, depth: usize) -> bool {
     if line.contains("$IFS") || line.contains("${IFS}") {
         return true;
     }
+    // `imperium` with arguments built by the shell, or fed by `xargs`: ask.
+    if unreadable_imperium(line) {
+        return true;
+    }
     // A shell reading commands from a pipe (`echo 'rm -rf x' | sh`): ask.
     if pipes_into_shell(line) {
         return true;
@@ -99,13 +103,77 @@ fn pipes_into_shell(line: &str) -> bool {
     })
 }
 
-/// A command's words, without surrounding quotes.
+/// A command's words, without surrounding quotes. A quoted span (one that is closed) stays
+/// inside its word, so `"C:\Program Files\Imperium\imperium.exe"` is one word; a quote that is
+/// never closed is an ordinary character.
 fn words(command: &str) -> Vec<String> {
-    command
-        .split_whitespace()
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for (index, &c) in chars.iter().enumerate() {
+        match quote {
+            Some(open) => {
+                current.push(c);
+                if c == open {
+                    quote = None;
+                }
+            }
+            None if c == '"' || c == '\'' => {
+                if chars[index + 1..].contains(&c) {
+                    quote = Some(c);
+                }
+                current.push(c);
+            }
+            None if c.is_whitespace() => {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out.into_iter()
         .map(|word| word.trim_matches(|c| c == '"' || c == '\'').to_string())
         .filter(|word| !word.is_empty())
         .collect()
+}
+
+/// A word as a shell reads it: quotes, backslashes and `^` removed (`ins""tall`, `ins\tall`).
+fn unescape(word: &str) -> String {
+    word.chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\' | '^'))
+        .collect()
+}
+
+/// Whether a line runs `imperium` with arguments the floor cannot read: a variable, a
+/// substitution, a group, a brace list, a glob, a delayed (`!X!`) or `%VAR%` expansion, a
+/// PowerShell backtick or `@splat`; or runs it through `xargs` or `parallel`, which feed it
+/// words from elsewhere. Looked for before the line is taken apart, since a substitution splits
+/// it. Any such character in a segment that runs `imperium` asks: a shell can build a word
+/// from them that the floor never sees. A false alarm only asks.
+fn unreadable_imperium(line: &str) -> bool {
+    let line = line.replace("&&", ";").replace("||", ";");
+    line.split([';', '|', '\n']).any(|segment| {
+        let words = words(segment);
+        let names_imperium =
+            |word: &String| program_names(word).iter().any(|name| name == "imperium");
+        if !words.iter().any(names_imperium) {
+            return false;
+        }
+        words.iter().any(|word| {
+            program_names(word)
+                .iter()
+                .any(|name| name == "xargs" || name == "parallel")
+        }) || segment.contains(['$', '`', '(', ')', '{', '}', '*', '?', '[', ']', '!'])
+            || segment.matches('%').count() >= 2
+            || words
+                .iter()
+                .any(|word| word.starts_with('@') && word.len() > 1)
+    })
 }
 
 /// A program's name as compared: no folder, no `.exe`/`.cmd`/`.bat`/`.com`/`.ps1`, lower case.
@@ -163,7 +231,7 @@ fn skip_options<'a>(args: &'a [String], takes_value: &[&str]) -> &'a [String] {
 
 /// Shell keywords that may come before a command (`if rm …`, `do rm …`, `! rm …`).
 const KEYWORDS: &[&str] = &[
-    "do", "then", "else", "elif", "if", "while", "until", "!", "time", "{",
+    "do", "then", "else", "elif", "if", "while", "until", "!", "time", "{", "&",
 ];
 
 /// The command's words from its program on: leading assignments, shell keywords, and
@@ -252,9 +320,14 @@ fn dangerous_named(name: &str, args: &[String], depth: usize) -> bool {
         // PowerShell running a string or another process: what runs cannot be read.
         "iex" | "invoke-expression" | "start-process" | "saps" | "invoke-command" | "icm" => true,
         "nice" | "ionice" | "nohup" | "time" | "command" | "exec" | "builtin" | "stdbuf"
-        | "chrt" | "taskset" => dangerous_words(
-            // `nice -n 5`: an option that takes the next word.
-            skip_options(args, &["-n", "-c", "-p", "--adjustment"]),
+        | "chrt" | "taskset" | "setsid" | "watch" => dangerous_words(
+            // `nice -n 5`, `watch -n 5`: an option that takes the next word.
+            skip_options(args, &["-n", "-c", "-p", "--adjustment", "--interval"]),
+            depth,
+        ),
+        // `parallel cmd ::: args` builds the command's words from elsewhere; what leads is read.
+        "parallel" => dangerous_words(
+            skip_options(args, &["-j", "-n", "-N", "-S", "-a", "--jobs", "--colsep"]),
             depth,
         ),
         "timeout" => {
@@ -463,7 +536,17 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// plugin code in, or turn it on, or point the daemon at a folder of it, so a person decides
 /// those too (a plugin with code still needs the desktop app's approval, which no command line
 /// gives); browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
+/// `imperium runtime install|update|upgrade|remove|uninstall|use|setup …` of any backend and
+/// `config set|unset` of a `runtime.*` key that names a binary, a path, extra arguments, a
+/// version, an image or the update policy install, switch or point at a binary the daemon will
+/// launch; `imperium env set-runtime …` changes an environment's isolation and pulls images.
+/// Arguments are read as a shell reads them (quotes, backslashes and `^` removed), and a line
+/// whose `imperium` arguments are built by the shell asks outright (see
+/// [`unreadable_imperium`]).
 fn changes_agents(args: &[String]) -> bool {
+    // Arguments as a shell reads them: `ins""tall` and `ins\tall` are `install`.
+    let unescaped: Vec<String> = args.iter().map(|word| unescape(word)).collect();
+    let args = &unescaped[..];
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
     let after = |group: &str, subs: &[&str]| {
@@ -483,21 +566,25 @@ fn changes_agents(args: &[String]) -> bool {
     {
         return true;
     }
-    // `runtime [--remote x] vllm setup|remove`: the group word, then `vllm`, then the verb.
-    if args
-        .iter()
-        .position(|word| word == "runtime")
-        .is_some_and(|at| {
-            let rest = &args[at + 1..];
-            rest.iter()
-                .position(|word| word == "vllm")
-                .is_some_and(|v| {
-                    rest[v + 1..]
-                        .iter()
-                        .any(|word| matches!(word.as_str(), "setup" | "remove"))
-                })
-        })
+    // `runtime [--remote x] install|update|remove|use` of any backend (also `vllm setup|remove`):
+    // the verb anywhere after the group word, so global options between them do not hide it.
+    if after(
+        "runtime",
+        &[
+            "install",
+            "update",
+            "upgrade",
+            "remove",
+            "uninstall",
+            "use",
+            "setup",
+        ],
+    ) || changes_runtime_setting(args)
     {
+        return true;
+    }
+    // `env set-runtime …` changes isolation and pulls images.
+    if after("env", &["set-runtime"]) {
         return true;
     }
     let Some(at) = args.iter().position(|word| word == "env") else {
@@ -509,6 +596,157 @@ fn changes_agents(args: &[String]) -> bool {
             .iter()
             .skip(1)
             .any(|word| matches!(word.as_str(), "add" | "set" | "rm"))
+}
+
+/// `config [--remote x] set|unset runtime.…` of a key that names a binary, a path, extra
+/// arguments, a version, an image or the update policy (or of a whole `runtime` table): the
+/// daemon would launch what it names, or fetch and install it. A false alarm only asks.
+fn changes_runtime_setting(args: &[String]) -> bool {
+    args.iter()
+        .position(|word| word == "config")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .any(|word| matches!(word.as_str(), "set" | "unset"))
+                && rest.iter().any(|word| {
+                    crate::permissions::runtime_binary_key(word.split('=').next().unwrap_or(word))
+                })
+        })
+}
+
+/// Whether a command line changes `mcp.trusted_projects` through the CLI (`imperium config
+/// set|unset mcp.trusted_projects ...`, also nested in a shell string or with the words quoted or
+/// escaped): refused outright, not asked about, because trust gates the MCP servers (and later
+/// language servers) a folder may start. Read on the whole line, quotes and escapes removed, so
+/// a false alarm needs `imperium`, `config`, `set`/`unset` and the key all on one line.
+pub(crate) fn command_refused(line: &str) -> bool {
+    // A PowerShell backtick escape (`mcp.trusted` + backtick + `_projects`) is no part of the
+    // word it sits in; braces and globs are expanded the way a shell expands them.
+    let flat = unescape(&line.replace('`', "")).to_ascii_lowercase();
+    let mut budget = MAX_BRACE_VARIANTS;
+    expand_braces(&flat, &mut budget)
+        .iter()
+        .any(|variant| refused_words(variant))
+}
+
+/// The most words a brace list may be expanded into when a line is read.
+const MAX_BRACE_VARIANTS: usize = 64;
+
+fn refused_words(flat: &str) -> bool {
+    let words: Vec<&str> = flat.split_whitespace().collect();
+    words
+        .iter()
+        .any(|word| program_names(word).iter().any(|name| name == "imperium"))
+        && words.contains(&"config")
+        && words.iter().any(|word| matches!(*word, "set" | "unset"))
+        && words.iter().any(|word| {
+            let key = word.split('=').next().unwrap_or(word);
+            crate::permissions::trusted_projects_key(key)
+                // A glob that could name the key (`mcp.trusted_p*`, `mcp.trusted_projec?s`).
+                || (key.contains(['*', '?', '['])
+                    && ["mcp.trusted_projects", "mcp"]
+                        .iter()
+                        .any(|name| glob_matches(key, name)))
+        })
+}
+
+/// `{a,b}` lists expanded as a shell does (nested too), at most `budget` words in all; text
+/// without a list, and a `{...}` with no comma, is kept as it is.
+fn expand_braces(text: &str, budget: &mut usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let Some(open) = chars.iter().position(|c| *c == '{') else {
+        return vec![text.to_string()];
+    };
+    let mut depth = 0_i32;
+    let mut close = None;
+    let mut commas = Vec::new();
+    for (index, &c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            ',' if depth == 1 => commas.push(index),
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return vec![text.to_string()];
+    };
+    let tail: String = chars[close + 1..].iter().collect();
+    if commas.is_empty() {
+        let head: String = chars[..=close].iter().collect();
+        return expand_braces(&tail, budget)
+            .into_iter()
+            .map(|rest| format!("{head}{rest}"))
+            .collect();
+    }
+    let prefix: String = chars[..open].iter().collect();
+    let mut bounds = vec![open];
+    bounds.extend(commas);
+    bounds.push(close);
+    let mut out = Vec::new();
+    for pair in bounds.windows(2) {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let alternative: String = chars[pair[0] + 1..pair[1]].iter().collect();
+        out.extend(expand_braces(
+            &format!("{prefix}{alternative}{tail}"),
+            budget,
+        ));
+    }
+    out
+}
+
+/// Whether the glob `pattern` (`*`, `?`, `[abc]`, `[a-c]`, `[!x]`) matches all of `text`.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    fn go(pattern: &[char], text: &[char]) -> bool {
+        match pattern.first() {
+            None => text.is_empty(),
+            Some('*') => (0..=text.len()).any(|skip| go(&pattern[1..], &text[skip..])),
+            Some('?') => !text.is_empty() && go(&pattern[1..], &text[1..]),
+            Some('[') => {
+                let Some(end) = pattern
+                    .iter()
+                    .skip(2)
+                    .position(|c| *c == ']')
+                    .map(|at| at + 2)
+                else {
+                    return text.first() == Some(&'[') && go(&pattern[1..], &text[1..]);
+                };
+                let Some(&c) = text.first() else {
+                    return false;
+                };
+                let set = &pattern[1..end];
+                let (negated, set) = match set.first() {
+                    Some('!' | '^') => (true, &set[1..]),
+                    _ => (false, set),
+                };
+                let mut hit = false;
+                let mut index = 0;
+                while index < set.len() {
+                    if index + 2 < set.len() && set[index + 1] == '-' {
+                        hit |= (set[index]..=set[index + 2]).contains(&c);
+                        index += 3;
+                    } else {
+                        hit |= set[index] == c;
+                        index += 1;
+                    }
+                }
+                hit != negated && go(&pattern[end + 1..], &text[1..])
+            }
+            Some(&literal) => text.first() == Some(&literal) && go(&pattern[1..], &text[1..]),
+        }
+    }
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    go(&pattern, &text)
 }
 
 /// `plugin [--remote x] marketplace add …`: the group word, then `marketplace`, then `add`.
@@ -670,6 +908,77 @@ mod tests {
             "imperium --remote=box pack add-source a https://example.com/p.git",
             "imperium mods --remote x install ./demo",
             "imperium --remote mods mods update demo",
+            "imperium runtime install",
+            "imperium runtime install --pack windows-x64-vulkan",
+            "imperium runtime update",
+            "imperium runtime remove",
+            "imperium runtime use /tmp/llama-server",
+            "imperium runtime use",
+            "imperium --remote box runtime install",
+            "imperium runtime --remote x use /tmp/x",
+            "imperium.exe runtime install",
+            "FOO=1 imperium runtime install",
+            "env FOO=1 imperium runtime install",
+            "cd x && imperium runtime install",
+            "bash -c 'imperium runtime install'",
+            "imperium config set runtime.llamacpp.custom_path /tmp/x",
+            "imperium config unset runtime.llamacpp.custom_path",
+            "imperium config set runtime.llamacpp.extra_args '[\"--x\"]'",
+            "imperium config set runtime.llamacpp.update_external auto",
+            "imperium config set runtime.llamacpp.auto_install true",
+            "imperium config set runtime.llamacpp.backend cuda12",
+            "imperium config set runtime.llamacpp.models.m.extra_args []",
+            "imperium config set runtime.vllm.command /tmp/vllm",
+            "imperium config set runtime.vllm.docker_image evil/img",
+            "imperium config set runtime.vllm.version 9",
+            "imperium config set runtime.vllm.extra_args []",
+            "imperium config set runtime.llamacpp {}",
+            "imperium --remote box config set Runtime.LlamaCpp.Custom_Path /tmp/x",
+            "imperium env set-runtime work docker",
+            "imperium --remote box env set-runtime work wsl",
+            "imperium runtime ins\"\"tall",
+            "imperium runtime ins\\tall",
+            "imperium run''time use /tmp/x",
+            "imperium config set runtime.llamacpp.custom\"\"_path /tmp/x",
+            "imperium runtime $(echo install)",
+            "imperium runtime `echo install`",
+            "imperium runtime $V",
+            "imperium runtime %V%",
+            "imperium runtime (\"ins\"+\"tall\")",
+            "imperium @a",
+            "imperium @args",
+            "echo install | xargs imperium runtime",
+            "echo install | xargs -I{} imperium runtime {}",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
+            "& \"C:\\Program Files\\Imperium\\imperium.exe\" runtime install",
+            "'/opt/my tools/imperium' runtime use /tmp/x",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" config set runtime.llamacpp.custom_path x",
+            "imperium runtime {install,}",
+            "imperium runtime {,install}",
+            "imperium config set {mcp.trusted_projects,} []",
+            "imperium runtime instal?",
+            "imperium runtime inst*",
+            "imperium runtime [i]nstall",
+            "cmd /v:on /c \"set X=install&& imperium runtime !X!\"",
+            "cmd /c imperium runtime install",
+            "cmd /C \"imperium runtime install\"",
+            "pwsh -Command imperium runtime install",
+            "powershell -c \"imperium runtime install\"",
+            "nohup imperium runtime install",
+            "setsid imperium runtime install",
+            "setsid -w imperium runtime install",
+            "watch -n 5 imperium runtime install",
+            "parallel imperium runtime install ::: x",
+            "xargs imperium runtime install",
+            "echo ok\nimperium runtime install",
+            "imperium runtime install\necho ok",
+            "imperium runtime ncm use /opt/evil/ncm",
+            "imperium runtime ncm install",
+            "imperium runtime ncm remove",
+            "imperium runtime ncm update",
+            "imperium config set runtime.ncm.custom_path /opt/evil/ncm",
+            "imperium config set runtime.ncm.extra_args '[\"--x\"]'",
+            "imperium config set runtime.ncm {}",
             "imperium runtime vllm setup",
             "imperium runtime vllm setup --docker --yes",
             "imperium.exe runtime vllm remove --yes",
@@ -704,8 +1013,16 @@ mod tests {
             "imperium runtime vllm status",
             "imperium runtime vllm",
             "imperium runtime status",
-            "imperium runtime install",
+            "imperium runtime candidates",
+            "imperium runtime ncm status",
+            "imperium runtime ncm",
+            "\"C:\\Program Files\\Imperium\\imperium.exe\" runtime status",
+            "imperium env list",
             "imperium vllm setup",
+            "imperium config set runtime.llamacpp.context 8192",
+            "imperium config set runtime.llamacpp.idle_unload_s 60",
+            "imperium config set runtime.vllm.max_gpu_memory_utilization 0.8",
+            "imperium config explain runtime.llamacpp.custom_path",
             "imperium plugin",
             "imperium plugin marketplace list",
             "imperium plugin marketplace refresh",
@@ -754,6 +1071,117 @@ mod tests {
             "git -C /repo push origin +HEAD:main",
         ] {
             assert!(dangerous_command(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn changing_trusted_projects_is_refused_in_every_mode() {
+        use crate::permissions::{CallKind, Decision, Permissions, Refusal, SharedRules, Target};
+        use imperium_api::PermissionMode;
+        let refused = [
+            "imperium config set mcp.trusted_projects '[\"/tmp/x\"]'",
+            "imperium config unset mcp.trusted_projects",
+            "imperium --remote box config set mcp.trusted_projects []",
+            "/usr/bin/imperium.exe config set MCP.Trusted_Projects []",
+            "imperium config set mcp.trusted_projects=[]",
+            "imperium config set mcp.trusted_pro\"\"jects []",
+            "bash -c 'imperium config set mcp.trusted_projects []'",
+            "cd x && imperium config set mcp.trusted_projects []",
+            "FOO=1 imperium config set mcp.trusted_projects []",
+            "imperium config set {mcp.trusted_projects,} []",
+            "imperium config set mcp.trusted_p* []",
+            "imperium config set mcp.trusted_projec?s []",
+            "imperium config set mcp.[t]rusted_projects []",
+            "imperium config set mcp.trusted`_projects []",
+            "imperium config unset {mcp,x}.trusted_projects",
+            "imperium config set mcp.trusted_projects null",
+            "imperium config set mcp {}",
+        ];
+        let allowed = [
+            "imperium config explain mcp.trusted_projects",
+            "imperium config set mcp.servers.x.allow []",
+            "imperium config set model.default x",
+            "cat mcp.trusted_projects",
+        ];
+        for mode in PermissionMode::ALL {
+            let permissions =
+                Permissions::new(SharedRules::new(Vec::new()), SharedRules::new(Vec::new()))
+                    .with_mode(mode);
+            for line in refused {
+                assert!(command_refused(line), "{line}");
+                let judged = permissions.judge(
+                    "run_command",
+                    &Target::Command(line.to_string()),
+                    CallKind::Execute,
+                    None,
+                );
+                assert_eq!(
+                    judged.decision,
+                    Decision::Refuse(Refusal::Protected),
+                    "{mode} {line}"
+                );
+            }
+        }
+        for line in allowed {
+            assert!(!command_refused(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn runtime_changes_ask_every_time_in_every_mode_and_are_never_sticky() {
+        use crate::permissions::{CallKind, Decision, Target, decide_call, safety_floor};
+        use imperium_api::{PermissionMode, RuleAction};
+        let floored = [
+            "imperium runtime install",
+            "imperium runtime install --pack windows-x64-cuda12",
+            "imperium runtime use /opt/evil/llama-server",
+            "imperium runtime vllm setup --docker --yes",
+            "imperium runtime vllm remove --yes",
+            "imperium config set runtime.llamacpp.custom_path /opt/evil/llama-server",
+            "imperium config set runtime.llamacpp.extra_args '[\"--x\"]'",
+            "imperium config set runtime.llamacpp.update_external auto",
+            "imperium config set runtime.vllm.command /opt/evil/vllm",
+            "imperium runtime ncm use /opt/evil/ncm",
+            "imperium config set runtime.ncm.custom_path /opt/evil/ncm",
+        ];
+        let open = [
+            "imperium runtime status",
+            "imperium runtime candidates",
+            "imperium runtime vllm status",
+            "imperium runtime ncm status",
+            "imperium config set runtime.llamacpp.context 8192",
+        ];
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Default,
+            PermissionMode::Auto,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Full,
+        ] {
+            for line in floored {
+                let target = Target::Command(line.to_string());
+                assert!(safety_floor(CallKind::Execute, &target), "{line}");
+                // With no rule, and with an allow rule: the floor asks, never sticky.
+                for rule in [None, Some(RuleAction::Allow)] {
+                    assert_eq!(
+                        decide_call(mode, CallKind::Execute, rule, true),
+                        Decision::Ask { sticky: false },
+                        "{mode} {rule:?} {line}"
+                    );
+                }
+            }
+            for line in open {
+                let target = Target::Command(line.to_string());
+                assert!(!safety_floor(CallKind::Execute, &target), "{line}");
+            }
+            // An unfloored command with an allow rule runs in the modes that honour rules.
+            if mode != PermissionMode::Ask {
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, Some(RuleAction::Allow), false),
+                    Decision::Run,
+                    "{mode}"
+                );
+            }
         }
     }
 
