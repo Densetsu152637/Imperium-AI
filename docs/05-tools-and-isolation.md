@@ -766,10 +766,13 @@ word is
   `luajit`, `lua5.4`), `bash`, `sh`, `zsh`, `fish`, `dash`, `ksh`, `pwsh`, `powershell`, `cmd`,
   `java`, `dotnet`, `osascript`, `wscript`, `cscript`, `mshta`, and the package runners `npx`,
   `pnpx`, `bunx`, `uvx`, `pipx`;
-- a runner alone or with its running subcommand: `uv run`, `cargo run`, `go run`,
-  `docker exec`/`run`, `podman exec`/`run`, `direnv exec`, `devbox run`, `mise exec`/`x`,
-  `npm exec`/`x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`, `bun x` (the program alone, as in
-  `docker` from `docker --version`, would cover them);
+- a runner alone or with its running subcommand: `uv run`, `uv tool` (`uv tool run`),
+  `cargo run`, `go run`, `docker`, `podman` and `nerdctl` with `exec`, `run`, `compose` or
+  `container` (`docker compose exec`, `docker container run`), `kubectl exec`/`run`,
+  `direnv exec`, `devbox run`, `mise exec`/`x`, `npm exec`/`x`, `pnpm dlx`/`exec`,
+  `yarn dlx`/`exec`, `bun x` (the program alone, as in `docker` from `docker --version`, would
+  cover them, and a suggested rule stops at the second word, so a grouping subcommand such as
+  `compose` is flagged itself);
 - a wrapper that runs whatever follows it: `env`, `sudo`, `doas`, `nohup`, `timeout`, `nice`,
   `ionice`, `xargs`, `time`, `command`, `exec`, `stdbuf`, `setsid`, `runas`, `watch`, `wsl`, so
   `env python`, `sudo bash` and `timeout 5 sh` get none either.

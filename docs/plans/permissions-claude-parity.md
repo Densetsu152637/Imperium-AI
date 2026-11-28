@@ -603,7 +603,8 @@ Three further rules sit outside the per-call order:
   `py`, `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `node`, `deno`, `bun`,
   `perl`, `ruby`, `php`, `lua`, `env`, `xargs`, `npx`, `pnpx`, `bunx`, `uvx`, `pipx`, `uv run`,
   `cargo run`, `go run`, `timeout`, `time`, `nice`, `nohup`, `stdbuf`, `watch`, `wsl`, `sudo`,
-  `doas`, `docker exec`/`run`, `podman exec`/`run`, `direnv exec`, `devbox run`,
+  `doas`, `uv tool`, `docker`/`podman`/`nerdctl` `exec`/`run`/`compose`/`container`,
+  `kubectl exec`/`run`, `direnv exec`, `devbox run`,
   `mise exec`/`x`, `npm exec`/`x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`, `bun x` and the like
   (the implementation's constants are the authority; this list follows them). For those
   calls the prompt offers no saved rule.

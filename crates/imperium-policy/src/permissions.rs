@@ -1047,13 +1047,17 @@ const INTERPRETERS: &[&str] = &[
 
 /// Programs with a subcommand that builds, fetches or starts and runs any program or command:
 /// a rule naming the program alone (which covers every subcommand), or with one of these
-/// subcommands, allows that.
+/// subcommands, allows that. A subcommand that only groups others which run programs
+/// (`uv tool run`, `docker compose exec`, `docker container run`) is listed itself, since the
+/// rule a suggestion makes stops at the second word.
 const RUNNERS: &[(&str, &[&str])] = &[
-    ("uv", &["run"]),
+    ("uv", &["run", "tool"]),
     ("cargo", &["run"]),
     ("go", &["run"]),
-    ("docker", &["exec", "run"]),
-    ("podman", &["exec", "run"]),
+    ("docker", &["exec", "run", "compose", "container"]),
+    ("podman", &["exec", "run", "compose", "container"]),
+    ("nerdctl", &["exec", "run", "compose", "container"]),
+    ("kubectl", &["exec", "run"]),
     ("direnv", &["exec"]),
     ("devbox", &["run"]),
     ("mise", &["exec", "x"]),
@@ -2034,9 +2038,23 @@ mod tests {
             "pnpm exec tsc",
             "yarn dlx create-app",
             "bun x cowsay",
+            "uv tool run ruff",
+            "uv tool install ruff",
+            "docker compose run web sh",
+            "docker compose exec web sh",
+            "docker container run img",
+            "docker container exec box sh",
+            "podman compose run web sh",
+            "podman container exec box sh",
+            "kubectl exec -it pod -- sh",
+            "kubectl run tmp --image=busybox",
+            "nerdctl run img",
+            "nerdctl exec box sh",
         ] {
             assert_eq!(suggested(line), None, "{line}");
         }
+        assert_eq!(suggested("kubectl get pods"), Some("kubectl get".into()));
+        assert_eq!(suggested("docker compose"), None);
         assert_eq!(suggested("docker ps"), Some("docker ps".into()));
         assert_eq!(suggested("npm run build"), Some("npm run".into()));
         assert_eq!(suggested("pnpm install"), Some("pnpm install".into()));
@@ -2057,6 +2075,19 @@ mod tests {
             "wsl",
             "lua",
             "pnpx",
+            "uv tool",
+            "uv tool run",
+            "docker compose",
+            "docker compose run",
+            "docker container",
+            "docker container exec",
+            "podman compose",
+            "podman container",
+            "kubectl exec",
+            "kubectl run",
+            "kubectl",
+            "nerdctl run",
+            "nerdctl exec",
         ] {
             assert!(
                 over_broad_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_some(),
@@ -2069,6 +2100,8 @@ mod tests {
             "npm test",
             "pnpm install",
             "yarn add",
+            "kubectl get",
+            "uv pip",
         ] {
             assert!(
                 over_broad_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_none(),
