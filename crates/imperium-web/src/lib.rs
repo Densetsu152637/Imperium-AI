@@ -1,21 +1,30 @@
-//! Web tools for agents: `web_search` through a configured provider (SearXNG, Brave, Tavily,
-//! Kagi, or Exa) and `web_fetch`, which reads a page as text, from a bounded on-disk cache when
-//! it can and only where `robots.txt` allows. Results carry their URLs so agents can
-//! cite sources.
+//! Web tools for agents: `web_search` through a chain of configured providers (SearXNG, Brave,
+//! Tavily, Kagi, or Exa; the next one answers when one is blocked, fails or finds nothing) and
+//! `web_fetch`, which reads a page as text, from a bounded on-disk cache when it can and only
+//! where `robots.txt` allows. A page that answers with a bot-protection block is reported as
+//! blocked, never read as content; it is then tried through the browser and, last, as an
+//! archived copy. Results carry their URLs so agents can cite sources.
 
 #![warn(unreachable_pub)]
 
+mod archive;
+pub mod block;
 pub mod browser;
 pub mod cache;
 mod download;
 pub mod html;
 pub mod preview;
+#[cfg(test)]
+mod resilience_tests;
+pub mod retry;
 pub mod robots;
 pub mod search;
 mod tabs;
 mod tools;
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +33,7 @@ use imperium_protocol::tools as contract;
 use url::Url;
 
 use cache::{FetchCache, Page};
+use retry::{RetryPolicy, send_retrying};
 use robots::Robots;
 
 pub use download::{Downloaded, safe_name};
@@ -44,6 +54,19 @@ fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
         parameters: definition.parameters,
     }
 }
+
+/// The User-Agent of every request the web tools make: stable, and it names Imperium.
+pub const USER_AGENT: &str = concat!(
+    "Imperium/",
+    env!("CARGO_PKG_VERSION"),
+    " (AI agent web tools)"
+);
+/// Where archived copies are looked up (the Wayback Machine).
+pub const WAYBACK_URL: &str = "https://web.archive.org";
+/// The most of an error or block page that is read to recognise it.
+const BLOCK_PAGE_BYTES: usize = 64 * 1024;
+/// The most of an archived page that is read.
+const ARCHIVE_PAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Text returned per `web_fetch` call unless the agent asks for less.
 const DEFAULT_CHUNK: usize = 20_000;
@@ -73,10 +96,13 @@ pub struct FetchOptions {
     /// Treat an unreadable `robots.txt` (a server error, no connection) as disallowing
     /// everything; otherwise it allows everything.
     pub robots_fail_closed: bool,
+    /// The archive a blocked page's copy is looked up in ([`WAYBACK_URL`]); `None` never asks
+    /// an archive.
+    pub archive_base: Option<String>,
 }
 
 impl Default for FetchOptions {
-    /// No cache; `robots.txt` respected, an unreadable one allowing.
+    /// No cache; `robots.txt` respected, an unreadable one allowing; no archive.
     fn default() -> Self {
         FetchOptions {
             cache_dir: None,
@@ -84,6 +110,7 @@ impl Default for FetchOptions {
             cache_max_bytes: 50 * 1024 * 1024,
             respect_robots: true,
             robots_fail_closed: false,
+            archive_base: None,
         }
     }
 }
@@ -94,10 +121,41 @@ pub struct Web {
     /// For downloads: no limit on the whole request (a large file takes longer than a page),
     /// but a connection and a stall limit; the transfer has its own overall deadline.
     download_http: reqwest::Client,
-    search: Option<Arc<dyn SearchProvider>>,
+    /// The providers `web_search` tries in order, with their `web.search` names.
+    search: Vec<(String, Arc<dyn SearchProvider>)>,
     cache: Option<FetchCache>,
     robots: Arc<Robots>,
     respect_robots: bool,
+    retry: RetryPolicy,
+    archive_base: Option<String>,
+}
+
+/// A page read by something other than plain HTTP (the browser), as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedPage {
+    pub title: Option<String>,
+    pub final_url: String,
+    pub text: String,
+}
+
+pub type RenderFuture<'a> = Pin<Box<dyn Future<Output = Result<RenderedPage, String>> + Send + 'a>>;
+
+/// Reads a page plain HTTP could not, such as through a real browser. `web_fetch` asks it once
+/// a page has answered with a block.
+pub trait PageRenderer: Send + Sync {
+    fn render<'a>(&'a self, url: &'a str) -> RenderFuture<'a>;
+}
+
+/// What a search found, who found it, and why the providers before it did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchOutcome {
+    /// The `web.search` name of the provider that answered.
+    pub provider: String,
+    pub hits: Vec<Hit>,
+    /// One line for each provider that was skipped: blocked, failed, or found nothing.
+    pub notes: Vec<String>,
+    /// How many providers are configured.
+    pub providers: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -112,11 +170,107 @@ pub enum WebError {
     NotText(String, String),
     #[error("robots.txt disallows fetching {0} (set web.robots to off to ignore robots.txt)")]
     Robots(String),
+    /// Bot protection or an access rule answered instead of the page.
+    #[error("{}", blocked_message(.url, .reason, .tried))]
+    Blocked {
+        url: String,
+        reason: String,
+        /// What else was tried, and why that did not work either.
+        tried: Vec<String>,
+    },
+}
+
+fn blocked_message(url: &str, reason: &str, tried: &[String]) -> String {
+    let mut message = format!(
+        "{url} is blocked by bot protection or an access rule ({reason}); no page content was \
+         read, and any text on the block page is not the page's content."
+    );
+    if !tried.is_empty() {
+        message.push_str(&format!(" Also tried: {}.", tried.join("; ")));
+    }
+    message.push_str(" Try another source, or ask the user to open the page.");
+    message
+}
+
+/// Up to `cap` bytes of a response body as text.
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> String {
+    let mut bytes = Vec::new();
+    while bytes.len() < cap {
+        match response.chunk().await {
+            Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    bytes.truncate(cap);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn cf_mitigated(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get("cf-mitigated")
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"challenge"))
+}
+
+/// `reason` with the pause the server asked for, when it asked for one.
+fn with_wait(mut reason: String, wait: Option<Duration>) -> String {
+    if let Some(wait) = wait {
+        reason.push_str(&format!("; the server asked to wait {} s", wait.as_secs()));
+    }
+    reason
+}
+
+/// `url` as shown in a message: without the user name and password it may carry.
+fn shown_url(url: &Url) -> String {
+    let mut url = url.clone();
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
+/// What a 4xx or 5xx response means: a block when it is one, otherwise a plain HTTP error.
+async fn status_error(response: reqwest::Response) -> WebError {
+    let status = response.status();
+    let url = shown_url(response.url());
+    let mitigated = cf_mitigated(response.headers());
+    let wait = retry::retry_after(response.headers());
+    let body = if matches!(status.as_u16(), 403 | 429 | 503) {
+        read_capped(response, BLOCK_PAGE_BYTES).await
+    } else {
+        String::new()
+    };
+    let title = html::title(&body);
+    let text = html::to_text(&body);
+    match block::detect(status.as_u16(), mitigated, &body, title.as_deref(), &text) {
+        Some(reason) => WebError::Blocked {
+            url,
+            reason: with_wait(reason, wait),
+            tried: Vec::new(),
+        },
+        None => WebError::Http(format!("HTTP status {status} for {url}")),
+    }
 }
 
 impl Web {
     pub fn new(search: Option<Arc<dyn SearchProvider>>) -> Self {
         Self::with_options(search, FetchOptions::default())
+    }
+
+    /// A web with the providers `web_search` tries in order, each with the name it is
+    /// configured under (`web.search` and `web.search_fallback`).
+    pub fn with_chain(
+        search: Vec<(String, Arc<dyn SearchProvider>)>,
+        options: FetchOptions,
+    ) -> Self {
+        let mut web = Self::with_options(None, options);
+        web.search = search;
+        web
+    }
+
+    /// The same web with another retry policy.
+    #[must_use]
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
     }
 
     pub fn with_options(search: Option<Arc<dyn SearchProvider>>, options: FetchOptions) -> Self {
@@ -131,22 +285,26 @@ impl Web {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(TIMEOUT)
-                .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
+                .user_agent(USER_AGENT)
                 .build()
                 .unwrap_or_default(),
             download_http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(15))
                 .read_timeout(Duration::from_secs(30))
-                .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
+                .user_agent(USER_AGENT)
                 .build()
                 .unwrap_or_default(),
-            search,
+            search: search
+                .map(|provider| vec![("search".to_string(), provider)])
+                .unwrap_or_default(),
+            retry: RetryPolicy::default(),
+            archive_base: options.archive_base,
         }
     }
 
     pub fn can_search(&self) -> bool {
-        self.search.is_some()
+        !self.search.is_empty()
     }
 
     /// Tool definitions: `web_fetch` always, `web_search` when a provider is configured.
@@ -169,6 +327,89 @@ impl Web {
     /// [`fetch`](Self::fetch) where each redirect target must also pass `follow` (the caller's
     /// own rules, such as the domains the user approved); a refused redirect is not requested.
     pub async fn fetch_with(
+        &self,
+        url: &str,
+        offset: usize,
+        limit: usize,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+    ) -> Result<String, WebError> {
+        self.fetch_resilient(url, offset, limit, follow, None).await
+    }
+
+    /// [`fetch_with`](Self::fetch_with) that does not give up when plain HTTP is blocked (a
+    /// CAPTCHA or challenge page, a 403 or 429): the page is then read through `renderer` (the
+    /// browser) when there is one, and failing that as the archive's copy, which the result
+    /// says is archived and dates. When nothing works the error is [`WebError::Blocked`]: the
+    /// block page's own text is never returned as the page.
+    pub async fn fetch_resilient(
+        &self,
+        url: &str,
+        offset: usize,
+        limit: usize,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+        renderer: Option<&dyn PageRenderer>,
+    ) -> Result<String, WebError> {
+        let (shown, reason) = match self.fetch_plain(url, offset, limit, follow).await {
+            Err(WebError::Blocked { url, reason, .. }) => (url, reason),
+            other => return other,
+        };
+        let Ok(parsed) = Url::parse(url) else {
+            return Err(WebError::BadUrl(url.into()));
+        };
+        let mut tried = Vec::new();
+        if let Some(renderer) = renderer {
+            match renderer.render(parsed.as_str()).await {
+                Ok(rendered) => {
+                    let still =
+                        block::detect(200, false, "", rendered.title.as_deref(), &rendered.text);
+                    match still {
+                        Some(still) => tried.push(format!("the browser was blocked too ({still})")),
+                        None => {
+                            let page = Page {
+                                title: rendered.title,
+                                final_url: rendered.final_url,
+                                text: rendered.text.chars().take(MAX_PAGE_CHARS).collect(),
+                            };
+                            return Ok(format!(
+                                "Read through the browser because plain HTTP was blocked ({reason}).\n{}",
+                                render_page(&page, offset, limit)
+                            ));
+                        }
+                    }
+                }
+                Err(error) => tried.push(format!("the browser could not read it ({error})")),
+            }
+        }
+        if let Some(base) = &self.archive_base {
+            if cache::FetchCache::key(&parsed).is_none() {
+                tried.push(
+                    "no archived copy was asked for because the URL carries credentials".into(),
+                );
+            } else {
+                match self.archived_copy(base, &parsed).await {
+                    Ok(copy) => {
+                        return Ok(format!(
+                            "ARCHIVED COPY, not the live page: the Wayback Machine captured it on {} ({}). \
+                             The live page blocked Imperium ({reason}), so this may be out of date; say it \
+                             is archived when you cite it.\n{}",
+                            copy.date,
+                            copy.url,
+                            render_page(&copy.page, offset, limit)
+                        ));
+                    }
+                    Err(error) => tried.push(format!("the Wayback Machine: {error}")),
+                }
+            }
+        }
+        Err(WebError::Blocked {
+            url: shown,
+            reason,
+            tried,
+        })
+    }
+
+    /// Plain HTTP only: cache, `robots.txt`, redirects and block detection, no fallbacks.
+    async fn fetch_plain(
         &self,
         url: &str,
         offset: usize,
@@ -224,9 +465,7 @@ impl Web {
             if self.respect_robots && !self.robots.allowed(&self.http, &url).await {
                 return Err(WebError::Robots(url.to_string()));
             }
-            let response = client
-                .get(url.clone())
-                .send()
+            let response = send_retrying(client.get(url.clone()), &self.retry)
                 .await
                 .map_err(|error| WebError::Http(error.to_string()))?;
             let target = response
@@ -237,10 +476,11 @@ impl Web {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|location| url.join(location).ok());
             let Some(target) = target else {
-                return response
-                    .error_for_status()
-                    .map(|response| (response, same_origin))
-                    .map_err(|error| WebError::Http(error.to_string()));
+                let status = response.status();
+                if status.is_client_error() || status.is_server_error() {
+                    return Err(status_error(response).await);
+                }
+                return Ok((response, same_origin));
             };
             if !matches!(target.scheme(), "http" | "https")
                 || is_downgrade(&url, &target)
@@ -282,12 +522,25 @@ impl Web {
         let lifetime = self.cache.as_ref().and_then(|cache| {
             cache::cacheable_lifetime(response.status(), response.headers(), cache.ttl())
         });
+        let status = response.status();
+        let mitigated = cf_mitigated(response.headers());
         let body = response
             .text()
             .await
             .map_err(|error| WebError::Http(error.to_string()))?;
         let (title, text) = if content_type.contains("html") || body.trim_start().starts_with('<') {
-            (html::title(&body), html::to_text(&body))
+            let (title, text) = (html::title(&body), html::to_text(&body));
+            // A challenge or CAPTCHA page can come with a 200. It is neither returned nor cached.
+            if let Some(reason) =
+                block::detect(status.as_u16(), mitigated, &body, title.as_deref(), &text)
+            {
+                return Err(WebError::Blocked {
+                    url: Url::parse(&final_url).map_or(final_url, |url| shown_url(&url)),
+                    reason,
+                    tried: Vec::new(),
+                });
+            }
+            (title, text)
         } else {
             (None, body)
         };
@@ -303,13 +556,57 @@ impl Web {
         Ok(page)
     }
 
-    /// Searches with the configured provider.
+    /// Searches with the configured providers; see [`search_chain`](Self::search_chain).
     pub async fn search(&self, query: &str, count: usize) -> Result<Vec<Hit>, WebError> {
+        Ok(self.search_chain(query, count).await?.hits)
+    }
+
+    /// Searches with the first provider and, when it is blocked, fails or finds nothing, with
+    /// the next, and so on. The outcome names the provider that answered and says why the
+    /// ones before it did not. When every provider failed the error lists each reason; when
+    /// some answered with no results the outcome has no hits.
+    pub async fn search_chain(&self, query: &str, count: usize) -> Result<SearchOutcome, WebError> {
         let count = count.clamp(1, 20);
-        let provider = self.search.as_ref().ok_or(WebError::NoProvider)?;
-        let mut hits = provider.search(&self.http, query, count).await?;
-        hits.truncate(count);
-        Ok(hits)
+        if self.search.is_empty() {
+            return Err(WebError::NoProvider);
+        }
+        let providers = self.search.len();
+        let mut notes = Vec::new();
+        let mut empty = None;
+        for (name, provider) in &self.search {
+            match provider.search(&self.http, query, count).await {
+                Ok(mut hits) if !hits.is_empty() => {
+                    hits.truncate(count);
+                    return Ok(SearchOutcome {
+                        provider: name.clone(),
+                        hits,
+                        notes,
+                        providers,
+                    });
+                }
+                Ok(_) => {
+                    notes.push(format!("{name}: no results"));
+                    if empty.is_none() {
+                        empty = Some(name.clone());
+                    }
+                }
+                // With one provider there is nothing to fall back to: its own error is the answer.
+                Err(error) if providers == 1 => return Err(error),
+                Err(error) => notes.push(format!("{name}: {error}")),
+            }
+        }
+        match empty {
+            Some(provider) => Ok(SearchOutcome {
+                provider,
+                hits: Vec::new(),
+                notes,
+                providers,
+            }),
+            None => Err(WebError::Http(format!(
+                "web search failed on every provider: {}",
+                notes.join("; ")
+            ))),
+        }
     }
 }
 
@@ -358,6 +655,22 @@ pub fn render_hits(hits: &[Hit]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// A search outcome as the model sees it: the numbered hits, then which provider answered when
+/// there is more than one, and why the ones before it were skipped.
+pub fn render_outcome(outcome: &SearchOutcome) -> String {
+    let mut out = render_hits(&outcome.hits);
+    if outcome.providers > 1 {
+        out.push_str(&format!(
+            "\n\nAnswered by search provider: {}",
+            outcome.provider
+        ));
+        for note in &outcome.notes {
+            out.push_str(&format!("\nSkipped {note}"));
+        }
+    }
+    out
 }
 
 /// How agents should cite web sources.
@@ -514,12 +827,12 @@ mod tests {
         let mut providers = SearchProviders::default();
         providers.register("canned", |config| {
             Some(Arc::new(Canned {
-                label: (config.api_key)().unwrap_or_default(),
+                label: (config.api_key)("canned").unwrap_or_default(),
             }) as Arc<dyn SearchProvider>)
         });
         let config = SearchConfig {
             searxng_url: "",
-            api_key: &|| Some("key".to_string()),
+            api_key: &|_: &str| Some("key".to_string()),
         };
         let web = Web::new(providers.build("canned", &config));
         assert!(
@@ -540,7 +853,7 @@ mod tests {
     fn built_in_providers_need_their_settings() {
         let providers = SearchProviders::default();
         let loaded = std::sync::atomic::AtomicUsize::new(0);
-        let no_key = || {
+        let no_key = |_: &str| {
             loaded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             None
         };
@@ -558,7 +871,7 @@ mod tests {
         );
         let configured = SearchConfig {
             searxng_url: "http://127.0.0.1:8080",
-            api_key: &|| Some("key".to_string()),
+            api_key: &|_: &str| Some("key".to_string()),
         };
         for name in ["searxng", "brave", "tavily", "kagi", "exa"] {
             assert!(providers.build(name, &configured).is_some(), "{name}");

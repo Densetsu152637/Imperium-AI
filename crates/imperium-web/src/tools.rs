@@ -20,7 +20,7 @@ use url::Url;
 
 use crate::browser::{Browser, MAX_TABS, TabInfo, View};
 use crate::tabs::one_line;
-use crate::{CITATION_INSTRUCTIONS, Web, render_hits};
+use crate::{CITATION_INSTRUCTIONS, PageRenderer, RenderFuture, RenderedPage, Web, render_outcome};
 
 const BROWSER_TOOLS: [&str; 8] = [
     "browser_open",
@@ -187,6 +187,74 @@ fn tab_view(tab: &TabInfo) -> BrowserTabView {
     }
 }
 
+/// Reads a page that blocked plain HTTP in the session's browser, in a tab of its own that is
+/// closed again. The browser is not made to look like anything else: it is the one the user's
+/// settings chose, and a page that blocks it too stays blocked.
+struct BrowserRenderer<'a> {
+    tools: &'a WebTools,
+    setup: &'a BrowserSetup,
+}
+
+impl PageRenderer for BrowserRenderer<'_> {
+    fn render<'a>(&'a self, url: &'a str) -> RenderFuture<'a> {
+        Box::pin(async move {
+            if self.setup.takeover.user_driving() {
+                return Err(USER_DRIVING.to_string());
+            }
+            let mut guard = self.setup.instance.lock().await;
+            if self.setup.takeover.user_driving() {
+                return Err(USER_DRIVING.to_string());
+            }
+            let browser = self.setup.running(&mut guard).await?;
+            let opened = browser.open(url, true).await;
+            // The tab is closed whether or not the page loaded.
+            let tab = browser
+                .tabs()
+                .await
+                .ok()
+                .and_then(|tabs| tabs.into_iter().find(|tab| tab.active))
+                .map(|tab| tab.id);
+            if let Some(tab) = tab {
+                let _ = browser.close_tab(&tab).await;
+            }
+            let page = parse_read(&opened?);
+            // The browser follows redirects itself, so where it ended up is checked the way a
+            // redirect of web_fetch is.
+            let origin = Url::parse(url).ok().map(|url| url.origin());
+            let landed = Url::parse(&page.final_url).ok();
+            if landed
+                .as_ref()
+                .is_some_and(|landed| !self.tools.may_follow(origin.as_ref(), landed))
+            {
+                return Err(format!(
+                    "the browser ended up at {}, which is not followed: ask for that URL directly \
+                     so the user can approve it",
+                    page.final_url
+                ));
+            }
+            Ok(page)
+        })
+    }
+}
+
+/// The text `Browser::read` returns (title, a `URL:` line, a blank line, the page) as a page.
+fn parse_read(text: &str) -> RenderedPage {
+    let mut parts = text.splitn(3, '\n');
+    let title = parts.next().unwrap_or("").trim().to_string();
+    let final_url = parts
+        .next()
+        .and_then(|line| line.strip_prefix("URL: "))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let body = parts.next().unwrap_or("").trim_start_matches('\n');
+    RenderedPage {
+        title: (!title.is_empty()).then_some(title),
+        final_url,
+        text: body.to_string(),
+    }
+}
+
 /// The open tabs as the agent reads them. Titles and URLs are the pages' own, so they are
 /// flattened to one line and said to be data.
 fn render_tabs(tabs: &[TabInfo]) -> String {
@@ -275,14 +343,29 @@ impl WebTools {
             // approved (or the allow list covers) the URL asked for, not wherever it leads.
             let origin = Url::parse(&args.url).ok().map(|url| url.origin());
             let follow = |target: &Url| self.may_follow(origin.as_ref(), target);
+            // A page that blocks plain HTTP is tried in the browser (the user's own, headless
+            // by default, and only while they are not driving it), then as an archived copy.
+            let renderer = self
+                .browser
+                .as_ref()
+                .filter(|setup| !setup.takeover.user_driving())
+                .map(|setup| BrowserRenderer { tools: self, setup });
             self.web
-                .fetch_with(&args.url, args.offset, args.limit, &follow)
+                .fetch_resilient(
+                    &args.url,
+                    args.offset,
+                    args.limit,
+                    &follow,
+                    renderer
+                        .as_ref()
+                        .map(|renderer| renderer as &dyn PageRenderer),
+                )
                 .await
         } else {
             self.web
-                .search(&args.query, args.count.unwrap_or(8))
+                .search_chain(&args.query, args.count.unwrap_or(8))
                 .await
-                .map(|hits| render_hits(&hits))
+                .map(|outcome| render_outcome(&outcome))
         };
         result.map_err(|error| error.to_string())
     }

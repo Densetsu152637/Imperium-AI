@@ -8,7 +8,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::retry::{RetryPolicy, send_retrying};
 use crate::{Hit, WebError, html};
+
+/// The most of a provider's answer that is read.
+const SEARCH_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 pub type SearchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Hit>, WebError>> + Send + 'a>>;
 
@@ -28,8 +32,9 @@ pub trait SearchProvider: Send + Sync + fmt::Debug {
 pub struct SearchConfig<'a> {
     /// `web.searxng_url`.
     pub searxng_url: &'a str,
-    /// Loads `web.api_key`; called only by providers that need a key.
-    pub api_key: &'a dyn Fn() -> Option<String>,
+    /// Loads the key for the named provider (its own `web.<name>_key`, else `web.api_key`);
+    /// called only by providers that need a key.
+    pub api_key: &'a dyn Fn(&str) -> Option<String>,
 }
 
 /// Builds a provider from `[web]`, or `None` when its settings are incomplete.
@@ -54,18 +59,20 @@ impl Default for SearchProviders {
             })
         });
         providers.register("brave", |config| {
-            (config.api_key)().map(|api_key| Arc::new(Brave { api_key }) as Arc<dyn SearchProvider>)
+            (config.api_key)("brave")
+                .map(|api_key| Arc::new(Brave { api_key }) as Arc<dyn SearchProvider>)
         });
         providers.register("tavily", |config| {
-            (config.api_key)()
+            (config.api_key)("tavily")
                 .map(|api_key| Arc::new(Tavily { api_key }) as Arc<dyn SearchProvider>)
         });
         providers.register("kagi", |config| {
-            (config.api_key)()
+            (config.api_key)("kagi")
                 .map(|api_key| Arc::new(Kagi::new(api_key)) as Arc<dyn SearchProvider>)
         });
         providers.register("exa", |config| {
-            (config.api_key)().map(|api_key| Arc::new(Exa::new(api_key)) as Arc<dyn SearchProvider>)
+            (config.api_key)("exa")
+                .map(|api_key| Arc::new(Exa::new(api_key)) as Arc<dyn SearchProvider>)
         });
         providers
     }
@@ -185,15 +192,59 @@ fn http_error(error: reqwest::Error) -> WebError {
     WebError::Http(error.to_string())
 }
 
+/// The JSON a provider answers with. A rate limit or server error is asked again politely
+/// (see [`crate::retry`]); an answer that is bot protection or an access rule rather than JSON
+/// is [`WebError::Blocked`], and nothing of its text is returned. Errors name the provider's
+/// host, never the request's query string or headers (the key is in a header).
 async fn json_body(request: reqwest::RequestBuilder) -> Result<Value, WebError> {
-    request
-        .send()
+    let response = send_retrying(request, &RetryPolicy::default())
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(http_error)?
-        .json()
-        .await
-        .map_err(http_error)
+        .map_err(|error| http_error(error.without_url()))?;
+    let status = response.status();
+    let host = response
+        .url()
+        .host_str()
+        .unwrap_or("the provider")
+        .to_string();
+    let mitigated = crate::cf_mitigated(response.headers());
+    let wait = crate::retry::retry_after(response.headers());
+    let body = crate::read_capped(response, SEARCH_BODY_BYTES).await;
+    if status.is_success() {
+        if let Ok(json) = serde_json::from_str(&body) {
+            return Ok(json);
+        }
+        // Not JSON: usually a challenge page standing in for the answer.
+        let title = html::title(&body);
+        let text = html::to_text(&body);
+        return Err(
+            match crate::block::detect(status.as_u16(), mitigated, &body, title.as_deref(), &text) {
+                Some(reason) => blocked(host, reason, wait),
+                None => WebError::Http(format!("{host} did not answer with JSON")),
+            },
+        );
+    }
+    if matches!(status.as_u16(), 401 | 402) {
+        return Err(WebError::Http(format!(
+            "HTTP {} from {host}: the provider did not accept the key or plan",
+            status.as_u16()
+        )));
+    }
+    let title = html::title(&body);
+    let text = html::to_text(&body);
+    Err(
+        match crate::block::detect(status.as_u16(), mitigated, &body, title.as_deref(), &text) {
+            Some(reason) => blocked(host, reason, wait),
+            None => WebError::Http(format!("HTTP {} from {host}", status.as_u16())),
+        },
+    )
+}
+
+fn blocked(host: String, reason: String, wait: Option<std::time::Duration>) -> WebError {
+    WebError::Blocked {
+        url: host,
+        reason: crate::with_wait(reason, wait),
+        tried: Vec::new(),
+    }
 }
 
 impl SearchProvider for Searxng {

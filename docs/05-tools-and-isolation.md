@@ -17,8 +17,9 @@
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
 final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
 content is refused) and `web_search` queries the configured provider (`web.search` =
-`searxng` with `web.searxng_url`, or `brave`, `tavily`, `kagi` or `exa` with `web.api_key` from the
-keychain, never from the settings file)
+`searxng` with `web.searxng_url`, or `brave`, `tavily`, `kagi` or `exa` with a key from the
+keychain, never from the settings file; `web.search_fallback` names more providers to try in
+order, see [resilience](#blocked-pages-and-search-fallbacks-implemented))
 and returns numbered results. Each provider implements the `SearchProvider` trait and is built
 from its `web.search` name by `SearchProviders`, so adding one is an implementation and a
 `register` call; unknown names leave search off. Agents are told to cite the sources they use
@@ -38,9 +39,45 @@ local files only, or an ask rule on `web_search`; query screening is not built.
 
 **Search providers.** `kagi` (the Kagi Search API, `Authorization: Bot <token>`; its related-search
 entries are not results) and `exa` (`x-api-key`, with a short text excerpt per result) join
-`searxng`, `brave` and `tavily`. A key provider is built only when `web.api_key` names a keychain
-secret that exists; otherwise search stays off with a warning. Keys are sent only as request
+`searxng`, `brave` and `tavily`. A key provider is built only when its own key setting or `web.api_key` names a keychain
+secret that exists; otherwise it is left out of the chain with a warning (and search stays off when none is left). Keys are sent only as request
 headers, are redacted from `Debug` output, and never appear in error messages.
+
+<a id="blocked-pages-and-search-fallbacks-implemented"></a>**Blocked pages and search fallbacks
+(implemented).** Many sites and search engines answer a program with bot protection instead of
+the page. Imperium reads that as a result to report, never as content, and never tries to get
+past it: it does not solve CAPTCHAs, spoof another browser or identity, or rotate proxies. Every
+request carries the same honest `User-Agent` (`Imperium/<version> (AI agent web tools)`).
+
+- *Recognising a block.* A 403, a 429, a `cf-mitigated: challenge` header, or a page that is a
+  Cloudflare, Akamai or similar challenge, a CAPTCHA, an "unusual traffic" wall or a titled
+  "Access denied" page is a block. Pages are judged by their title, well-known markers and how
+  little text they have, so a long article that merely talks about CAPTCHAs is not a block. A
+  block is returned to the agent as `<url> is blocked by bot protection or an access rule (<why>)`
+  with what else was tried; none of the block page's text is passed on, and a block page is never
+  cached. An ordinary 404 or 5xx stays an ordinary HTTP error.
+- *Polite retries.* A 429 or a 500, 502, 503 or 504 is tried again at most twice. The pause is
+  the server's `Retry-After` in seconds when it gave one, otherwise 0.5 s doubling up to 8 s. A
+  `Retry-After` longer than 8 s is not waited for: the block is reported with the wait the server
+  asked for. This covers pages, search providers and archive requests.
+- *Fetch fallbacks.* When plain HTTP is blocked, `web_fetch` reads the page in the session's
+  browser (a tab of its own that is closed again, only while the user is not driving the browser,
+  and only where the browser ends up on the page's own origin or an allowed domain). If the
+  browser is blocked too, or is not set up, it asks the Wayback Machine's availability API
+  (`web.archive_fallback`, default on) and returns the closest capture, headed `ARCHIVED COPY,
+  not the live page` with the capture date, which the agent must say when it cites it. Only the
+  page's URL is sent to the archive, never a URL that carries a user name, password or a
+  credential-like query parameter, and an archived page that is itself a block is refused.
+- *Search fallbacks.* `web.search` is the first provider and `web.search_fallback` lists the
+  others. When one is blocked, fails (a bad key, a rate limit, no connection) or finds nothing,
+  the next is tried; the result ends with `Answered by search provider: <name>` and one
+  `Skipped <name>: <why>` line for each provider passed over. When every provider fails the error
+  lists each reason. A provider's key is the keychain secret named by its own setting
+  (`web.brave_key`, `web.tavily_key`, `web.kagi_key`, `web.exa_key`), else the shared
+  `web.api_key`; keys go out only as request headers, are redacted from `Debug` output and never
+  appear in errors or logs. Agents cannot add a provider or a key: `config.toml` is a protected
+  write path (file tools never write it) and no app-config tool changes `[web]`, so turning a
+  provider on is the user's decision.
 
 **Cache.** `web_fetch` keeps the text of pages it reads in `<cache>/web`, one file per URL
 (fragment removed; readable by the owner only on Unix), so a page read again, or read in later

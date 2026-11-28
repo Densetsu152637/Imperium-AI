@@ -213,7 +213,13 @@ pub static SETTINGS: &[SettingDef] = &[
     def("web.enabled", "Web tools", Bool, "Offer web_fetch (and web_search with a provider) to agents."),
     choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search."),
     def("web.searxng_url", "SearXNG URL", STRING, "A SearXNG instance with the JSON format enabled."),
-    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key."),
+    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key; a provider's own key below wins over it."),
+    def("web.search_fallback", "Search fallback providers", StringList, "Providers tried in this order after the one above when it is blocked, fails or finds nothing: searxng, brave, tavily, kagi, or exa. The result says which one answered. Empty: no fallback."),
+    def("web.brave_key", "Brave Search API key", SecretRef, "Keychain secret holding your Brave Search API key."),
+    def("web.tavily_key", "Tavily API key", SecretRef, "Keychain secret holding your Tavily key."),
+    def("web.kagi_key", "Kagi API token", SecretRef, "Keychain secret holding your Kagi Search API token."),
+    def("web.exa_key", "Exa API key", SecretRef, "Keychain secret holding your Exa key."),
+    def("web.archive_fallback", "Archived copies of blocked pages", Bool, "When web_fetch is blocked by bot protection and the browser cannot read the page either, ask the Wayback Machine (web.archive.org) for a copy; the result says it is archived and when. Only the page's URL is sent, never for URLs that carry credentials."),
     def("web.allow_domains", "Allowed domains", StringList, "Domains web_fetch reads without asking (subdomains included)."),
     def("web.cache_ttl_s", "Fetch cache lifetime (seconds)", Integer, "How long web_fetch reuses a page it has read; 0 turns the cache off. Pages with Cache-Control no-store, private or no-cache, cookies, or authentication are never cached."),
     def("web.cache_max_mb", "Fetch cache size (MB)", Integer, "The most disk the web_fetch cache may use; the oldest pages go first. 0 turns the cache off."),
@@ -868,6 +874,44 @@ default_method = \"rebase\"
     }
 
     #[test]
+    fn search_fallbacks_and_provider_keys_are_settings_and_keys_are_secret_names() {
+        let (_home, paths) = home();
+        let web = |paths: &Paths| {
+            load(paths, None, owned(&[]))
+                .unwrap()
+                .settings()
+                .unwrap()
+                .web
+        };
+        let fresh = web(&paths);
+        assert!(fresh.search_fallback.is_empty() && fresh.archive_fallback);
+        assert!(fresh.brave_key.is_none() && fresh.exa_key.is_none());
+
+        set_user_setting(
+            &paths,
+            "web.search_fallback",
+            &Json::from(vec!["brave", "searxng"]),
+            [],
+        )
+        .unwrap();
+        set_user_setting(&paths, "web.brave_key", &Json::from("brave-main"), []).unwrap();
+        set_user_setting(&paths, "web.archive_fallback", &Json::from(false), []).unwrap();
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(
+            text.contains("brave_key = { secret = \"brave-main\" }"),
+            "{text}"
+        );
+        let saved = web(&paths);
+        assert_eq!(saved.search_fallback, ["brave", "searxng"]);
+        assert_eq!(saved.brave_key.unwrap().secret.as_str(), "brave-main");
+        assert!(!saved.archive_fallback);
+        // A key is only ever a name; a value that is not a valid secret name is refused.
+        let error =
+            set_user_setting(&paths, "web.tavily_key", &Json::from("Bad Name"), []).unwrap_err();
+        assert!(matches!(error, SetError::InvalidValue { .. }), "{error}");
+    }
+
+    #[test]
     fn set_creates_a_missing_user_file() {
         let (_home, paths) = home();
         set_user_setting(&paths, "pets.enabled", &Json::from(false), []).unwrap();
@@ -948,6 +992,11 @@ default_method = \"rebase\"
         // Well-typed but rejected by the loaded configuration: the file is restored.
         let error = set_user_setting(&paths, "daemon.port", &Json::from(70000), []).unwrap_err();
         assert!(matches!(error, SetError::Rejected(_)), "{error}");
+        unchanged();
+        let error = set_user_setting(&paths, "web.search_fallback", &Json::from(vec!["bing"]), [])
+            .unwrap_err();
+        assert!(matches!(error, SetError::Rejected(_)), "{error}");
+        assert!(error.to_string().contains("web.search_fallback"), "{error}");
         unchanged();
         let error = set_user_setting(&paths, "models.download_dir", &Json::from("relative"), [])
             .unwrap_err();
