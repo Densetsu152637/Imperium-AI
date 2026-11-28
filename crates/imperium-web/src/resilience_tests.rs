@@ -593,9 +593,18 @@ async fn a_search_engine_behind_bot_protection_is_blocked_and_the_next_provider_
     assert_eq!(count(&limited_hits), 1, "a 3600 s wait is not waited for");
 
     let providers: Vec<(String, Arc<dyn SearchProvider>)> = vec![
-        ("blocked".into(), Arc::new(Searxng { url: blocked_base })),
-        ("limited".into(), Arc::new(Searxng { url: limit_base })),
-        ("self-hosted".into(), Arc::new(Searxng { url: good_base })),
+        (
+            "blocked".into(),
+            Arc::new(Searxng { url: blocked_base }) as Arc<dyn SearchProvider>,
+        ),
+        (
+            "limited".into(),
+            Arc::new(Searxng { url: limit_base }) as Arc<dyn SearchProvider>,
+        ),
+        (
+            "self-hosted".into(),
+            Arc::new(Searxng { url: good_base }) as Arc<dyn SearchProvider>,
+        ),
     ];
     let web = Web::with_chain(providers, FetchOptions::default());
     let outcome = web.search_chain("tokio", 3).await.unwrap();
