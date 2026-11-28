@@ -11,6 +11,7 @@ import {
   closeThinking,
   formatThoughtDuration,
   foldThinking,
+  liveElapsedMs,
   thinkingView,
   type ThinkingEntry,
 } from "../src/sessions/thinking.ts";
@@ -142,6 +143,21 @@ test("closing leaves finished blocks and other entries alone, and returns the sa
   const closed = closeThinking(mixed);
   assert.deepEqual(blocks(closed).map((block) => block.durationMs), [9000, 0]);
   assert.equal(closed[0], mixed[0]);
+});
+
+test("a block seen live is timed from when this window drew it, whatever the daemon's clock says", () => {
+  // The daemon clock is an hour ahead: the time so far is still from `seenAt`.
+  assert.equal(liveElapsedMs(1_000_000 + 3_600_000, 1_000_000, 1_004_000), 4000);
+  assert.equal(liveElapsedMs(null, 1_000_000, 1_007_000), 7000);
+  assert.equal(liveElapsedMs(999_000, 1_000_000, 1_002_000), 2000);
+});
+
+test("a block already long under way when drawn (a replay) is timed from its own start", () => {
+  assert.equal(liveElapsedMs(1_000_000 - 60_000, 1_000_000, 1_003_000), 63_000);
+});
+
+test("the time so far is never negative", () => {
+  assert.equal(liveElapsedMs(5_000_000, 1_000_000, 900_000), 0);
 });
 
 test("a thinking event raises no notification", () => {

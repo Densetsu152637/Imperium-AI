@@ -73,6 +73,19 @@ export function formatThoughtDuration(ms: number): string {
   return seconds === 0 ? unit(minutes, "minute") : `${unit(minutes, "minute")} ${unit(seconds, "second")}`;
 }
 
+/** A block first drawn this long after its run began was replayed (the window was opened or the
+ * session reopened mid-thought); one drawn sooner is seen live. */
+export const REPLAY_AFTER_MS = 5000;
+
+/** The time so far shown on a live block. A block seen live is timed from `seenAt`, when this window
+ * first drew it, so a daemon clock that differs from this machine's changes nothing; one that was
+ * already running long before it was drawn (a replay) is timed from its own `startedAt`. Never
+ * negative. */
+export function liveElapsedMs(startedAt: number | null, seenAt: number, now: number): number {
+  const replayed = startedAt !== null && seenAt - startedAt > REPLAY_AFTER_MS;
+  return Math.max(0, now - (replayed ? startedAt : seenAt));
+}
+
 /** What a thinking block shows and announces. */
 export type ThinkingView = {
   /** The visible label. */

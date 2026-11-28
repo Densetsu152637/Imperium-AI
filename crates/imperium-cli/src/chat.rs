@@ -766,6 +766,11 @@ impl Chat {
         } else {
             format!("[{agent_id}] ")
         };
+        // Output of another kind never lands on a `thinking…` line still open.
+        if thinking::closes_open_line(self.thinking_open, root, &event) {
+            println!();
+            self.thinking_open = false;
+        }
         match event {
             SessionEvent::TurnStarted { text, .. } if root => {
                 self.busy = true;

@@ -7,7 +7,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { formatElapsed } from "../sessions/agentView";
 import type { ThinkingEntry } from "../sessions/thinking";
-import { thinkingView } from "../sessions/thinking";
+import { liveElapsedMs, thinkingView } from "../sessions/thinking";
 
 /** The current time, every second while `active`. */
 function useNow(active: boolean): number {
@@ -26,7 +26,8 @@ export function ThinkingBlock({ entry }: { entry: ThinkingEntry }) {
   const bodyId = useId();
   const view = thinkingView(entry.durationMs, entry.ended, open);
   const now = useNow(view.live);
-  // The run's own start time; this window's clock only when the event carried none.
+  // When this window first drew the block: a block seen live is timed from here, so a daemon on
+  // another machine with a skewed clock cannot show a wrong time.
   const seen = useRef(Date.now());
   return (
     <div className={`thinking${view.live ? " live" : ""}`}>
@@ -47,7 +48,7 @@ export function ThinkingBlock({ entry }: { entry: ThinkingEntry }) {
         {view.live && <span className="thinking-pulse" aria-hidden="true" />}
         {view.live && (
           <span className="thinking-elapsed" aria-hidden="true">
-            {formatElapsed(now - (entry.startedAt ?? seen.current))}
+            {formatElapsed(liveElapsedMs(entry.startedAt, seen.current, now))}
           </span>
         )}
       </button>

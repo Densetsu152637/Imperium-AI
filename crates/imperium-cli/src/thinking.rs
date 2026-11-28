@@ -59,9 +59,56 @@ pub fn print_for(
     }
 }
 
+/// Whether the open `thinking…` line must be ended with a newline before `event` prints: any event
+/// that writes to the terminal (a reply, a tool line, a notice, a question) would otherwise land
+/// on the same line. Events that print nothing, and the thinking events themselves, leave it open.
+pub fn closes_open_line(open: bool, root: bool, event: &SessionEvent) -> bool {
+    open && match event {
+        SessionEvent::ThinkingDelta { .. }
+        | SessionEvent::ThinkingFinished { .. }
+        | SessionEvent::ModelCallCompleted { .. }
+        | SessionEvent::ContextBreakdown { .. }
+        | SessionEvent::StatusChanged { .. }
+        | SessionEvent::QueueChanged { .. } => false,
+        // Subagent replies are not printed.
+        SessionEvent::TextDelta { .. } => root,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn other_output_ends_an_open_thinking_line_first() {
+        let tool = SessionEvent::ToolStarted {
+            call_id: "c".into(),
+            tool: "read_file".into(),
+            summary: "read".into(),
+            arguments: None,
+        };
+        let notice = SessionEvent::Notice {
+            message: "hello".into(),
+        };
+        let text = SessionEvent::TextDelta { text: "Hi".into() };
+        // A tool line (a subagent's too), a notice and the root's reply all print.
+        assert!(closes_open_line(true, false, &tool));
+        assert!(closes_open_line(true, true, &notice));
+        assert!(closes_open_line(true, true, &text));
+        // Nothing is open, nothing to close; and what prints nothing leaves the line be.
+        assert!(!closes_open_line(false, true, &tool));
+        assert!(!closes_open_line(true, false, &text));
+        assert!(!closes_open_line(true, true, &delta("more")));
+        assert!(!closes_open_line(true, true, &finished(1000)));
+        assert!(!closes_open_line(
+            true,
+            true,
+            &SessionEvent::QueueChanged {
+                messages: Vec::new()
+            }
+        ));
+    }
 
     #[test]
     fn durations_are_worded() {
