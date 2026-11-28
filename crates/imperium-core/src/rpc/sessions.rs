@@ -324,16 +324,28 @@ impl Connection {
             // The user's takeover of the signed-in browser: the desktop app's alone (see
             // `Connection::browser_takeover_gate`). The agents' own browser tools run in the
             // daemon and never come through here.
-            SessionBrowserControl::NAME => self.browser_takeover_gate().and_then(|()| {
+            // The gate is checked once the params are known to be well formed, so a malformed
+            // call is told so whoever sends it; nothing runs before the gate passes.
+            SessionBrowserControl::NAME => {
                 call_later::<SessionBrowserControl, _>(c.params.take(), c.later, |params| {
-                    crate::browser_control::control(Arc::clone(&self.state), params)
+                    let gate = self.browser_takeover_gate();
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        gate?;
+                        crate::browser_control::control(state, params).await
+                    }
                 })
-            }),
-            SessionBrowserAct::NAME => self.browser_takeover_gate().and_then(|()| {
+            }
+            SessionBrowserAct::NAME => {
                 call_later::<SessionBrowserAct, _>(c.params.take(), c.later, |params| {
-                    crate::browser_control::act(Arc::clone(&self.state), params)
+                    let gate = self.browser_takeover_gate();
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        gate?;
+                        crate::browser_control::act(state, params).await
+                    }
                 })
-            }),
+            }
             SessionSuggestionRespond::NAME => {
                 call_later::<SessionSuggestionRespond, _>(c.params.take(), c.later, |params| {
                     crate::suggestions::respond(Arc::clone(&self.state), params)
