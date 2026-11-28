@@ -1333,7 +1333,7 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "respond_permission",
-            "Answer a pending permission request, as the user would. Only you decide: nothing is approved automatically. allow_for_session also allows that tool for the rest of the session.",
+            "Answer a pending permission request, as the user would. Only you decide: nothing is approved automatically. allow_for_session also allows that tool for the rest of the session (for run_command, that exact command line only).",
             json!({
                 "session_id": session,
                 "request_id": {"type": "integer", "description": "The request_id from pending_permissions."},

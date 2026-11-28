@@ -490,6 +490,13 @@ impl DaemonState {
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
         let permissions = crate::permissions::PermissionStore::new(&settings.permissions);
+        // Saved allow rules that would run any code are kept, and named for the user to review.
+        crate::permissions::warn_over_broad_rules(
+            &settings.permissions.rules,
+            &paths.user_config_file(),
+            &environments.list(),
+            &paths.data_dir().join("environments.json"),
+        );
         let budgets = crate::budgets::BudgetBook::load(
             paths.data_dir().join("usage.json"),
             settings.budgets.clone(),

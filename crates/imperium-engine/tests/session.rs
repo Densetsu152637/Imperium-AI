@@ -271,6 +271,38 @@ async fn a_denied_command_does_not_run() {
     assert!(!dir.path().join("ran.txt").exists());
 }
 
+#[tokio::test]
+async fn always_this_session_on_a_command_covers_that_exact_command_only() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("run_command", r#"{"command":"echo one > one.txt"}"#),
+        tool_call_body("run_command", r#"{"command":"echo two > two.txt"}"#),
+        tool_call_body("run_command", r#"{"command":"echo one > one.txt"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    let mut events = session.subscribe();
+    session.send("run them".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::AllowForSession).await;
+    // Allowing `echo one` for the session did not allow `echo two`, which asked in its turn;
+    // `echo one` again ran without asking.
+    let summaries: Vec<&String> = seen
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::PermissionRequested { summary, .. } => Some(summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, ["run_command", "run_command"], "{summaries:?}");
+    assert!(summaries[0].contains("echo one"), "{summaries:?}");
+    assert!(summaries[1].contains("echo two"), "{summaries:?}");
+    assert_eq!(finished(&seen).len(), 3, "{seen:?}");
+    assert!(finished(&seen).iter().all(|(ok, _)| *ok), "{seen:?}");
+    assert!(dir.path().join("one.txt").exists());
+    assert!(dir.path().join("two.txt").exists());
+}
+
 fn rules(list: &[(&str, &str, RuleAction)]) -> SharedRules {
     SharedRules::new(
         list.iter()

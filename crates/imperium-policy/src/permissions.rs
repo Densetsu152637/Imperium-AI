@@ -947,7 +947,10 @@ pub fn glob(pattern: &str, text: &str, fold: bool) -> bool {
 
 /// The rule "always allow" would add for a call: the program and its subcommand for a simple
 /// command line (none for a line with several commands, substitution, or redirection), the
-/// file's folder for a file tool, and the whole tool otherwise.
+/// file's folder for a file tool, and the whole tool otherwise. No rule is offered for a
+/// command whose rule would run any code: an interpreter, a shell, a runner such as `npx` or
+/// `cargo run`, or a wrapper such as `env` or `sudo` that runs whatever follows it
+/// ([`over_broad_command`]).
 pub fn suggest(tool: &str, target: &Target) -> Option<PermissionRule> {
     let pattern = match target {
         Target::Command(line) => {
@@ -967,6 +970,9 @@ pub fn suggest(tool: &str, target: &Target) -> Option<PermissionRule> {
                 pattern.push(' ');
                 pattern.push_str(second);
             }
+            if over_broad_command(&pattern).is_some() {
+                return None;
+            }
             pattern
         }
         Target::Path { absolute, .. } => {
@@ -983,6 +989,152 @@ pub fn suggest(tool: &str, target: &Target) -> Option<PermissionRule> {
         pattern,
         action: RuleAction::Allow,
     })
+}
+
+/// Programs that run whatever command follows them, so a rule naming one allows every command.
+const WRAPPERS: &[&str] = &[
+    "env", "sudo", "doas", "nohup", "timeout", "nice", "ionice", "xargs", "time", "command",
+    "exec", "stdbuf", "setsid", "runas",
+];
+
+/// Interpreters and shells: a rule naming one allows any code they are given.
+const INTERPRETERS: &[&str] = &[
+    "python",
+    "python3",
+    "python2",
+    "pythonw",
+    "py",
+    "node",
+    "deno",
+    "bun",
+    "bunx",
+    "ruby",
+    "perl",
+    "php",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "pwsh",
+    "powershell",
+    "cmd",
+    "npx",
+    "uvx",
+    "pipx",
+    "java",
+    "dotnet",
+    "osascript",
+    "wscript",
+    "cscript",
+    "mshta",
+];
+
+/// Programs whose `run` subcommand builds or fetches and runs any program: a rule naming the
+/// program alone, or with `run`, allows that.
+const RUNNERS: &[&str] = &["uv", "cargo", "go"];
+
+/// Whether `name` (a program's name, as [`command_words`] gives it) is an interpreter or a
+/// shell, including a versioned Python such as `python3.12`.
+fn is_interpreter(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    INTERPRETERS.contains(&name.as_str())
+        || name.strip_prefix("python").is_some_and(|version| {
+            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+}
+
+/// Why a `run_command` allow pattern would allow arbitrary code, when it would: its first word
+/// is a wrapper that runs whatever follows it (so `env python`, `sudo bash` and `timeout 5 sh`
+/// are covered too), an interpreter or a shell, or a runner alone or with `run`. A first word
+/// with `*` or `?` counts when it matches any of those names.
+pub fn over_broad_command(pattern: &str) -> Option<String> {
+    let words = command_words(pattern);
+    let first = words.first()?.to_ascii_lowercase();
+    let second = words.get(1).map(|word| word.to_ascii_lowercase());
+    let matches = |name: &str| {
+        if first.contains(['*', '?']) {
+            glob(&first, name, true)
+        } else {
+            first == name
+        }
+    };
+    if let Some(wrapper) = WRAPPERS.iter().find(|name| matches(name)) {
+        return Some(format!("{wrapper} runs whatever command follows it"));
+    }
+    if is_interpreter(&first) {
+        return Some(format!("{first} runs any code it is given"));
+    }
+    if let Some(interpreter) = INTERPRETERS.iter().find(|name| matches(name)) {
+        return Some(format!(
+            "{first} matches {interpreter}, which runs any code it is given"
+        ));
+    }
+    if let Some(runner) = RUNNERS.iter().find(|name| matches(name)) {
+        let runs = second.as_deref().is_none_or(|second| {
+            second == "run" || (second.contains(['*', '?']) && glob(second, "run", true))
+        });
+        if runs {
+            return Some(format!(
+                "{runner} run builds or fetches and runs any program"
+            ));
+        }
+    }
+    None
+}
+
+/// Why a saved rule would allow arbitrary code, when it would: an allow rule for `run_command`
+/// whose pattern [`over_broad_command`] flags. Such rules are kept as saved; the daemon names
+/// them in a warning at load so the user can review them.
+pub fn over_broad_rule(rule: &PermissionRule) -> Option<String> {
+    if rule.action != RuleAction::Allow || !tool_matches(rule, COMMAND_TOOL) || patternless(rule) {
+        return None;
+    }
+    over_broad_command(&rule.pattern)
+}
+
+/// What "Always this session" remembers for a call, as the session's allowance set holds it:
+/// the tool's name, except for `run_command`, where it is the exact command line (trimmed) and
+/// never the whole tool. `None` for a `run_command` call without a command line: nothing is
+/// remembered for it.
+pub fn session_allowance(tool: &str, target: &Target) -> Option<String> {
+    if tool != COMMAND_TOOL {
+        return Some(tool.to_string());
+    }
+    match target {
+        Target::Command(line) if !line.trim().is_empty() => {
+            Some(format!("{COMMAND_TOOL} {}", line.trim()))
+        }
+        _ => None,
+    }
+}
+
+/// The answer to whether a session's allowances cover a call: see [`session_allows`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCheck {
+    /// Whether the call runs without asking.
+    pub allowed: bool,
+    /// Whether the set holds a tool-wide `run_command` allowance, which is ignored: an
+    /// allowance for commands covers one exact command line only.
+    pub ignored_tool_wide: bool,
+}
+
+/// Whether `allowed` (a session's "Always this session" answers, as [`session_allowance`] keys
+/// them) covers a call. A bare `run_command` entry, left by an older daemon or added by mistake,
+/// never covers a command: only the exact command line's entry does.
+pub fn session_allows(
+    allowed: &std::collections::HashSet<String>,
+    tool: &str,
+    target: &Target,
+) -> SessionCheck {
+    let ignored_tool_wide = tool == COMMAND_TOOL && allowed.contains(COMMAND_TOOL);
+    // A command's key is `run_command <line>`, never the bare tool name.
+    let allowed = session_allowance(tool, target).is_some_and(|key| allowed.contains(&key));
+    SessionCheck {
+        allowed,
+        ignored_tool_wide,
+    }
 }
 
 /// Checks a rule before it is saved.
@@ -1532,6 +1684,135 @@ mod tests {
         assert_eq!(file.pattern, "/p/src/**");
         assert_eq!(file.action, Allow);
         assert_eq!(suggest("web_fetch", &Target::Other).unwrap().pattern, "");
+    }
+
+    #[test]
+    fn no_rule_is_suggested_for_an_interpreter_a_shell_a_runner_or_a_wrapper() {
+        let suggested = |line: &str| suggest(COMMAND_TOOL, &command(line)).map(|rule| rule.pattern);
+        let interpreters = [
+            "python",
+            "python3",
+            "py",
+            "node",
+            "deno",
+            "bun",
+            "ruby",
+            "perl",
+            "php",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "pwsh",
+            "powershell",
+            "cmd",
+            "npx",
+            "uvx",
+            "pipx",
+            "java",
+            "dotnet",
+            "osascript",
+            "wscript",
+            "cscript",
+            "mshta",
+        ];
+        for name in interpreters {
+            for line in [
+                format!("{name} script"),
+                format!("{name} -c anything"),
+                format!("{name}"),
+                format!("/usr/bin/{name} x"),
+                format!("{}.exe x", name.to_uppercase()),
+                format!("env {name} x"),
+                format!("env FOO=1 {name} x"),
+                format!("sudo {name} x"),
+                format!("sudo -u root {name} x"),
+                format!("nohup {name} x"),
+                format!("timeout 5 {name} x"),
+                format!("nice -n 5 {name} x"),
+                format!("xargs {name}"),
+            ] {
+                assert_eq!(suggested(&line), None, "{line}");
+            }
+        }
+        for line in [
+            "python3.12 -m pip",
+            "uv run x.py",
+            "uv",
+            "cargo run --release",
+            "cargo --version",
+            "go run main.go",
+            "env",
+            "sudo apt install x",
+            "timeout 10 ls",
+        ] {
+            assert_eq!(suggested(line), None, "{line}");
+        }
+        // Ordinary programs still get their rule.
+        assert_eq!(suggested("cargo test -p x"), Some("cargo test".into()));
+        assert_eq!(suggested("uv pip list"), Some("uv pip".into()));
+        assert_eq!(suggested("go vet ./..."), Some("go vet".into()));
+        assert_eq!(suggested("git status"), Some("git status".into()));
+    }
+
+    #[test]
+    fn saved_rules_that_run_any_code_are_flagged() {
+        for pattern in [
+            "python",
+            "sudo",
+            "env python",
+            "bash -c",
+            "uv run",
+            "cargo",
+            "py*",
+            "npx *",
+        ] {
+            assert!(
+                over_broad_rule(&rule("run_command", pattern, Allow)).is_some(),
+                "{pattern}"
+            );
+            assert!(
+                over_broad_rule(&rule("*", pattern, Allow)).is_some(),
+                "{pattern}"
+            );
+            // Only allow rules widen anything.
+            assert!(over_broad_rule(&rule("run_command", pattern, Deny)).is_none());
+            assert!(over_broad_rule(&rule("run_command", pattern, Ask)).is_none());
+        }
+        for pattern in ["cargo test", "git status", "ls", "go vet"] {
+            assert!(
+                over_broad_rule(&rule("run_command", pattern, Allow)).is_none(),
+                "{pattern}"
+            );
+        }
+        assert!(over_broad_rule(&rule("write_file", "python", Allow)).is_none());
+    }
+
+    #[test]
+    fn a_session_allowance_for_one_command_covers_that_command_only() {
+        let mut allowed = std::collections::HashSet::new();
+        allowed.insert(session_allowance(COMMAND_TOOL, &command("cargo test")).unwrap());
+        allowed.insert(session_allowance("write_file", &Target::Other).unwrap());
+        let check = |line: &str| session_allows(&allowed, COMMAND_TOOL, &command(line));
+        assert!(check("cargo test").allowed);
+        assert!(check("  cargo test ").allowed);
+        assert!(!check("cargo test && rm -rf ~").allowed);
+        assert!(!check("cargo test -p x").allowed);
+        assert!(!check("python -c 'import os'").allowed);
+        assert!(session_allows(&allowed, "write_file", &Target::Other).allowed);
+        // A command without a line is never remembered.
+        assert_eq!(session_allowance(COMMAND_TOOL, &Target::Other), None);
+        assert!(!session_allows(&allowed, COMMAND_TOOL, &Target::Other).allowed);
+    }
+
+    #[test]
+    fn a_stored_tool_wide_command_allowance_is_ignored() {
+        let allowed: std::collections::HashSet<String> = [COMMAND_TOOL.to_string()].into();
+        let check = session_allows(&allowed, COMMAND_TOOL, &command("rm -rf /"));
+        assert!(!check.allowed);
+        assert!(check.ignored_tool_wide);
+        let other = session_allows(&allowed, "write_file", &Target::Other);
+        assert!(!other.allowed && !other.ignored_tool_wide);
     }
 
     #[test]

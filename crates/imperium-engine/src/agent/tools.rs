@@ -528,16 +528,28 @@ impl Agent {
         sticky: bool,
         floored: bool,
     ) -> bool {
-        self.approve_full(tool, summary, suggested, sticky, floored, false)
-            .await
+        self.approve_full(
+            tool,
+            &Target::Other,
+            summary,
+            suggested,
+            sticky,
+            floored,
+            false,
+        )
+        .await
     }
 
     /// [`Self::approve_with`], marking the request `user_only` when the daemon's own judgement
     /// says only the user may answer it: the floor covers the call and it installs or removes an
-    /// extension, or writes a project's extension files at the path it resolves to.
+    /// extension, or writes a project's extension files at the path it resolves to. `target` is
+    /// what the call is about: "Always this session" on `run_command` covers that exact command
+    /// line only, never the whole tool.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn approve_full(
         &self,
         tool: &str,
+        target: &Target,
         summary: &str,
         suggested: Option<PermissionRule>,
         sticky: bool,
@@ -545,7 +557,7 @@ impl Agent {
         user_only: bool,
     ) -> bool {
         if (!floored && self.shared.pre_approved.contains(tool))
-            || (sticky && lock(&self.shared.allowed_tools).contains(tool))
+            || (sticky && self.shared.allowed_for_session(tool, target))
         {
             return true;
         }
@@ -587,7 +599,7 @@ impl Agent {
                 // An approval made in a capped turn covers this call only: remembered, it
                 // would outlive the cap and let the tool run unasked in later turns.
                 if !(capped_when_asked || self.workspace.permissions().is_capped()) {
-                    lock(&self.shared.allowed_tools).insert(tool.to_string());
+                    self.shared.allow_for_session(tool, target);
                 }
                 true
             }
@@ -662,7 +674,7 @@ impl Agent {
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
-                .auto_gate(decision, floored, rule_tool, name, &|| {
+                .auto_gate(decision, floored, rule_tool, &target, name, &|| {
                     provider_input(check.command.as_deref(), arguments)
                 })
                 .await;
@@ -673,6 +685,7 @@ impl Agent {
                 && !self
                     .approve_full(
                         rule_tool,
+                        &target,
                         &gate.question(&summary),
                         suggest(rule_tool, &target)
                             .filter(|_| !(floored && check.command.is_none())),
@@ -1172,7 +1185,7 @@ impl Agent {
             // In auto mode a classifier may settle a call that would ask; what it leaves
             // open (or a floored call) is asked as before, with its reason.
             let gate = self
-                .auto_gate(decision, floored, tool, tool, &|| {
+                .auto_gate(decision, floored, tool, &target, tool, &|| {
                     builtin_input(&invocation)
                 })
                 .await;
@@ -1183,6 +1196,7 @@ impl Agent {
                 && !self
                     .approve_full(
                         tool,
+                        &target,
                         &gate.question(&summary),
                         suggest(tool, &target),
                         sticky,

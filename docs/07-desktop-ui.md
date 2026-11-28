@@ -871,7 +871,8 @@ click away, never removed.
   toggles (shown while set), a queued message's *Edit* and *Remove* (*Steer* stays visible), an
   environment folder's remove. Connector rows keep their on/off switch and put *Test
   connection*, *Configure*, and *Remove* in a ⋯ menu.
-- **Decisions:** a permission request shows *Allow* and *Deny*; *Always this session* and
+- **Decisions:** a permission request shows *Allow* and *Deny*; *Always this session* (for a
+  command, *Always this command, this session*: that exact command line only) and
   *Always allow <rule>* are in its ⋯ menu. A paused subagent's view shows *Resume* with *Cancel*
   in a ⋯ menu. The environment window's delete is in its Danger zone section, and
   Settings → Notifications plays its three sounds from one *Play* menu.

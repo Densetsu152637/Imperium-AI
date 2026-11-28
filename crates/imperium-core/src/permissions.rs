@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
 use imperium_config::PermissionSettings;
 use imperium_policy::permissions::{
-    Permissions, SharedRules, home_dir, validate_grant, validate_rule,
+    Permissions, SharedRules, home_dir, over_broad_rule, validate_grant, validate_rule,
 };
 use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};
@@ -597,6 +597,43 @@ impl Drop for TurnCap {
     }
 }
 
+/// Saved allow rules that would let a command run any code (an interpreter, a shell, a runner
+/// or a wrapper: [`over_broad_rule`]), each named with the file it is saved in, and logged as a
+/// warning so the user can review them. They are not removed or changed: `global` comes from
+/// the user configuration (`global_file`), `environments` from `environments_file`.
+pub(crate) fn warn_over_broad_rules(
+    global: &[PermissionRule],
+    global_file: &Path,
+    environments: &[imperium_protocol::methods::EnvironmentInfo],
+    environments_file: &Path,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut check = |rule: &PermissionRule, place: String| {
+        if let Some(why) = over_broad_rule(rule) {
+            warnings.push(format!(
+                "the saved allow rule `{} {}` in {place} lets a command run any code ({why}); \
+                 it is kept as saved, so review it in Settings → Permissions",
+                rule.tool, rule.pattern
+            ));
+        }
+    };
+    for rule in global {
+        check(rule, global_file.display().to_string());
+    }
+    for env in environments {
+        for rule in &env.permissions.rules {
+            check(
+                &rule_from_wire(rule),
+                format!("{} (environment {})", environments_file.display(), env.name),
+            );
+        }
+    }
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use imperium_api::PermissionMode;
@@ -824,6 +861,51 @@ mod tests {
         assert_eq!(
             session.evaluate("run_command", &target),
             Some(RuleAction::Deny)
+        );
+    }
+
+    #[test]
+    fn saved_rules_that_run_any_code_are_named_with_their_file() {
+        let rule = |tool: &str, pattern: &str, action: RuleAction| PermissionRule {
+            tool: tool.into(),
+            pattern: pattern.into(),
+            action,
+        };
+        let global = [
+            rule("run_command", "python", RuleAction::Allow),
+            rule("run_command", "cargo test", RuleAction::Allow),
+            rule("run_command", "bash", RuleAction::Deny),
+        ];
+        let env: imperium_protocol::methods::EnvironmentInfo =
+            serde_json::from_value(serde_json::json!({
+                "id": "e1",
+                "name": "Work",
+                "folders": [],
+                "permissions": {"rules": [
+                    {"tool": "run_command", "pattern": "sudo bash", "action": "allow"},
+                    {"tool": "run_command", "pattern": "git status", "action": "allow"},
+                ]},
+            }))
+            .unwrap();
+        let warnings = super::warn_over_broad_rules(
+            &global,
+            Path::new("/cfg/config.toml"),
+            &[env],
+            Path::new("/data/environments.json"),
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("run_command python"), "{warnings:?}");
+        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        assert!(
+            warnings[1].contains("run_command sudo bash"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("environments.json"), "{warnings:?}");
+        assert!(warnings[1].contains("Work"), "{warnings:?}");
+        // Nothing to warn about: nothing is said.
+        assert!(
+            super::warn_over_broad_rules(&global[1..], Path::new("c"), &[], Path::new("e"))
+                .is_empty()
         );
     }
 }

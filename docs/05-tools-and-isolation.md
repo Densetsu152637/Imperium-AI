@@ -742,12 +742,34 @@ allow rule skips the approval but not the required-context check of
 [workflow enforcement](18-workflow-contract.md).
 *Always this session* allows a tool for the session where its default would ask, but an ask
 rule asks every time, whatever the session allowed (an allow rule is how to stop the asking).
+For `run_command` (and a provider tool that runs a command, judged as `run_command`) it allows
+**that exact command line only** (trimmed), never the whole tool: after allowing `cargo test`,
+`cargo test -p x` or `python -c ...` still asks. The app labels it *Always this command, this
+session* and `imperium chat` *[a]lways this exact command this session*. A tool-wide
+`run_command` session allowance (as an older daemon kept) is ignored, with a warning logged once
+per session; a tool an unattended session was started with pre-approved is not a session
+allowance and still runs as described under [permission modes](#permission-modes-implemented).
 Rules apply to running sessions from their next call.
 
 Approval requests carry a `suggested_rule` (`permission_requested`): the command and its
 subcommand for a simple command line (none for a line of several commands, substitution, or
 redirection), `<folder>/**` for a file tool, the whole tool otherwise. The app's **Always allow**
 adds it to the session's environment with `permissions.add_rule` and allows the request.
+**No rule is suggested for a command that would run any code**
+(`imperium_policy::permissions::over_broad_command`): one whose first word is an interpreter or
+a shell (`python`, `python3`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `bash`, `sh`,
+`zsh`, `fish`, `dash`, `ksh`, `pwsh`, `powershell`, `cmd`, `java`, `dotnet`, `osascript`,
+`wscript`, `cscript`, `mshta`, and `pythonw` or a versioned Python such as `python3.12`), a
+runner (`npx`, `bunx`, `uvx`, `pipx`, and `uv`, `cargo` or `go` alone or with `run`), or a
+wrapper that runs whatever follows it (`env`, `sudo`,
+`doas`, `nohup`, `timeout`, `nice`, `ionice`, `xargs`, `time`, `command`, `exec`, `stdbuf`,
+`setsid`, `runas`), so `env python`, `sudo bash` and `timeout 5 sh` get none either. Such a
+call is approved once, or for that exact command for the session.
+
+Allow rules of that kind **already saved** (in the user configuration's `[permissions]` or an
+environment's rules in `environments.json`) are kept as they are and still apply: at start the
+daemon logs a warning naming each one and the file it is in, so the user can review it in
+Settings → Permissions. A later stage migrates them.
 
 Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
 their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,
