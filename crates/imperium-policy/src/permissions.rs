@@ -1810,12 +1810,13 @@ mod tests {
             for line in ["python -c 'print(1)'", "sudo python x"] {
                 let target = command(line);
                 assert_eq!(permissions.evaluate(COMMAND_TOOL, &target), None, "{line}");
-                assert_eq!(
-                    permissions
-                        .judge(COMMAND_TOOL, &target, CallKind::Execute, None)
-                        .decision,
-                    ASK,
-                    "{line}"
+                // It asks (`sudo` is also under the safety floor, so it asks every time).
+                let decision = permissions
+                    .judge(COMMAND_TOOL, &target, CallKind::Execute, None)
+                    .decision;
+                assert!(
+                    matches!(decision, Decision::Ask { .. }),
+                    "{line}: {decision:?}"
                 );
             }
         }
