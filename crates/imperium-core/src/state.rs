@@ -289,6 +289,9 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
     ] {
         refuse_writes_under(&paths.data_dir().join(state));
     }
+    // The signed-in browser profile (its cookies): no file tool reads or writes it, and a command
+    // that names it asks every time.
+    imperium_policy::permissions::refuse_access_under(&paths.browser_profile_dir());
     protect_dir(&paths.config_dir().join("mods"));
     protect_dir(&paths.config_dir().join("plugins"));
     // Pinned policy packs: agents read their files as instructions, so a write is always asked.
@@ -304,8 +307,8 @@ fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
 }
 
 /// Keeps what would hand a command the daemon out of the OS isolation tier: the endpoint file
-/// (it holds the access token), the local socket's folder, the paired phones' file and the
-/// encrypted secret store with its key or passphrase file. A command that read the token, or
+/// (it holds the access token), the local socket's folder, the paired phones' file, the
+/// encrypted secret store with its key or passphrase file, and the signed-in browser profile. A command that read the token, or
 /// opened the socket, could change the configuration or start an unconfined session, which
 /// would run code outside the sandbox.
 fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
@@ -326,6 +329,13 @@ fn hide_credentials_from_os_tier(paths: &Paths, settings: &Settings) {
         if let Err(error) = std::fs::create_dir_all(folder) {
             tracing::warn!(folder = %folder.display(), %error, "could not create the folder");
         }
+    }
+    // The browser profile is made now too, not when the browser first starts: only a path that
+    // exists when a command starts is hidden from it, and a command still running when the
+    // browser starts must not find the profile readable.
+    let profile = paths.browser_profile_dir();
+    if let Err(error) = std::fs::create_dir_all(&profile) {
+        tracing::warn!(folder = %profile.display(), %error, "could not create the folder");
     }
     // No command in the OS or container tier may write the configuration or data folders (a
     // hook or MCP server added to `config.toml` would run unconfined), even when a session

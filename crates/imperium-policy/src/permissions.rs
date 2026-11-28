@@ -461,11 +461,63 @@ pub fn refuse_writes_under(path: &std::path::Path) {
 /// (lower and upper case), as the workspace compares its configuration files: some file systems
 /// fold `ſ` to `S`, which lowercasing alone does not undo.
 pub fn refused_write(absolute: &str) -> bool {
+    under_any(&REFUSED_WRITES, absolute)
+}
+
+/// Folders the file tools neither read nor write, and that a command naming them asks about
+/// every time ([`refuse_access_under`]). Process-wide, like [`REFUSED_WRITES`].
+static REFUSED_ACCESS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// What a file tool tells the agent when it is refused a path under [`refuse_access_under`].
+pub const REFUSED_ACCESS_ADVICE: &str = "this path is the profile of the browser agents drive, which holds the user's sign-ins and cookies, so file tools never read or write it, in any permission mode; use the browser tools to work with pages";
+
+/// Makes every file tool refuse (not ask) `path` and anything under it, for reading as for
+/// writing, and a search leave it out; and makes the safety floor ask about every command that
+/// names it. The daemon uses it for the signed-in browser profile (`<data>/browser`), whose
+/// cookies would hand an agent the user's sessions on every site. Both the path as given and the
+/// one it resolves to are covered, as for [`protect_dir`]. A process-wide list.
+///
+/// The command check reads the command line, like the rest of the floor: it is a guard against
+/// mistakes, not a boundary. The OS isolation tier hides the folder from commands outright.
+pub fn refuse_access_under(path: &std::path::Path) {
+    register(&REFUSED_ACCESS, path);
+}
+
+/// Whether `absolute` is under a folder of [`refuse_access_under`].
+pub fn refused_access(absolute: &str) -> bool {
+    under_any(&REFUSED_ACCESS, absolute)
+}
+
+/// Whether a command line names a folder of [`refuse_access_under`] (or something in it), in
+/// any spelling of its separators and, on Windows and macOS, of its case.
+fn names_refused_access(line: &str) -> bool {
+    // `C:\Users`, `C:\\Users` (escaped once more) and `C:/Users` are one spelling here.
+    let single = |text: &str| {
+        let mut text = text.replace('\\', "/");
+        while text.contains("//") {
+            text = text.replace("//", "/");
+        }
+        text
+    };
+    let line = single(line);
+    let line = if cfg!(any(windows, target_os = "macos")) {
+        line.to_lowercase()
+    } else {
+        line
+    };
+    REFUSED_ACCESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|entry| line.contains(single(entry).as_str()))
+}
+
+/// Whether `absolute` is `list`'s entry or under one, compared folded both ways.
+fn under_any(list: &std::sync::Mutex<Vec<String>>, absolute: &str) -> bool {
     let path = normalise_dir(absolute);
     let upper = path.to_uppercase();
     let under = |path: &str, entry: &str| path == entry || path.starts_with(&format!("{entry}/"));
-    REFUSED_WRITES
-        .lock()
+    list.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .iter()
         .any(|entry| {
@@ -587,15 +639,19 @@ const FLOOR_PATHS: &[&str] = &[
 ];
 
 /// Whether the built-in safety floor covers a call: a destructive command (see
-/// [`crate::floor`]), or writing a file that holds secrets or lies under any `.git` folder
-/// (a repository's own, or a linked worktree's main repository's). Reads are never covered.
+/// [`crate::floor`]) or one that names a folder of [`refuse_access_under`] (the browser
+/// profile), or writing a file that holds secrets or lies under any `.git` folder (a
+/// repository's own, or a linked worktree's main repository's). File reads are never covered:
+/// the file tools refuse the folders of [`refuse_access_under`] themselves.
 ///
 /// The floor is a best-effort guard against an agent's mistakes, not a security boundary: it
 /// reads the command line, unwrapping common shells and wrappers, but cannot see what a script
 /// or program does.
 pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
     match (kind, target) {
-        (CallKind::Execute, Target::Command(line)) => crate::floor::dangerous_command(line),
+        (CallKind::Execute, Target::Command(line)) => {
+            crate::floor::dangerous_command(line) || names_refused_access(line)
+        }
         (CallKind::Edit, Target::Path { absolute, .. }) => {
             let fold = cfg!(any(windows, target_os = "macos"));
             let in_git = absolute.split('/').any(|part| {

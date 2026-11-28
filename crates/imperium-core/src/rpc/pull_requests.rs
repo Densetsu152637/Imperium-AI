@@ -169,8 +169,18 @@ impl Connection {
     /// loopback TCP (a mod's), and any other local process (an agent's command, a hook, a plugin's
     /// server) fail it.
     fn require_desktop_app(&self) -> Result<(), ErrorObject> {
+        self.require_desktop_app_for("change auto-merge", "turn auto-merge on")
+    }
+
+    /// [`Self::require_desktop_app`] for another call: `device_cannot` finishes "a paired device
+    /// cannot ..." and `only_app_can` finishes "only the desktop app can ...".
+    pub(super) fn require_desktop_app_for(
+        &self,
+        device_cannot: &str,
+        only_app_can: &str,
+    ) -> Result<(), ErrorObject> {
         if self.allowed.is_some() {
-            return Err(forbidden("a paired device cannot change auto-merge"));
+            return Err(forbidden(format!("a paired device cannot {device_cannot}")));
         }
         #[cfg(feature = "testing")]
         if self.desktop_app_for_tests {
@@ -180,11 +190,7 @@ impl Connection {
             &crate::app_identity::InstalledApp::of(&self.state),
             self.identity.as_deref(),
         )
-        .map_err(|reason| {
-            forbidden(format!(
-                "only the desktop app can turn auto-merge on: {reason}"
-            ))
-        })
+        .map_err(|reason| forbidden(format!("only the desktop app can {only_app_can}: {reason}")))
     }
 
     /// Marks this connection as showing pull requests, so the poller runs at the faster
@@ -197,7 +203,7 @@ impl Connection {
 }
 
 /// A refusal for a caller that may not do this: `permission denied`.
-fn forbidden(reason: impl std::fmt::Display) -> ErrorObject {
+pub(super) fn forbidden(reason: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::new(codes::FORBIDDEN, format!("permission denied: {reason}"))
 }
 

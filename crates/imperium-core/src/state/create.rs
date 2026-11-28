@@ -202,7 +202,7 @@ impl DaemonState {
             .flatten()
             .map(|program| BrowserSetup {
                 program,
-                profile_dir: self.paths.data_dir().join("browser"),
+                profile_dir: self.paths.browser_profile_dir(),
                 headless: web.headless,
                 instance: Arc::default(),
                 takeover: Arc::default(),

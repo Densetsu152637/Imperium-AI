@@ -100,9 +100,11 @@ the same domain rule and approval apply), `browser_tabs` lists the tabs (id, tit
 active one marked), `browser_switch` makes one active and returns its text, and `browser_close`
 closes one (the last tab cannot be closed; closing the active one hands over to a neighbour). The
 other browser tools work on the active tab. Ids are short numbers that are never reused while the
-browser runs. Each tab has its own debugger connection (the page sockets the browser lists at
-`/json/list`, found and opened over its loopback HTTP endpoint, not `Target.attachToTarget`
-sessions: it keeps the one-socket-per-page model the browser module already had), the tab list is
+browser runs. Every tab is driven over the browser's one debugger connection, its pipe (see
+[the debugger pipe](#the-browsers-debugger-pipe-and-profile-implemented)): `Target.getTargets`
+lists the pages, `Target.createTarget` and `Target.closeTarget` open and close them, and the
+active tab is driven through a session of its own (`Target.attachToTarget` with `flatten`; the
+previous tab's session is let go on a switch). The tab list is
 reconciled with what the browser reports after every action, and a page that opens a window
 (`target=_blank`, `window.open`) gets a tab of its own, up to the limit (the rest are closed). The
 agent is told when a page opened a tab and is not switched to it. Clicks count as a user gesture so
@@ -111,11 +113,12 @@ tab and the list of tabs (protocol 0.35); the desktop keeps one mirror per tab
 ([07](07-desktop-ui.md#preview-and-browser-panels-implemented)), and the user's takeover applies
 to the active tab (`session.browser_act` gained `new_tab`, `switch_tab` and `close_tab`).
 
-Downloads are refused by the browser itself. At start-up a browser-level connection sets
-`Browser.setDownloadBehavior` to `deny` with events on, and a browser that cannot be made to refuse
-downloads does not start. As defence in depth the browser's profile is also written, before it
+Downloads are refused by the browser itself. At start-up a browser-level command on the debugger
+pipe sets `Browser.setDownloadBehavior` to `deny` with events on, and a browser that cannot be
+made to refuse downloads does not start; the refused downloads it reports while another answer is
+awaited are kept, not skipped. As defence in depth the browser's profile is also written, before it
 starts, with an empty `blocked-downloads` folder as its download and save folder and a prompt
-nobody sees. If the refusing connection later closes or fails, the browser is treated as unsafe:
+nobody sees. If the pipe later closes or fails, the browser is treated as unsafe:
 it is closed and the next browser tool starts a new one (the open pages are lost, and the agent
 is told). When a click or script starts a download, the next browser tool result says so (the URL
 and the suggested name, flattened to one line and framed as page text), and `browser_download`
@@ -191,6 +194,58 @@ key, scroll, and navigation, and while the user drives every `browser_*` call is
 any approval with a message saying so (a call already waiting for the browser re-checks once it
 holds it). Giving the browser back restores the agent's tools. Screenshots for vision models are
 later work.
+
+**The takeover is the desktop app's alone (implemented, browser stage 0).** A driven browser asks
+no approval and is signed in to whatever the user signed in to, so the daemon answers
+`session.browser_control` and `session.browser_act` only to the desktop app installed beside
+`imperium-core`, on the local socket (the identity checks of
+[auto-merge](#auto-merge-the-desktop-app-alone-implemented)). It refuses, with `permission
+denied`, a paired device, a mod's page (loopback TCP), a plain token holder and every other local
+process, an agent's own `run_command` reaching the socket included; on a server (`daemon.server`)
+both calls answer `-32010` (`browser_control`) before any caller is looked at. The webview cannot
+make that connection itself, so the Browser panel goes through the app's own `browser_control`
+and `browser_act` commands, which check that they were called from the app's own windows, that
+the app's environment holds no loader override, and that the session id is plain text, and then
+send the one call on the app's own local-socket connection
+(`apps/desktop/src-tauri/src/browser_takeover.rs`). The agents' browser tools are unaffected:
+they run in the daemon and never go through these calls.
+
+#### The browser's debugger pipe and profile (implemented)
+
+- **No debugging port.** The browser is started with `--remote-debugging-pipe`, never
+  `--remote-debugging-port`: it opens no TCP port, so no other process on the machine (another
+  user's, a sandboxed one, an agent's command) can attach to it and read the profile's cookies.
+  The DevTools Protocol runs over two inherited anonymous pipes, one JSON message per
+  NUL-terminated frame, read and written by a thread each in the daemon
+  (`crates/imperium-web/src/cdp.rs`, `launch.rs`). On Linux and macOS the browser's ends are
+  placed at fds 3 (it reads) and 4 (it writes) between `fork` and `exec`; every other descriptor
+  stays close-on-exec. On Windows the browser is told the handle values
+  (`--remote-debugging-io-pipes=<read>,<write>`, read by Chrome and Edge alongside
+  `--remote-debugging-pipe`) and is created with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only
+  those two handles and its log file. The pipes are made by `CreatePipe`, which no process can
+  open by name, and are inheritable only during the `CreateProcessW` call. A test asserts that
+  no process of the browser's tree listens on a TCP port and that it writes no
+  `DevToolsActivePort` file. The start-up warm-up's throwaway page loads an empty page the daemon
+  serves on a loopback port for the moment of the warm-up only.
+- **No direct WebRTC traffic.** The browser is started with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`, so a page's WebRTC sends no UDP
+  except through a proxy: it cannot probe the local network or learn the machine's local
+  addresses.
+- **The profile is a secret path.** `<data>/browser` holds the user's sign-ins and cookies. The
+  file tools refuse it, for reading as for writing, in every mode and whatever a rule or an answer
+  says (`imperium_policy::permissions::refuse_access_under`, checked on the resolved path), and
+  `glob` and `grep` leave it out of every walk; a command that names it (any separators, and case
+  on Windows and macOS) is covered by the safety floor and asks every time; the OS tier hides it
+  from commands like the daemon's credentials (it is made at daemon start, so it exists to be
+  hidden before the browser first runs), and the container tier never mounts it. No export
+  includes it, and the browser's output in `imperium-browser.log` reaches errors only as a short
+  tail with the debugging endpoint redacted.
+- **Limits.** The command check reads the command line, like the rest of the floor: a script that
+  builds the path is not seen, and on Windows (no OS tier) that check is all a tier-0 command
+  meets. On Windows, a process the daemon starts by another route during the brief moment the
+  pipe handles are inheritable could inherit them too (Rust's own `Command` inherits every
+  inheritable handle); the browser itself inherits nothing else. A Chrome or Edge too old to read
+  `--remote-debugging-io-pipes` does not answer on its pipe and fails to start.
 
 ### Live preview (implemented)
 
@@ -885,6 +940,9 @@ answers:
   (`mod-approvals.json`), which a mod approval vouches for; and into the installed plugins
   (`<config>/plugins`), the marketplace clones (`<data>/marketplaces`) and the plugin records
   (`plugin-installs.json`, `plugin-migration.json`, `marketplaces.json`).
+- Commands that name the signed-in browser profile (`<data>/browser`, see
+  [the debugger pipe and profile](#the-browsers-debugger-pipe-and-profile-implemented)), which the
+  file tools refuse outright.
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `mod-approvals.json`,
   `plugin-installs.json`, `plugin-migration.json`, `marketplaces.json`) or anything with a `.git` folder
@@ -1203,6 +1261,7 @@ command the daemon.
 | Paired phones | `<data>/devices.json` (SHA-256 of each token) | hidden like the endpoint file |
 | Forwarded remote daemons (`imperium remote`) | `<data>/remotes/` (`<name>.json`: the remote's token and its forwarded loopback port) | hidden like the socket folder (tmpfs, or denied). The forwarded local ports are not denied on macOS: they are not known when the daemon starts, and the token is hidden |
 | Encrypted secret store and its key | `<data>/secrets.enc`, `secrets.key`, `secrets.lock`, and the file named by `IMPERIUM_SECRETS_PASSPHRASE_FILE` | hidden like the endpoint file (a keychain-backed store has no files) |
+| The signed-in browser profile (cookies, sign-ins) | `<data>/browser` | hidden like the socket folder (tmpfs, or denied); made at daemon start so it exists to be hidden |
 | The user's runtime folder: the session bus and keyring (the Secret Service holds the keychain's secrets), the systemd user manager's private socket (`systemd-run --user` would start a process outside the sandbox), ssh and gpg agent sockets, a rootless container runtime's socket | `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when it is unset | Linux: the whole folder is replaced by an empty tmpfs. Hiding it whole, not socket by socket, is deliberate: any one socket left in it can hand a command more than the sandbox gives it, and a list of known ones goes stale. The cost is that a Wayland socket there is hidden too, so Wayland programs do not start in the OS tier. X11 is not hidden by this: see the abstract-socket limit below |
 | Daemon, phone and API TCP ports | loopback ports from `daemon.port`, `phone.bind`, `api` | macOS: `network-outbound` to `localhost:<port>` denied. Linux: **not filtered**, see below |
 | Environment of the command | `IMPERIUM_*` (home, passphrase file, port overrides) and `DBUS_SESSION_BUS_ADDRESS` | removed before the command starts; only `IMPERIUM_SPAWNED_BY_DAEMON` is set |

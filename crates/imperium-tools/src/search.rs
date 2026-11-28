@@ -149,7 +149,8 @@ fn walk(
             .unwrap_or(entry.path())
             .to_string_lossy()
             .replace('\\', "/");
-        if !keep(&relative) {
+        // The browser profile is not searched at all, and not counted: it is no rule's doing.
+        if !keep(&relative) || workspace.refuses_access(&full) {
             continue;
         }
         if withheld_by_rule(workspace, &[tool, "read_file"], &full) {
@@ -556,6 +557,32 @@ mod tests {
         let listed = glob_files(&asked, ".env", &scope(".")).unwrap();
         assert!(listed.starts_with("no files match"), "{listed}");
         assert!(listed.contains("left out"), "{listed}");
+    }
+
+    #[test]
+    fn a_search_never_reads_the_browser_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("data").join("browser");
+        std::fs::create_dir_all(profile.join("Default")).unwrap();
+        std::fs::write(profile.join("Local State"), "ALPHA key\n").unwrap();
+        std::fs::write(profile.join("Default").join("Preferences"), "ALPHA\n").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "ALPHA\n").unwrap();
+        imperium_policy::permissions::refuse_access_under(&profile);
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let query = GrepQuery {
+            pattern: "ALPHA".into(),
+            glob: None,
+            case_insensitive: false,
+            context: 0,
+        };
+        let found = grep_files(&workspace, &query, &scope(".")).unwrap();
+        assert!(found.contains("notes.md:1:"), "{found}");
+        assert!(!found.contains("browser"), "{found}");
+        let listed = glob_files(&workspace, "*", &scope(".")).unwrap();
+        assert!(listed.contains("notes.md"), "{listed}");
+        assert!(!listed.contains("browser"), "{listed}");
+        // Searching the profile itself is refused like reading it.
+        assert!(grep_files(&workspace, &query, &scope("data/browser")).is_err());
     }
 
     #[test]

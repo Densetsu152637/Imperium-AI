@@ -1,5 +1,7 @@
 //! `session.browser_control` and `session.browser_act`: the user takes over the session's
-//! browser, drives it, and gives it back; every client hears of it in the session's events.
+//! browser, drives it, and gives it back; every client hears of it in the session's events. Only
+//! the desktop app may: a paired device, a mod's page, a plain token holder (an agent's command
+//! on the socket) and any caller of a server are refused before anything is looked at.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,10 +13,14 @@ use imperium_protocol::session::SessionEvent;
 use serde_json::{Value, json};
 
 fn daemon(home: &std::path::Path, browser: bool) -> Arc<DaemonState> {
+    daemon_with(home, browser, "")
+}
+
+fn daemon_with(home: &std::path::Path, browser: bool, extra: &str) -> Arc<DaemonState> {
     let config = format!(
         "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"http://127.0.0.1:9/v1\"\n\
          [workflow]\nenabled = false\n[memory]\nenabled = false\n\
-         [web]\nenabled = true\nbrowser = {browser}\nheadless = true"
+         [web]\nenabled = true\nbrowser = {browser}\nheadless = true\n{extra}"
     );
     let settings = imperium_config::Config::from_layers([
         imperium_config::Layer::defaults(),
@@ -48,13 +54,131 @@ async fn call(connection: &mut Connection, method: &str, params: Value) -> Resul
     }
 }
 
+/// The desktop app's connection: the only one that may take the browser over.
 fn connect(state: &Arc<DaemonState>) -> Connection {
-    let mut connection = Connection::new(Arc::clone(state));
+    shake(Connection::new(Arc::clone(state)).as_desktop_app_for_tests())
+}
+
+fn shake(mut connection: Connection) -> Connection {
     let handshake = json!({"jsonrpc": "2.0", "id": 1, "method": "system.handshake",
         "params": {"client": {"name": "test", "version": "0"},
                    "protocol": {"major": 0, "minor": 2}}});
     let _ = connection.handle_text(&handshake.to_string());
     connection
+}
+
+/// The error a refused call answers with: its code and its data.
+async fn refusal(connection: &mut Connection, method: &str, params: Value) -> (i32, Value) {
+    let frame = json!({"jsonrpc": "2.0", "id": 3, "method": method, "params": params});
+    let handled = connection.handle_text(&frame.to_string());
+    let response: Response = match (handled.response, handled.deferred) {
+        (Some(response), _) => response,
+        (None, Some(deferred)) => tokio::time::timeout(Duration::from_secs(30), deferred)
+            .await
+            .expect("a reply within 30 s"),
+        (None, None) => panic!("no reply"),
+    };
+    match response.outcome {
+        Outcome::Result(value) => panic!("{method} was answered: {value}"),
+        Outcome::Error(error) => (error.code, error.data.unwrap_or(Value::Null)),
+    }
+}
+
+/// The takeover calls a refused caller might send: take the browser, reload it, navigate it.
+fn takeover_calls(session_id: &str) -> [(&'static str, Value); 3] {
+    [
+        (
+            "session.browser_control",
+            json!({"session_id": session_id, "user": true}),
+        ),
+        (
+            "session.browser_act",
+            json!({"session_id": session_id, "action": {"type": "reload"}}),
+        ),
+        (
+            "session.browser_act",
+            json!({"session_id": session_id,
+                   "action": {"type": "navigate", "url": "https://example.com/"}}),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn only_the_desktop_app_may_take_the_browser_over_or_drive_it() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), false);
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let mut events = session.subscribe();
+    // A plain token holder: an agent's `run_command` on the socket, a hook, a plugin's server, a
+    // mod's page over loopback TCP. None of them is the installed desktop app.
+    let mut plain = shake(Connection::new(Arc::clone(&state)));
+    // A paired device, even one whose scopes listed the methods.
+    let mut device = shake(Connection::restricted(
+        Arc::clone(&state),
+        vec!["session.browser_control", "session.browser_act"],
+    ));
+    for connection in [&mut plain, &mut device] {
+        for (method, params) in takeover_calls(session.id()) {
+            // Refused before the session is looked at: this session has no browser, which the
+            // desktop app would be told (`INVALID_PARAMS`, below).
+            assert_eq!(
+                refusal(connection, method, params).await.0,
+                codes::FORBIDDEN,
+                "{method}"
+            );
+        }
+        for (method, params) in takeover_calls("nope") {
+            assert_eq!(
+                refusal(connection, method, params).await.0,
+                codes::FORBIDDEN,
+                "{method}"
+            );
+        }
+    }
+    // Nobody took the browser over.
+    let changed = tokio::time::timeout(Duration::from_millis(200), async {
+        while let Ok(event) = events.recv().await {
+            if matches!(event.event, SessionEvent::BrowserControl { .. }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_ne!(
+        changed,
+        Ok(true),
+        "a refused caller changed who drives the browser"
+    );
+}
+
+/// On a server (`daemon.server`) nobody takes the browser over, not even the desktop app: both
+/// calls answer `-32010` with the feature's name before the caller is looked at.
+#[tokio::test]
+async fn on_a_server_nobody_takes_the_browser_over() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon_with(home.path(), false, "[daemon]\nserver = true");
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let mut app = connect(&state);
+    let mut plain = shake(Connection::new(Arc::clone(&state)));
+    for connection in [&mut app, &mut plain] {
+        for (method, params) in takeover_calls(session.id()) {
+            assert_eq!(
+                refusal(connection, method, params).await,
+                (
+                    codes::UNAVAILABLE_ON_SERVER,
+                    json!({"feature": imperium_protocol::jsonrpc::server_features::BROWSER_CONTROL})
+                ),
+                "{method}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

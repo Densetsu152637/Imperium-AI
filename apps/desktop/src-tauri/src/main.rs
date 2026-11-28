@@ -8,6 +8,7 @@
 
 mod auto_merge;
 mod browser;
+mod browser_takeover;
 mod daemon;
 mod mod_frames;
 mod plugin_approval;
@@ -55,6 +56,8 @@ fn main() {
         .manage(daemon::DaemonControl::default())
         // The app's own environment, read at start (see `plugin_approval`).
         .manage(plugin_approval::Guard::capture())
+        // The connection the Browser panel's takeover goes through (see `browser_takeover`).
+        .manage(browser_takeover::Takeover::default())
         .register_uri_scheme_protocol(mod_frames::SCHEME, |_context, request| {
             mod_frames::serve(request)
         })
@@ -120,6 +123,8 @@ fn main() {
             update::update_switch_install,
             plugin_approval::plugin_approve,
             auto_merge::auto_merge_enable,
+            browser_takeover::browser_control,
+            browser_takeover::browser_act,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")
