@@ -294,7 +294,7 @@ they run in the daemon and never go through these calls.
   builds the path is not seen, and on Windows (no OS tier) that check is all a tier-0 command
   meets. On Windows, a process the daemon starts by another route during the brief moment the
   pipe handles are inheritable could inherit them too (Rust's own `Command` inherits every
-  inheritable handle); the browser itself inherits nothing else. A Chrome or Edge too old to read
+  inheritable handle); the browser itself inherits nothing else. Closing it is a follow-up in the [browser plan's risks](plans/browser-claude-parity.md#risks). A Chrome or Edge too old to read
   `--remote-debugging-io-pipes` does not answer on its pipe and fails to start.
 
 ### Live preview (implemented)

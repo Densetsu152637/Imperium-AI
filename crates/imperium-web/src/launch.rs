@@ -12,7 +12,9 @@
 //!   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only those two handles and the log file, so it
 //!   inherits nothing else the daemon holds. The handles are anonymous pipes (`CreatePipe`), which
 //!   no other process can open by name; they are inheritable only for the moment of the
-//!   `CreateProcessW` call.
+//!   `CreateProcessW` call. That moment is not closed: a process the daemon starts by another
+//!   route in it (Rust's own `Command` inherits every inheritable handle) could inherit them too
+//!   (docs/05-tools-and-isolation.md, "Limits"; a residual of browser stage 0).
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -283,7 +285,8 @@ mod platform {
                 )
             };
             let failed = (created == 0).then(std::io::Error::last_os_error);
-            // Not inheritable again at once, so no other process the daemon starts gets them.
+            // Not inheritable again at once. This only shortens the window: a process the daemon
+            // started by another route while they were inheritable may hold them too.
             let _ = set_inherit(handles, false);
             match failed {
                 Some(error) => Err(error),

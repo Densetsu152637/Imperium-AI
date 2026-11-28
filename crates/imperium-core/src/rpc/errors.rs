@@ -55,7 +55,8 @@ pub(crate) fn unavailable_on_server(feature: &'static str) -> ErrorObject {
              made at a terminal"
         }
         f::BROWSER_CONTROL => {
-            "taking over a session's browser is unavailable on a server (daemon.server): only              the desktop app on its own machine may drive it"
+            "taking over a session's browser is unavailable on a server (daemon.server): only \
+             the desktop app on its own machine may drive it"
         }
         f::CONTAINER_TIER => imperium_config::CONTAINER_TIER_ON_SERVER,
         _ => "unavailable on a server (daemon.server)",

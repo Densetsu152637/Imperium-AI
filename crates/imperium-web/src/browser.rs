@@ -438,10 +438,10 @@ impl Browser {
                 return Ok(None);
             }
         };
-        let server = tokio::spawn(serve_blank(listener));
-        let outcome = self.throwaway(&url, limit).await;
-        server.abort();
-        outcome
+        // Stopped however this ends, a warm-up cut off by its time limit included: the guard
+        // goes with this future, and the page is served only for the moment of the warm-up.
+        let _server = AbortOnDrop(tokio::spawn(serve_blank(listener)));
+        self.throwaway(&url, limit).await
     }
 
     /// Opens a throwaway page, loads `url` in it and closes it again.
@@ -1191,8 +1191,12 @@ pub fn browser_for_tests() -> Option<PathBuf> {
 /// Answers every request with an empty page, for the warm-up's throwaway page; ends when the
 /// task is aborted. Each request is read up to its blank line, for at most 5 s.
 async fn serve_blank(listener: tokio::net::TcpListener) {
+    // The connections' tasks are this task's: aborting it ends them with the listener.
+    let mut connections = tokio::task::JoinSet::new();
     while let Ok((mut stream, _)) = listener.accept().await {
-        tokio::spawn(async move {
+        // Finished connections are let go of as new ones come.
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
             let mut head = Vec::new();
             let mut chunk = [0_u8; 1024];
             while !head.windows(4).any(|window| window == b"\r\n\r\n") && head.len() < 16 * 1024 {
@@ -1208,6 +1212,15 @@ async fn serve_blank(listener: tokio::net::TcpListener) {
                 )
                 .await;
         });
+    }
+}
+
+/// A task that is aborted when this is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -1560,6 +1573,40 @@ mod tests {
             !error.contains("ws://") && !error.contains("secret"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_warm_up_that_times_out_stops_serving_its_page() {
+        // The throwaway page is opened and attached, then its load never answers; events keep
+        // the connection busy, so only the warm-up's own limit ends it.
+        let (mut browser, _dir, seen) = mock_browser("", true, |command| {
+            if command["method"] == "Page.navigate" {
+                Reply::Silent
+            } else {
+                answering(command)
+            }
+        });
+        let error = browser
+            .warm_up_within(Duration::from_millis(400))
+            .await
+            .unwrap_err();
+        assert!(error.contains("did not finish starting"), "{error}");
+        let navigations = lines(&seen, |line| line.starts_with("Page.navigate"));
+        let address = navigations
+            .first()
+            .and_then(|line| line.split("http://").nth(1))
+            .map(|rest| rest.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| panic!("no warm-up navigation in {navigations:?}"));
+        // The abort lands at the server task's next turn.
+        let mut refused = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(&address).await.is_err() {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(refused, "the warm-up page is still served at {address}");
     }
 
     #[tokio::test]
