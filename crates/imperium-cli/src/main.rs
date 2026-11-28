@@ -332,6 +332,8 @@ enum FoldersCommand {
     Add { path: PathBuf },
     /// Stop scanning a folder; nothing in it is touched.
     Remove { path: PathBuf },
+    /// Scan the folders again and say what was found. Turns nothing on.
+    Rescan,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1043,6 +1045,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 None | Some(FoldersCommand::List) => local::folders(),
                 Some(FoldersCommand::Add { path }) => local::add_folder(&path),
                 Some(FoldersCommand::Remove { path }) => local::remove_folder(&path),
+                Some(FoldersCommand::Rescan) => local::rescan(),
             },
             ModelsCommand::Use { model } => local::use_model(model),
             ModelsCommand::Test { model, prompt } => local::test_model(model, prompt),

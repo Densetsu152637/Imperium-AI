@@ -1054,6 +1054,8 @@ tier = "basic"
 base_url = "https://example.invalid/v1"
 [models]
 disabled = ["llamacpp:old"]
+[models.local]
+enabled = true
 "#;
         let models = config(&[(user(), table)]).settings().unwrap().models;
         assert_eq!(models.disabled, ["llamacpp:old"]);
@@ -1085,6 +1087,109 @@ disabled = [\"cloud:coder-1\"]
         assert!(off.is_disabled("cloud:coder-1"));
         assert!(!off.row_enabled(&off.catalog[0]));
         assert!(config(&[]).settings().unwrap().models.disabled.is_empty());
+    }
+
+    const LOCAL_TABLE: &str = r#"
+[[models.catalog]]
+id = "tiny"
+spec = "llamacpp:tiny"
+location = "local"
+tier = "basic"
+[[models.catalog]]
+id = "coder"
+spec = "cloud:coder-1"
+location = "cloud"
+tier = "basic"
+[endpoints.cloud]
+base_url = "https://example.invalid/v1"
+"#;
+
+    #[test]
+    fn local_models_are_off_with_a_default_config() {
+        // Nothing set: the global switch is off, so no local model may be routed to, picked or
+        // started, whatever its own switch says; hosted models are untouched.
+        let models = config(&[]).settings().unwrap().models;
+        assert!(!models.local.enabled);
+        assert!(models.is_disabled("llamacpp:any"));
+        assert!(models.is_disabled("vllm:any"));
+        assert!(
+            !models.is_switched_off("llamacpp:any"),
+            "its own switch is still on"
+        );
+        assert!(!models.is_disabled("cloud:coder-1"));
+        // A catalog row of a local model is left out of routing; the hosted row is not.
+        let models = config(&[(user(), LOCAL_TABLE)]).settings().unwrap().models;
+        assert!(
+            !models.row_enabled(&models.catalog[0]),
+            "a local row is off"
+        );
+        assert!(models.row_enabled(&models.catalog[1]), "a hosted row is on");
+    }
+
+    #[test]
+    fn turning_local_models_on_makes_them_eligible_and_each_has_its_own_switch() {
+        let table = format!("{LOCAL_TABLE}\n[models.local]\nenabled = true\n");
+        let models = config(&[(user(), &table)]).settings().unwrap().models;
+        assert!(models.local.enabled);
+        assert!(!models.is_disabled("llamacpp:tiny"));
+        assert!(models.row_enabled(&models.catalog[0]));
+        // Both levels: the model's own switch still holds it back.
+        let own_off = format!("{table}\n[models]\ndisabled = [\"llamacpp:tiny\"]\n");
+        let models = config(&[(user(), &own_off)]).settings().unwrap().models;
+        assert!(models.is_disabled("llamacpp:tiny"));
+        assert!(!models.row_enabled(&models.catalog[0]));
+        assert!(models.is_switched_off("llamacpp:tiny"));
+        // An explicit off stays off, even beside a model folder.
+        let explicit_off = "[models]\nfolders = [\"/models\"]\n[models.local]\nenabled = false\n";
+        let models = config(&[(user(), explicit_off)]).settings().unwrap().models;
+        assert!(!models.local.enabled);
+        assert!(models.is_disabled("llamacpp:tiny"));
+    }
+
+    #[test]
+    fn local_setup_made_before_the_switch_stays_on() {
+        // Each of these was a way to set local models up on purpose before the switch existed;
+        // with no `models.local.enabled` anywhere, they keep local models on.
+        for before in [
+            "[models]\nfolders = [\"/models\"]\n",
+            "[models]\ndownload_dir = \"/models\"\n",
+            "[models]\ndefault = \"llamacpp:tiny\"\n",
+            "[runtime.llamacpp.models.tiny]\nslots = 2\n",
+            "[runtime.llamacpp]\ncustom_path = \"/bin/llama-server\"\n",
+            LOCAL_TABLE,
+        ] {
+            let models = config(&[(user(), before)]).settings().unwrap().models;
+            assert!(models.local.enabled, "{before}");
+            assert!(!models.is_disabled("llamacpp:tiny"), "{before}");
+        }
+        // The app's own file counts too.
+        let models = config(&[(app(), "[runtime.llamacpp.models.tiny]\nslots = 2\n")])
+            .settings()
+            .unwrap()
+            .models;
+        assert!(models.local.enabled);
+        // A hosted-only setup is not local setup.
+        let hosted = "[models]\ndefault = \"cloud:coder-1\"\n";
+        assert!(
+            !config(&[(user(), hosted)])
+                .settings()
+                .unwrap()
+                .models
+                .local
+                .enabled
+        );
+    }
+
+    #[test]
+    fn the_switch_is_a_setting_that_describes_what_is_in_force() {
+        let off = config(&[]);
+        let state = crate::describe_key(&off, "models.local.enabled").unwrap();
+        assert_eq!(state.value, serde_json::Value::Bool(false));
+        assert_eq!(state.default, serde_json::Value::Bool(false));
+        // With older local setup and nothing set, the value in force is on.
+        let before = config(&[(user(), "[models]\nfolders = [\"/models\"]\n")]);
+        let state = crate::describe_key(&before, "models.local.enabled").unwrap();
+        assert_eq!(state.value, serde_json::Value::Bool(true));
     }
 
     #[test]

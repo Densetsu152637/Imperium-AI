@@ -133,6 +133,7 @@ pub static SETTINGS: &[SettingDef] = &[
     live(def("workspaces.root", "Working folders", PathKind, "The folder that holds a working folder for every environment: its Memory.md and a scratch folder per session (deleted when the session is archived). Changing it moves what is there. Empty: <data>/workspaces.")),
     live(def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>.")),
     live(def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models, LM Studio and Hugging Face cache folders, and Hugging Face model folders; scanned again at once when changed.")),
+    live(def("models.local.enabled", "Local models", Bool, "Local models (llama.cpp, vLLM) are off until you turn them on: while off, none is routed to, picked for a session, started, downloaded or installed, though they and their runtimes stay listed (as off) and can be set up. Each model also has its own switch; a local model runs only when both are on. Left unset, this is off, unless you had set up local models before this switch existed. An agent cannot turn it on.")),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
     live(choice("models.effort", "Reasoning effort", &["low", "medium", "high", "max"], "How hard models that can reason think before answering, for new sessions; each session can change its own. Models that cannot reason are sent nothing.")),
     live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
@@ -354,6 +355,11 @@ fn state(def: &'static SettingDef, config: &Config, defaults: &Json) -> SettingS
         .and_then(|explained| explained.source.cloned())
         .unwrap_or(Source::Default);
     let value = match explained {
+        // Unset, `models.local.enabled` follows whether local models were set up before.
+        None if def.key == "models.local.enabled" => config.settings().map_or_else(
+            |_| default.clone(),
+            |settings| Json::Bool(settings.models.local.enabled),
+        ),
         Some(explained) => match def.kind {
             SettingKind::SecretRef => secret_name(&toml_to_json(explained.value)),
             _ => toml_to_json(explained.value),

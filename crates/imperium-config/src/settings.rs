@@ -215,6 +215,25 @@ pub struct Settings {
     pub terminal: TerminalSettings,
 }
 
+impl Settings {
+    /// Whether the settings show local models set up on purpose: a model folder or download
+    /// folder, a local model of the model table, per-model llama.cpp settings, a custom
+    /// `llama-server`, or a local default model. A user with any of these, and no explicit
+    /// `models.local.enabled`, keeps local models on after the switch was introduced.
+    pub fn has_local_setup(&self) -> bool {
+        let models = &self.models;
+        !models.folders.is_empty()
+            || models.download_dir.is_some()
+            || !self.runtime.llamacpp.models.is_empty()
+            || self.runtime.llamacpp.custom_path.is_some()
+            || models
+                .catalog
+                .iter()
+                .any(|entry| entry.location == Location::Local || is_local_spec(&entry.spec))
+            || models.default.as_deref().is_some_and(is_local_spec)
+    }
+}
+
 /// The terminals the daemon runs for the desktop app's Terminal panel.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -1771,12 +1790,45 @@ pub struct ModelSettings {
     /// `off`.
     #[serde(default)]
     pub list_models: ListModelsScope,
+    /// `[models.local]`: the global switch for local models.
+    #[serde(default)]
+    pub local: LocalModelsSettings,
+}
+
+/// `[models.local]`: whether local models (llama.cpp, vLLM) may be used at all. They are off
+/// until the user turns them on, except for a user who had set local models up before the
+/// switch existed (see [`Settings::has_local_setup`]). A local model runs only when this and its
+/// own switch (`models.disabled`, or a row's `enabled`) are both on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LocalModelsSettings {
+    /// Whether local models may be routed to, selected or started. Models and runtimes stay
+    /// listed (as "off") and can be configured while this is false. Nothing local downloads,
+    /// installs or starts while it is false.
+    pub enabled: bool,
+}
+
+/// Whether `spec` names a local model (`llamacpp:<id>` or `vllm:<id>`).
+pub fn is_local_spec(spec: &str) -> bool {
+    spec.split_once(':')
+        .is_some_and(|(endpoint, _)| endpoint == LLAMACPP_ENDPOINT || endpoint == VLLM_ENDPOINT)
 }
 
 impl ModelSettings {
-    /// Whether the user switched the model `spec` off: it is in `disabled`, or the model table
-    /// names it and every row that does has `enabled = false`.
-    pub fn is_disabled(&self, spec: &str) -> bool {
+    /// Whether the global local-models switch holds `spec` (or a row of that spec located
+    /// locally) back: it names a local model and `models.local.enabled` is off.
+    pub fn local_off_for(&self, spec: &str) -> bool {
+        !self.local.enabled
+            && (is_local_spec(spec)
+                || self
+                    .catalog
+                    .iter()
+                    .any(|entry| entry.spec == spec && entry.location == Location::Local))
+    }
+
+    /// Whether the model's own switch is off: it is in `disabled`, or the model table names it
+    /// and every row that does has `enabled = false`. Ignores the global local switch.
+    pub fn is_switched_off(&self, spec: &str) -> bool {
         if self.disabled.iter().any(|disabled| disabled == spec) {
             return true;
         }
@@ -1786,6 +1838,12 @@ impl ModelSettings {
             .filter(|entry| entry.spec == spec)
             .peekable();
         rows.peek().is_some() && rows.all(|entry| !entry.enabled)
+    }
+
+    /// Whether the model `spec` may not be used: its own switch is off, or it is a local model
+    /// and local models are off (`models.local.enabled`).
+    pub fn is_disabled(&self, spec: &str) -> bool {
+        self.local_off_for(spec) || self.is_switched_off(spec)
     }
 
     /// The spec a model table id or a spec names: the row's spec when `name` is a row id, else
@@ -1804,9 +1862,13 @@ impl ModelSettings {
             .is_some_and(|name| self.is_disabled(self.spec_of(name)))
     }
 
-    /// Whether routing may use `entry`: the row is enabled and its model is not disabled.
+    /// Whether routing may use `entry`: the row is enabled, its model is not disabled, and it is
+    /// not a local model while local models are off.
     pub fn row_enabled(&self, entry: &CatalogEntry) -> bool {
-        entry.enabled && !self.disabled.iter().any(|disabled| disabled == &entry.spec)
+        entry.enabled
+            && !self.disabled.iter().any(|disabled| disabled == &entry.spec)
+            && !(!self.local.enabled
+                && (entry.location == Location::Local || is_local_spec(&entry.spec)))
     }
 }
 
@@ -1837,6 +1899,7 @@ impl Default for ModelSettings {
             hidden: Vec::new(),
             disabled: Vec::new(),
             list_models: ListModelsScope::Root,
+            local: LocalModelsSettings::default(),
         }
     }
 }

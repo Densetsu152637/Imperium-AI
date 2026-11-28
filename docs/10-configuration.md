@@ -69,7 +69,7 @@ The desktop app's Settings page reads and changes settings through the daemon:
   `overridden: true`, since the variable keeps winning.
 - The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
   means the change applies after a daemon restart, which the app offers. Settings with
-  `restart: false` (`models.suggest_downloads`, `models.default`, `models.effort`, `models.folders`,
+  `restart: false` (`models.suggest_downloads`, `models.local.enabled`, `models.default`, `models.effort`, `models.folders`,
   `runtime.llamacpp.custom_path`, `policy.personality`, and `workspaces.root`, which moves the working folders first) apply at once; a changed `models.folders` is scanned again
   at once. The desktop app's model setup and `models.add_folder`, `models.use`,
   `models.add_endpoint`, and `runtime.set_server` write these keys the same way
@@ -139,6 +139,7 @@ listed; edit them in the file.
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
 | `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
 | `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`), including LM Studio and Hugging Face cache layouts, and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved. Applies and is scanned at once; *Add folder* in the app and `imperium models folders add` append to it |
+| `models.local.enabled` | off (on when local models were set up before) | Local models (llama.cpp, vLLM) may be routed to, picked, started, downloaded or installed; off until you turn it on, though they stay listed as off ([04](04-models-and-routing.md#local-models-are-off-by-default-implemented)). An agent cannot turn it on. |
 | `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
 | `models.hidden` | none | Specs of the models the user hid (`llamacpp:<id>` for a local model); the desktop app keeps it in step with its hidden marks. Agents' `list_models` leaves them out, and a hidden local model outside the model table is not offered for delegation by name ([model awareness](04-models-and-routing.md#model-awareness-and-model-cards-implemented)) |
 | `models.list_models` | `root` | Which agents of new sessions get `list_models`: `root`, `all` (subagents too), or `off`; applies without a restart |

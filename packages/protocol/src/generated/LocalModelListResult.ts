@@ -24,4 +24,12 @@ default_model: string | null, models: Array<LocalModelRow>,
 /**
  * Files that looked like models but could not be used, with the reason.
  */
-skipped: Array<SkippedModel>, hardware: HardwareInfo | null, runtime: RuntimeInfo | null, };
+skipped: Array<SkippedModel>, hardware: HardwareInfo | null, runtime: RuntimeInfo | null, 
+/**
+ * `models.local.enabled`: the global switch. False (the default for a new setup) means no
+ * local model is routed to, picked for a session, started, downloaded or installed; the
+ * models below are still listed, each `enabled` showing its own switch. A model runs only
+ * when this and its own switch are both on. A daemon older than protocol 0.68 does not send
+ * it; clients then read it as on.
+ */
+local_enabled: boolean, };

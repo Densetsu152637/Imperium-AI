@@ -370,3 +370,105 @@ async fn runtime_status_explains_a_missing_server_and_set_server_saves_the_path(
     assert_eq!(status["source"], "pack");
     assert_eq!(daemon.settings().runtime.llamacpp.custom_path, None);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_models_are_off_by_default_but_listed_and_a_rescan_finds_new_files() {
+    let home = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    std::fs::write(models.path().join("tiny.gguf"), gguf()).unwrap();
+    let folder = models.path().display().to_string().replace('\\', "/");
+    // Local models set off on purpose, beside a model folder.
+    let config = format!("[models]\nfolders = ['{folder}']\n[models.local]\nenabled = false\n");
+    let (mut socket, daemon) = start_daemon(home.path(), &config).await;
+    assert!(!daemon.settings().models.local.enabled);
+
+    // A rescan lists the model, off, and starts and enables nothing.
+    let rescanned = call(&mut socket, "models.rescan", json!({})).await.unwrap();
+    assert_eq!(rescanned["found"], 1);
+    assert_eq!(rescanned["added"], json!(["tiny"]));
+    assert_eq!(rescanned["removed"], json!([]));
+    let listing = &rescanned["listing"];
+    assert_eq!(listing["local_enabled"], false);
+    assert_eq!(
+        listing["models"][0]["enabled"], false,
+        "off through the global switch"
+    );
+    assert_eq!(
+        listing["models"][0]["own_enabled"], true,
+        "its own switch is untouched"
+    );
+    assert_eq!(listing["models"][0]["loaded"], false, "nothing was started");
+    assert!(daemon.loaded_local_models().is_empty());
+
+    // A file dropped into the folder afterwards is found by the next rescan, and only it is new.
+    std::fs::write(models.path().join("second.gguf"), gguf()).unwrap();
+    let before = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(ids(&before), ["tiny"], "a plain read does not scan");
+    let rescanned = call(&mut socket, "models.rescan", json!({})).await.unwrap();
+    assert_eq!(rescanned["found"], 2);
+    assert_eq!(rescanned["added"], json!(["second"]));
+    let mut found = ids(&rescanned["listing"]);
+    found.sort();
+    assert_eq!(found, ["second", "tiny"]);
+    let after = call(&mut socket, "models.local", json!({})).await.unwrap();
+    let mut listed = ids(&after);
+    listed.sort();
+    assert_eq!(listed, ["second", "tiny"]);
+    assert!(
+        after["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["enabled"] == false),
+        "every local model shows as off"
+    );
+
+    // Nothing local is chosen or tested while the switch is off.
+    for method in ["models.use", "models.test"] {
+        let error = call(&mut socket, method, json!({"model": "tiny"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error["code"], -32602, "{method}: {error}");
+    }
+    assert!(daemon.settings().models.is_disabled("llamacpp:tiny"));
+
+    // Turning the switch on makes the models eligible at once, with no restart.
+    call(
+        &mut socket,
+        "config.set",
+        json!({"key": "models.local.enabled", "value": true}),
+    )
+    .await
+    .unwrap();
+    assert!(!daemon.settings().models.is_disabled("llamacpp:tiny"));
+    let on = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(on["local_enabled"], true);
+    assert_eq!(on["models"][0]["enabled"], true);
+    let used = call(&mut socket, "models.use", json!({"model": "tiny"}))
+        .await
+        .unwrap();
+    assert_eq!(used["default"], "llamacpp:tiny");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_setup_made_before_the_switch_stays_on_and_a_fresh_config_is_off() {
+    let home = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    std::fs::write(models.path().join("tiny.gguf"), gguf()).unwrap();
+    let folder = models.path().display().to_string().replace('\\', "/");
+    // A model folder and nothing about the switch: how every existing setup looks.
+    let (mut socket, daemon) =
+        start_daemon(home.path(), &format!("[models]\nfolders = ['{folder}']\n")).await;
+    assert!(daemon.settings().models.local.enabled);
+    let rescanned = call(&mut socket, "models.rescan", json!({})).await.unwrap();
+    assert_eq!(rescanned["listing"]["local_enabled"], true);
+    assert_eq!(rescanned["listing"]["models"][0]["enabled"], true);
+
+    // No config at all: off, with nothing listed and no error from a rescan.
+    let fresh = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(fresh.path(), "").await;
+    assert!(!daemon.settings().models.local.enabled);
+    let rescanned = call(&mut socket, "models.rescan", json!({})).await.unwrap();
+    assert_eq!(rescanned["found"], 0);
+    assert_eq!(rescanned["listing"]["local_enabled"], false);
+}

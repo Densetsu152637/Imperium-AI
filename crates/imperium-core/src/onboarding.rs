@@ -25,8 +25,9 @@ use imperium_local::runtime_check::{
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
     LocalModelListResult, ModelAddEndpointParams, ModelAddEndpointResult, ModelFolderParams,
-    ModelTestParams, ModelTestResult, ModelUseParams, ModelUseResult, RUNTIME_INSTALL_PROGRESS,
-    RuntimeDevice, RuntimeInstallJob, RuntimeSetServerParams, RuntimeStatusResult,
+    ModelRescanResult, ModelTestParams, ModelTestResult, ModelUseParams, ModelUseResult,
+    RUNTIME_INSTALL_PROGRESS, RuntimeDevice, RuntimeInstallJob, RuntimeSetServerParams,
+    RuntimeStatusResult,
 };
 use serde_json::{Value, json};
 
@@ -76,8 +77,13 @@ pub(crate) fn refuse_disabled_default(
     let settings = state.settings();
     let spec = settings.models.spec_of(named);
     if settings.models.is_disabled(spec) {
+        let why = if settings.models.local_off_for(spec) {
+            "local models are off; turn them on (models.local.enabled, or Settings → Local models)"
+        } else {
+            "turn it on in Settings → Models"
+        };
         return Err(invalid(format!(
-            "{spec} is turned off; turn it on in Settings → Models before making it the default"
+            "{spec} is turned off; {why} before making it the default"
         )));
     }
     Ok(())
@@ -145,6 +151,28 @@ async fn rescan(state: Arc<DaemonState>) -> Result<LocalModelListResult, ErrorOb
     Ok(state.local_models())
 }
 
+/// `models.rescan`: scans the model folders again and reports what was found. It lists models
+/// whatever `models.local.enabled` says and turns nothing on.
+pub(crate) async fn rescan_models(
+    state: Arc<DaemonState>,
+) -> Result<ModelRescanResult, ErrorObject> {
+    let before: std::collections::BTreeSet<String> = state
+        .local_models()
+        .models
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    let listing = rescan(state).await?;
+    let after: std::collections::BTreeSet<String> =
+        listing.models.iter().map(|row| row.id.clone()).collect();
+    Ok(ModelRescanResult {
+        found: u32::try_from(after.len()).unwrap_or(u32::MAX),
+        added: after.difference(&before).cloned().collect(),
+        removed: before.difference(&after).cloned().collect(),
+        listing,
+    })
+}
+
 /// `models.add_folder`.
 pub(crate) async fn add_folder(
     state: Arc<DaemonState>,
@@ -172,6 +200,8 @@ pub(crate) async fn add_folder(
             &folder_list(&folders),
             |next, fresh| {
                 next.models.folders.clone_from(&fresh.models.folders);
+                // Folders are local setup: with the switch unset, it follows them.
+                next.models.local.enabled = fresh.models.local.enabled;
             },
         )?;
     }
@@ -202,6 +232,7 @@ pub(crate) async fn remove_folder(
         &folder_list(&kept),
         |next, fresh| {
             next.models.folders.clone_from(&fresh.models.folders);
+            next.models.local.enabled = fresh.models.local.enabled;
         },
     )?;
     rescan(state).await
@@ -251,9 +282,15 @@ pub(crate) fn use_model(
     params: ModelUseParams,
 ) -> Result<ModelUseResult, ErrorObject> {
     let spec = spec_of(state, &params.model)?;
-    if state.settings().models.is_disabled(&spec) {
+    let settings = state.settings();
+    if settings.models.is_disabled(&spec) {
+        let why = if settings.models.local_off_for(&spec) {
+            "local models are off; turn them on (models.local.enabled, or Settings → Local models)"
+        } else {
+            "turn it on in Settings → Models"
+        };
         return Err(invalid(format!(
-            "{spec} is turned off; turn it on in Settings → Models before making it the default"
+            "{spec} is turned off; {why} before making it the default"
         )));
     }
     save(
@@ -360,6 +397,12 @@ pub(crate) async fn test_model(
     params: ModelTestParams,
 ) -> Result<ModelTestResult, ErrorObject> {
     let spec = spec_of(&state, &params.model)?;
+    // A test loads the model: with local models off nothing local starts, not even for a test.
+    if state.settings().models.local_off_for(&spec) {
+        return Err(invalid(format!(
+            "{spec} is a local model and local models are off; turn them on first (models.local.enabled, or Settings → Local models)"
+        )));
+    }
     let resolved = state
         .resolve_model(Some(&spec))
         .map_err(|error| invalid(error.to_string()))?;
@@ -607,6 +650,12 @@ pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
         }),
         "models.folders" => apply_saved(state, |next, fresh| {
             next.models.folders.clone_from(&fresh.models.folders);
+            next.models.local.enabled = fresh.models.local.enabled;
+        }),
+        // Routing, selection and the listings read it at once; models are not started or
+        // stopped here (turning it off stops new use; a loaded model is unloaded when idle).
+        "models.local.enabled" => apply_saved(state, |next, fresh| {
+            next.models.local.enabled = fresh.models.local.enabled;
         }),
         // Read when a session starts, so new sessions use it at once.
         "policy.personality" => apply_saved(state, |next, fresh| {

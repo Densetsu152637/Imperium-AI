@@ -462,7 +462,8 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// and `config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` bring
 /// plugin code in, or turn it on, or point the daemon at a folder of it, so a person decides
 /// those too (a plugin with code still needs the desktop app's approval, which no command line
-/// gives); browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
+/// gives); `config set models.local.enabled` to anything but false turns local models on, which
+/// a person decides; browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
 fn changes_agents(args: &[String]) -> bool {
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
@@ -480,6 +481,7 @@ fn changes_agents(args: &[String]) -> bool {
         || after("plugin", &["install", "update", "enable"])
         || plugin_marketplace_add(args)
         || changes_plugin_setting(args)
+        || turns_local_models_on(args)
     {
         return true;
     }
@@ -538,6 +540,37 @@ fn changes_plugin_setting(args: &[String]) -> bool {
                         || word.starts_with("extensions.plugin_dirs")
                 })
         })
+}
+
+/// `config [--remote x] set models.local.enabled <value>` (or the `models.local` table): turning
+/// local models on starts downloads, installs and model servers, so a person decides it. Only a
+/// plain `false` (or `off`, `no`, `0`) is left open to agents; `unset` falls back to the default
+/// (off, unless local models were set up before) and stays open too.
+fn turns_local_models_on(args: &[String]) -> bool {
+    let Some(at) = args.iter().position(|word| word == "config") else {
+        return false;
+    };
+    let rest = &args[at + 1..];
+    if !rest.iter().any(|word| word == "set") {
+        return false;
+    }
+    let unquote = |word: &str| {
+        word.trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase()
+    };
+    let off = |value: &str| matches!(unquote(value).as_str(), "false" | "off" | "no" | "0");
+    rest.iter().enumerate().any(|(index, word)| {
+        let word = unquote(word.as_str());
+        if !word.starts_with("models.local") {
+            return false;
+        }
+        // `key=value`, or the value as the next word: only an off value is left open.
+        let value = match word.split_once('=') {
+            Some((_, value)) => Some(value.to_string()),
+            None => rest.get(index + 1).cloned(),
+        };
+        !value.as_deref().is_some_and(off)
+    })
 }
 
 /// `git` with its global options (`-C dir`, `-c k=v`, `--git-dir=…`) skipped.
@@ -688,6 +721,10 @@ mod tests {
             "imperium config unset extensions.disabled_plugins",
             "imperium --remote box config set extensions.plugin_dirs []",
             "/usr/bin/imperium config set Extensions.Plugin_Dirs []",
+            "imperium config set models.local.enabled true",
+            "imperium config set models.local.enabled=true",
+            "imperium --remote box config set Models.Local.Enabled true",
+            "imperium config set models.local.enabled 1",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -720,6 +757,11 @@ mod tests {
             "imperium config unset model.default",
             "imperium config explain extensions.plugin_dirs",
             "imperium config set permissions.mode ask",
+            "imperium config set models.local.enabled false",
+            "imperium config set models.local.enabled=false",
+            "imperium config unset models.local.enabled",
+            "imperium config explain models.local.enabled",
+            "imperium config get models.local.enabled",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }

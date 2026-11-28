@@ -69,14 +69,14 @@ pub use settings::{
     CatalogEntry, ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
     ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HarnessMode, HarnessSettings,
     HookSettings, ImageSettings, InitiativeSettings, IsolationSettings, KnowledgeSettings,
-    LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, LocalWhisperSettings,
-    Location, MarketplaceSettings, McpServerSettings, McpSettings, MediaServiceSettings,
-    MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings,
-    OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings, PetSettings,
-    PhoneSettings, PluginSettings, PolicySettings, Preference, ProjectSettings, ResumeSettings,
-    RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
-    SessionSettings, Settings, TerminalSettings, Tier, TriggerSettings, VLLM_ENDPOINT,
-    VllmSettings, VoiceSettings, VoiceTranscription, WebSettings, WorkflowSettings,
+    LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, LocalModelsSettings,
+    LocalWhisperSettings, Location, MarketplaceSettings, McpServerSettings, McpSettings,
+    MediaServiceSettings, MediaSettings, MemorySettings, MemoryWrite, ModelPlacement,
+    ModelSettings, OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE, OpenAiApiSettings,
+    PetSettings, PhoneSettings, PluginSettings, PolicySettings, Preference, ProjectSettings,
+    ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
+    SessionSearchScope, SessionSettings, Settings, TerminalSettings, Tier, TriggerSettings,
+    VLLM_ENDPOINT, VllmSettings, VoiceSettings, VoiceTranscription, WebSettings, WorkflowSettings,
     WorkspacesSettings, WritePolicy, default_workspaces_root, same_marketplace_source,
 };
-pub use settings::{SuggestionCandidate, default_suggestions};
+pub use settings::{SuggestionCandidate, default_suggestions, is_local_spec};
