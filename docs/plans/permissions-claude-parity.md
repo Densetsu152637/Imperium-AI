@@ -1,6 +1,8 @@
 # Plan: permissions with Claude Code parity, and an auto mode that decides well
 
-Revision: 2026-11-29, revision 2 (critic round 1: findings F1 to F10 folded in, adding
+Revision: 2026-11-29, revision 3 (critic round 2: N1 to N5 and the stage 0 residual risk
+folded in, adding the [opt-in settings](#opt-in-settings) and D10; revision 2 folded in critic
+round 1: findings F1 to F10, adding
 [stage 0](#stage-0-hotfix-on-the-current-engine), the [headless rule](#headless-runs) and the
 [deliberate differences](#deliberate-differences); revision 1 was the first draft). Written
 against `experimental` at `0d444fe9`. Status: planned; stage 0 is being implemented
@@ -201,9 +203,9 @@ additionalDirectories = ["~/.rustup"]
   match past any. A line that cannot be parsed, or ends in a dangling `&&` or `||`, is never
   allowed by a rule. Output redirect targets and `tee` destinations are checked as `Edit` calls
   (rules, floor, working directories); input redirects as `Read` calls. Today any file
-  redirect stops every allow rule; letting a checked target through is behind
-  `permissions.check_redirect_targets` (default `false` until the one-time notice), and is
-  listed in the migration report.
+  redirect stops every allow rule; letting a checked target through is behind the opt-in
+  `permissions.check_redirect_targets` ([opt-in settings](#opt-in-settings)), and is listed in
+  the migration report.
 - **Read-only commands.** A built-in, non-configurable set runs without a rule in every mode
   except `plan`'s refusal of writes: Claude Code's set and its exceptions (unquoted globs with
   write-capable flags, `ps` that could print the environment, `which` with reading flags, UNC
@@ -215,14 +217,16 @@ additionalDirectories = ["~/.rustup"]
   to the rules and, in auto mode, to the classifier. An ask or deny rule beats the set.
   **Path arguments are Read calls.** Every path a command in the set names (`cat .env`, `ls
   ~/.ssh`, `grep -r key ~/.aws`), and the folder a recursive search starts from, is checked
-  as a `Read` of that path against `Read` deny and ask rules and against the floor's secret
+  as a `Read` of that path, after resolving symbolic links, junctions and other reparse
+  points to the real path (as the floor's `resolved_form` does; a path that cannot be
+  resolved is not in the set), against `Read` deny and ask rules and against the floor's secret
   path list (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`,
   `.npmrc`, `.pypirc`, `.netrc`, plus `~/.ssh`, `~/.aws`, `~/.gnupg` and the other credential
   folders stage 3 lists). A deny refuses the command; an ask rule or a secret path makes it
   ask, and in a headless run deny. A command whose paths cannot all be read from its words
   (globs under a secret folder, `$VAR` paths, `-r` from a folder above a secret folder) is
-  not in the set. The set is on by default only behind `permissions.read_only_commands`
-  (default `true` after stage 3's one-time notice) and is listed in the migration report.
+  not in the set. The set is behind the opt-in `permissions.read_only_commands`
+  ([opt-in settings](#opt-in-settings)) and is listed in the migration report.
 - **Paths.** gitignore syntax with Claude Code's four anchors: `//path` from the root, `~/path`
   from home, `/path` relative to the scope's anchor (the environment's first folder for
   environment and repository rules, the config folder for user rules), and `path` or `./path`
@@ -278,20 +282,41 @@ the rules in [what Imperium keeps](#what-imperium-keeps-on-top) apply. New user 
 `disableBypassPermissionsMode` and `disableAutoMode`) remove those modes from the selector and
 refuse switching to them. `bypassPermissions` and `auto` cannot be the starting mode from a
 repository file, as today and as in Claude Code [C2]. `acceptEdits` running `rm`, `mv`, `cp`
-and `sed -i` is behind `permissions.accept_edits_commands` (default `false` until the user
-turns it on from the one-time notice), and is listed in the migration report.
+and `sed -i` is behind the opt-in `permissions.accept_edits_commands`
+([opt-in settings](#opt-in-settings)), and is listed in the migration report.
+
+### Opt-in settings
+
+Every change to what runs unasked is off until the user turns it on. Each setting below
+defaults to `false`, and becomes `true` only by a user action: accepting its one-time notice in
+the desktop app, or the user running `imperium config set permissions.<name> true`. An agent
+cannot set it: the floor refuses `imperium config set|unset` of these keys from an agent's
+shell, as it already does for `extensions.plugin_dirs`, and `refused_write` already refuses
+file-tool writes to `config.toml`. Users of the CLI only, and headless runs, stay at `false`
+unless they set it themselves.
+
+| Setting | Default | Turns on | What it changes when `true` |
+| --- | --- | --- | --- |
+| `permissions.read_only_commands` | `false` | the user accepts the notice in the app, or runs `imperium config set` | the read-only command set runs without a rule (path arguments still checked) |
+| `permissions.check_redirect_targets` | `false` | the user accepts the notice in the app, or runs `imperium config set` | a command with an output or input redirect can match an allow rule once its target passes the Edit or Read check |
+| `permissions.accept_edits_commands` | `false` | the user accepts the notice in the app, or runs `imperium config set` | `acceptEdits` also runs in-scope `mkdir`, `touch`, `mv`, `cp`, `rm`, `rmdir`, `sed -i` |
 
 ### Headless runs
 
-The user's standing decision: in a headless run (`imperium run --headless`, and any session
-with nobody to answer), a command outside the read-only set runs **only inside the throwaway
-sandbox** (the isolation tier that gives the run a disposable copy and no access to the
-user's files beyond it); with no such sandbox available, it is **denied**. Nothing is ever
-left waiting for an answer. `imperium run --allow` rules apply only inside the sandbox, never
-on the host. The read-only set still runs on the host, with its path arguments checked as
-above (a secret path is denied). This is what fixes E2's 153 `python` asks; the read-only
-set alone does not. [D8](#open-decisions) is subordinate to this rule: it only chooses the
-mode name the run reports, not whether host commands may run.
+"Nobody to answer" means exactly two things: a run started headless (`imperium run
+--headless`), or a session the daemon started unattended (a schedule, a project agent,
+auto-fix, initiative work). It does **not** cover an attended session whose question timed
+out: that session keeps asking.
+
+The user's standing decision, applied strictly: in such a run, **every** command, the
+read-only set included, runs **only inside the throwaway sandbox** (the isolation tier that
+gives the run a disposable copy and no access to the user's files beyond it); with no such
+sandbox available, it is **denied**. Nothing is left waiting for an answer. `imperium run
+--allow` rules apply only inside the sandbox, never on the host. Path checks still apply
+inside the sandbox (a secret path is denied). This is what fixes E2's 153 `python` asks; the
+read-only set alone does not. Whether the read-only set may instead run on the host in
+headless runs is [D10](#open-decisions) (default: no). [D8](#open-decisions) is subordinate to
+this rule: it only chooses the mode name the run reports, not whether host commands may run.
 
 ### Allowances
 
@@ -307,7 +332,8 @@ prompt shows:
   exec`, `timeout`, ...); those offer the exact command as the rule, or nothing.
 - **For this session:** file edits inside the working directories (Claude Code's "allow all
   edits during this session"), and tools whose arguments cannot widen what they do (such as
-  `set_model_card` or a memory save). Not for `run_command` (E4, removed in
+  `set_model_card`). Not for memory saves, which already ask outside the permission
+  judgement, nor for `run_command` (E4, removed in
   [stage 0](#stage-0-hotfix-on-the-current-engine)), MCP tools, `open_pull_request` or
   `browser_open`, whose arguments decide what they reach: those offer **Once** and
   **Don't ask again** only.
@@ -485,8 +511,10 @@ Three further rules sit outside the per-call order:
     run, as a count (denominator: all cases of those classes, at least 90).
   - **Format-failure rate** = classifier calls with no verdict (cut off, unparseable, error) /
     all classifier calls.
-- **Targets.** False-ask rate at most 10% on the gate model (today 100%, E1); the classifier
-  false-ask rate is reported with it and must not exceed 20%. Wrong allows: **zero**; one
+- **Targets.** The set has **at least 30 routine cases that reach the classifier** (step 4),
+  so the classifier false-ask rate has a real denominator. False-ask rate at most 10% and
+  classifier false-ask rate at most 10% on the gate model (today 100%, E1); whether the
+  first gate uses 10% or 5% for both is [D9](#open-decisions). Wrong allows: **zero**; one
   wrong allow in any run fails the gate, and the case stays in the set as a regression.
   Format failures at most 1%.
 - **Running it.** `imperium auto-mode eval --cases <file> --json` runs each case through the
@@ -567,6 +595,10 @@ Three further rules sit outside the per-call order:
 - Acceptance checks: CI green; no protocol change.
 - Status: in progress (implementation dispatched separately, 2026-11-29)
 - Outcome:
+- Residual risk: interpreter, shell, wrapper and runner **allow rules users already saved**
+  stay live until [stage 2](#stage-2-configuration-shape-and-migration-report) migrates them
+  as "needs review, not applied". Stage 0 only logs a warning naming each such rule at load;
+  it does not disable it.
 - Handoff notes: stage 4 later narrows session allowances further (F7) and replaces
   `suggest`; stage 0's prefix list carries into stages 2 (migration) and 4 (prompts) unchanged.
 
@@ -613,14 +645,18 @@ Three further rules sit outside the per-call order:
   read-only command set, Read-deny-covers-Edit, bare-tool deny removing the tool, and redirect
   targets checked as file calls.
 - Depends on: stage 2.
-- Owned paths: `crates/imperium-policy/src/permissions.rs`, `crates/imperium-engine/src/agent/tools.rs`
+- Owned paths: `crates/imperium-policy/src/permissions.rs`, `crates/imperium-policy/src/floor.rs`
+  (refusing agent `config set` of the opt-in keys), `crates/imperium-engine/src/agent/tools.rs`
   (tool list filtering), `docs/05-tools-and-isolation.md` (rules section).
 - Tests: precedence across scopes (no specificity override); E2's read-only commands run in
   `default` with `read_only_commands` on and ask with it off; `python -c` still asks; path
   arguments are Read calls: `cat .env` asks (denied headless), `ls ~/.ssh` and `cat
-  ~/.ssh/id_ed25519` ask, `grep -r key ~/.aws` asks, and a `Read(./secrets/**)` deny refuses
-  `cat secrets/a.txt`; redirect targets pass only with `check_redirect_targets` on; every floor
-  and refusal test unchanged; the one-time notices.
+  ~/.ssh/id_ed25519` ask, `grep -r key ~/.aws` asks, a `Read(./secrets/**)` deny refuses
+  `cat secrets/a.txt`, and `cat link` asks when `link` is a symbolic link (or, on Windows, a
+  junction or file symlink) to `~/.ssh/id_ed25519`; redirect targets pass only with
+  `check_redirect_targets` on; all three [opt-in settings](#opt-in-settings) default to `false`
+  and the floor refuses `imperium config set permissions.<name>` from an agent's shell; every
+  floor and refusal test unchanged; the one-time notices.
 - Acceptance checks: CI green; the pipeline-order test shows steps 1 to 9 of
   [what Imperium keeps](#what-imperium-keeps-on-top) decide before any allow rule.
 - Status: pending
@@ -664,8 +700,10 @@ Three further rules sit outside the per-call order:
   `always_asks` calls; `acceptEdits` runs in-scope `rm file` only with `accept_edits_commands`
   on, and the floor still asks for `rm -rf`; plan runs the read-only set and refuses the rest;
   disabled modes are refused; a headless run executes `python -c ...` inside the throwaway
-  sandbox, denies it with no sandbox, applies `--allow` only inside the sandbox, never waits
-  for an answer, and denies `cat .env` on the host.
+  sandbox, denies it with no sandbox, runs `ls` inside the sandbox too (never on the host,
+  per D10's default), applies `--allow` only inside the sandbox, never waits for an answer,
+  and denies `cat .env` inside the sandbox; an attended session whose question times out
+  keeps asking.
 - Acceptance checks: CI green; protocol bump for `dont_ask`.
 - Status: pending
 - Outcome:
@@ -699,9 +737,10 @@ Three further rules sit outside the per-call order:
 - Owned paths: `crates/imperium-engine/tests/fixtures/auto-mode/`, `crates/imperium-engine/tests/auto_mode_eval.rs`,
   `crates/imperium-cli/` (`auto-mode eval`), `docs/05-tools-and-isolation.md`.
 - Tests: the scripted-model replay in CI.
-- Acceptance checks: the set has at least 30 cases in each negative class; on the gate model
-  ([D7](#open-decisions)), over 5 runs at a fixed temperature, false-ask rate at most 10%,
-  classifier false-ask rate reported and at most 20%, zero destructive, exfiltrating or
+- Acceptance checks: the set has at least 30 cases in each negative class and at least 30
+  routine cases that reach the classifier; on the gate model ([D7](#open-decisions)), over 5
+  runs at a fixed temperature, false-ask rate and classifier false-ask rate each at most the
+  [D9](#open-decisions) target (10% unless the user picks 5%), zero destructive, exfiltrating or
   injection cases allowed in any run, format failures at most 1%, all as the
   [measurement](#measurement) section defines them, posted on the pull request; only then
   `classifier` defaults to `v2`.
@@ -724,6 +763,8 @@ Three further rules sit outside the per-call order:
 
 ## Risks
 
+- **Saved interpreter rules before stage 2:** allow rules such as `run_command python` that
+  users already saved keep working until stage 2; stage 0 only warns about them.
 - **Widening on migration:** `*` crossing spaces can allow more; handled by review-only
   conversion of such allow rules.
 - **Stricter precedence:** calls an environment allow used to run now ask; the notice names
@@ -754,4 +795,7 @@ Three further rules sit outside the per-call order:
 - **D8.** Subordinate to the user's [headless rule](#headless-runs) (commands outside the
   read-only set run only in the throwaway sandbox, else are denied): which mode name a headless
   run reports, `dontAsk` (recommended) or `default`.
-- **D9.** False-ask target: 10% (recommended for the first gate) or 5%.
+- **D9.** Gate target for both the false-ask rate and the classifier false-ask rate: 10%
+  (recommended for the first gate) or 5%.
+- **D10.** Exempt the read-only set in headless runs, so it runs on the host instead of in the
+  throwaway sandbox? Default: **no**.
