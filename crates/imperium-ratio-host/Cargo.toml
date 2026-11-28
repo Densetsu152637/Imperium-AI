@@ -13,8 +13,8 @@ imperium-api = { version = "0.2.0", path = "../imperium-api" }
 imperium-memory = { version = "0.2.0", path = "../imperium-memory" }
 imperium-models = { version = "0.2.0", path = "../imperium-models" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
-# Ratio stage 11a, final candidate (d93fe14) (feat/wt-s11a-host, HOST_API_VERSION 1). Not on crates.io.
-ratio-lang = { git = "https://github.com/Densetsu152637/Ratio", rev = "d93fe14d6131b408bc4efacbbbf06344a1ce0b93", features = ["host-tests"] }
+# Ratio stage 11a, final (a0f7719) (feat/wt-s11a-host, HOST_API_VERSION 1). Not on crates.io.
+ratio-lang = { git = "https://github.com/Densetsu152637/Ratio", rev = "a0f771908dac37d73cd7e213cbbd6a33bf41a248", features = ["host-tests"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "time", "sync", "macros"] }
 # Tapes are written as `.jsonl.zst` on Imperium's side.

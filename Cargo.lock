@@ -5176,7 +5176,7 @@ checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 [[package]]
 name = "ratio-check"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 dependencies = [
  "ratio-names",
  "ratio-syntax",
@@ -5185,7 +5185,7 @@ dependencies = [
 [[package]]
 name = "ratio-eval"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 dependencies = [
  "ratio-check",
  "ratio-ir",
@@ -5194,7 +5194,7 @@ dependencies = [
 [[package]]
 name = "ratio-ir"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 dependencies = [
  "ratio-check",
  "ratio-names",
@@ -5204,7 +5204,7 @@ dependencies = [
 [[package]]
 name = "ratio-lang"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 dependencies = [
  "ratio-check",
  "ratio-eval",
@@ -5216,7 +5216,7 @@ dependencies = [
 [[package]]
 name = "ratio-names"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 dependencies = [
  "ratio-syntax",
 ]
@@ -5224,7 +5224,7 @@ dependencies = [
 [[package]]
 name = "ratio-syntax"
 version = "0.1.0"
-source = "git+https://github.com/Densetsu152637/Ratio?rev=d93fe14d6131b408bc4efacbbbf06344a1ce0b93#d93fe14d6131b408bc4efacbbbf06344a1ce0b93"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=a0f771908dac37d73cd7e213cbbd6a33bf41a248#a0f771908dac37d73cd7e213cbbd6a33bf41a248"
 
 [[package]]
 name = "raw-window-handle"

@@ -1,5 +1,5 @@
 //! THROWAWAY SPIKE, never merged: Imperium's `RatioHost` against Ratio's stage 11a `Host`
-//! trait (`feat/wt-s11a-host` at `d93fe14`, `HOST_API_VERSION` 1), to validate the trait before
+//! trait (`feat/wt-s11a-host` at `a0f7719`, `HOST_API_VERSION` 1), to validate the trait before
 //! Ratio fixes it in a release.
 //!
 //! What it wires to Imperium's seams:
