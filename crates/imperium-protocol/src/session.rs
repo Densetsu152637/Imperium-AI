@@ -1019,7 +1019,11 @@ mod tests {
         assert_eq!(value["categories"][0]["tokens"], -3);
         assert_eq!(value["prompt_tokens"], serde_json::Value::Null);
         // The allocation fields are left out when unknown, so an older client sees the old event.
-        for key in ["configured_window", "reserved_output_tokens", "allocated_context"] {
+        for key in [
+            "configured_window",
+            "reserved_output_tokens",
+            "allocated_context",
+        ] {
             assert!(value.get(key).is_none(), "{key} is omitted when absent");
         }
     }
@@ -1041,7 +1045,10 @@ mod tests {
         assert_eq!(value["configured_window"], 32768);
         assert_eq!(value["reserved_output_tokens"], 2048);
         assert_eq!(value["allocated_context"], 8192);
-        assert_eq!(serde_json::from_value::<SessionEvent>(value).unwrap(), event);
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(value).unwrap(),
+            event
+        );
 
         // An event journaled by a daemon before 0.69 has none of the three.
         let old = serde_json::json!({
