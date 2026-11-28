@@ -756,7 +756,12 @@ adding the line is planned; the form is fixed now so training data matches.
 **Context breakdown (implemented):** after every model call, the agent that made it emits
 `context_breakdown`: what that call's request held, by category, against the model's context
 window, like Claude Code's `/context`. Each agent (the root and every subagent) reports its own
-calls, under its agent id.
+calls, under its agent id. The event also carries the model table's `context_window`
+(`configured_window`), the reply room the call reserved (`reserved_output_tokens`, its
+`max_tokens`) and, for a local model, the context its server holds for the agent
+(`allocated_context`), each left out when unknown, so a client can show the request, the
+pre-allocated buffer and the unallocated rest against the configured maximum
+([07](07-desktop-ui.md#setting-up-models-implemented)).
 
 The agent records what each part of a message is as it builds it, so the request divides into
 labelled segments without guessing: the system prompt's parts (base instruction, skill and
