@@ -318,15 +318,14 @@ fn rules(list: &[(&str, &str, RuleAction)]) -> SharedRules {
 #[tokio::test]
 async fn an_allow_rule_runs_a_command_without_asking() {
     let endpoint = scripted_endpoint(vec![
-        tool_call_body("run_command", r#"{"command":"echo ran > ran.txt"}"#),
+        tool_call_body("run_command", r#"{"command":"mkdir made"}"#),
         text_body("Done."),
     ])
     .await;
     let dir = tempfile::tempdir().unwrap();
-    // `echo` is allowed globally; the redirection into a file is not covered by a pattern,
-    // so the environment allows the whole tool instead.
+    // `mkdir` is allowed globally; the environment's rule for every command is not applied.
     let permissions = Permissions::new(
-        rules(&[("run_command", "echo", RuleAction::Allow)]),
+        rules(&[("run_command", "mkdir", RuleAction::Allow)]),
         rules(&[("run_command", "", RuleAction::Allow)]),
     );
     let workspace = Workspace::new(dir.path())
@@ -346,7 +345,7 @@ async fn an_allow_rule_runs_a_command_without_asking() {
         next(&mut events).await,
         SessionEvent::ToolFinished { ok: true, .. }
     ));
-    assert!(dir.path().join("ran.txt").exists());
+    assert!(dir.path().join("made").is_dir());
 }
 
 #[tokio::test]

@@ -700,7 +700,7 @@ fn evaluate_command(
     let pieces = split_command(line);
     if pieces.is_empty() {
         return decide(global, environment, |rule| {
-            tool_matches(rule, tool) && patternless(rule)
+            tool_matches(rule, tool) && patternless(rule) && over_broad_rule(rule).is_none()
         });
     }
     let mut decisions = Vec::with_capacity(pieces.len());
@@ -710,15 +710,15 @@ fn evaluate_command(
             if !tool_matches(rule, tool) {
                 return false;
             }
+            // An allow rule that would run any code (`run_command python`, `sudo`, `npx`, or
+            // every command) is not applied: the call asks as if the rule were not there.
+            if over_broad_rule(rule).is_some() {
+                return false;
+            }
             if patternless(rule) {
                 return true;
             }
             if risky && rule.action == RuleAction::Allow {
-                return false;
-            }
-            // An allow rule that would run any code (`run_command python`, `sudo`, `npx`) is
-            // not applied: the call asks as if the rule were not there.
-            if over_broad_rule(rule).is_some() {
                 return false;
             }
             prefix_matches(&rule.pattern, &words)
@@ -962,6 +962,12 @@ pub fn suggest(tool: &str, target: &Target) -> Option<PermissionRule> {
             if risky(line) || split_command(line).len() != 1 {
                 return None;
             }
+            // A program word that hides its name (`$SHELL`, `py''thon`) gets no rule, nor one
+            // that would run any code.
+            let raw = raw_program(line)?;
+            if obfuscated(raw, false) || over_broad_command(line).is_some() {
+                return None;
+            }
             let words = command_words(line);
             let first = words.first()?;
             let mut pattern = first.clone();
@@ -999,7 +1005,7 @@ pub fn suggest(tool: &str, target: &Target) -> Option<PermissionRule> {
 /// Programs that run whatever command follows them, so a rule naming one allows every command.
 const WRAPPERS: &[&str] = &[
     "env", "sudo", "doas", "nohup", "timeout", "nice", "ionice", "xargs", "time", "command",
-    "exec", "stdbuf", "setsid", "runas",
+    "exec", "stdbuf", "setsid", "runas", "watch", "wsl",
 ];
 
 /// Interpreters and shells: a rule naming one allows any code they are given.
@@ -1016,6 +1022,8 @@ const INTERPRETERS: &[&str] = &[
     "ruby",
     "perl",
     "php",
+    "lua",
+    "luajit",
     "bash",
     "sh",
     "zsh",
@@ -1026,6 +1034,7 @@ const INTERPRETERS: &[&str] = &[
     "powershell",
     "cmd",
     "npx",
+    "pnpx",
     "uvx",
     "pipx",
     "java",
@@ -1036,53 +1045,131 @@ const INTERPRETERS: &[&str] = &[
     "mshta",
 ];
 
-/// Programs whose `run` subcommand builds or fetches and runs any program: a rule naming the
-/// program alone, or with `run`, allows that.
-const RUNNERS: &[&str] = &["uv", "cargo", "go"];
+/// Programs with a subcommand that builds, fetches or starts and runs any program or command:
+/// a rule naming the program alone (which covers every subcommand), or with one of these
+/// subcommands, allows that.
+const RUNNERS: &[(&str, &[&str])] = &[
+    ("uv", &["run"]),
+    ("cargo", &["run"]),
+    ("go", &["run"]),
+    ("docker", &["exec", "run"]),
+    ("podman", &["exec", "run"]),
+    ("direnv", &["exec"]),
+    ("devbox", &["run"]),
+    ("mise", &["exec", "x"]),
+    ("npm", &["exec", "x"]),
+    ("pnpm", &["dlx", "exec"]),
+    ("yarn", &["dlx", "exec"]),
+    ("bun", &["x"]),
+];
 
 /// Whether `name` (a program's name, as [`command_words`] gives it) is an interpreter or a
-/// shell, including a versioned Python such as `python3.12`.
+/// shell, including a versioned Python or Lua such as `python3.12` or `lua5.4`.
 fn is_interpreter(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    INTERPRETERS.contains(&name.as_str())
-        || name.strip_prefix("python").is_some_and(|version| {
+    let versioned = |base: &str| {
+        name.strip_prefix(base).is_some_and(|version| {
             !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+    };
+    INTERPRETERS.contains(&name.as_str()) || versioned("python") || versioned("lua")
+}
+
+/// The first word of a command line or pattern as written, after leading `NAME=value`
+/// assignments.
+fn raw_program(text: &str) -> Option<&str> {
+    text.split_whitespace().find(|word| !is_assignment(word))
+}
+
+/// Whether a program word as written hides its name: anything but letters, digits and
+/// `._+:/-` (and `\` on Windows; `*` and `?` in a rule's pattern), such as `$SHELL`, `py''thon`,
+/// `p\ython`, `py^thon` or `pyth[o]n3`. One pair of quotes around the whole word is allowed.
+fn obfuscated(word: &str, pattern: bool) -> bool {
+    let word = ['"', '\'']
+        .iter()
+        .find_map(|quote| {
+            word.strip_prefix(*quote)
+                .and_then(|rest| rest.strip_suffix(*quote))
+        })
+        .unwrap_or(word);
+    word.is_empty()
+        || !word.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '.' | '_' | '+' | ':' | '/' | '-')
+                || (c == '\\' && cfg!(windows))
+                || (pattern && matches!(c, '*' | '?'))
         })
 }
 
-/// Why a `run_command` allow pattern would allow arbitrary code, when it would: its first word
-/// is a wrapper that runs whatever follows it (so `env python`, `sudo bash` and `timeout 5 sh`
-/// are covered too), an interpreter or a shell, or a runner alone or with `run`. A first word
-/// with `*` or `?` counts when it matches any of those names.
+/// The program names a word may stand for: its file name as [`command_words`] reduces it, and
+/// the same with escape and quote characters removed (`p\ython` is `python` to a POSIX shell).
+fn program_names(word: &str) -> Vec<String> {
+    let mut names = vec![program_name(word).to_ascii_lowercase()];
+    let bare: String = word
+        .chars()
+        .filter(|c| !matches!(c, '\\' | '\'' | '"' | '^'))
+        .collect();
+    let bare = program_name(&bare).to_ascii_lowercase();
+    if !names.contains(&bare) {
+        names.push(bare);
+    }
+    names
+}
+
+/// Why a `run_command` allow pattern (or a command line, judged as the pattern it would make)
+/// would allow arbitrary code, when it would:
+///
+/// - its program word hides the program's name ([`obfuscated`]);
+/// - its first word is a wrapper that runs whatever follows it, so `env python`, `sudo bash`
+///   and `timeout 5 sh` are covered too;
+/// - an interpreter or a shell;
+/// - a runner alone or with its running subcommand (`cargo run`, `docker exec`, `npm exec`).
+///
+/// A word with `*` or `?` counts when it matches any of those names.
 pub fn over_broad_command(pattern: &str) -> Option<String> {
+    let raw = raw_program(pattern)?;
+    if obfuscated(raw, true) {
+        return Some(format!(
+            "its program {raw} is quoted, escaped or substituted, so its name cannot be checked"
+        ));
+    }
+    let names = program_names(raw);
     let words = command_words(pattern);
-    let first = words.first()?.to_ascii_lowercase();
     let second = words.get(1).map(|word| word.to_ascii_lowercase());
     let matches = |name: &str| {
-        if first.contains(['*', '?']) {
-            glob(&first, name, true)
-        } else {
-            first == name
-        }
+        names.iter().any(|first| {
+            if first.contains(['*', '?']) {
+                glob(first, name, true)
+            } else {
+                first == name
+            }
+        })
     };
     if let Some(wrapper) = WRAPPERS.iter().find(|name| matches(name)) {
         return Some(format!("{wrapper} runs whatever command follows it"));
     }
-    if is_interpreter(&first) {
+    if let Some(first) = names.iter().find(|name| is_interpreter(name)) {
         return Some(format!("{first} runs any code it is given"));
     }
     if let Some(interpreter) = INTERPRETERS.iter().find(|name| matches(name)) {
         return Some(format!(
-            "{first} matches {interpreter}, which runs any code it is given"
+            "{} matches {interpreter}, which runs any code it is given",
+            names[0]
         ));
     }
-    if let Some(runner) = RUNNERS.iter().find(|name| matches(name)) {
-        let runs = second.as_deref().is_none_or(|second| {
-            second == "run" || (second.contains(['*', '?']) && glob(second, "run", true))
-        });
-        if runs {
+    for (runner, subcommands) in RUNNERS {
+        if !matches(runner) {
+            continue;
+        }
+        let runs = match second.as_deref() {
+            None => subcommands.first(),
+            Some(second) => subcommands.iter().find(|sub| {
+                second == **sub || (second.contains(['*', '?']) && glob(second, sub, true))
+            }),
+        };
+        if let Some(sub) = runs {
             return Some(format!(
-                "{runner} run builds or fetches and runs any program"
+                "{runner} {sub} builds, fetches or starts and runs any program"
             ));
         }
     }
@@ -1094,12 +1181,19 @@ pub fn over_broad_command(pattern: &str) -> Option<String> {
 pub const RULES_NOT_APPLIED: &str =
     "Saved allow rules that would let a command run any code are not applied";
 
-/// Why a saved rule would allow arbitrary code, when it would: an allow rule for `run_command`
-/// whose pattern [`over_broad_command`] flags. Such a rule is not applied to commands (the call
-/// asks instead) but kept as saved; the daemon names it in a one-time notice.
+/// Why an allow rule would let a command run any code, when it would: an allow rule for
+/// `run_command` (or a wildcard tool covering it) without a pattern (`""`, `*`, `**`: every
+/// command), or whose pattern [`over_broad_command`] flags. Such a rule is not applied to
+/// commands (the call asks instead; full access is how to run every command unasked), a new one
+/// is refused ([`validate_rule`]), and a saved one is kept and named in a one-time notice.
 pub fn over_broad_rule(rule: &PermissionRule) -> Option<String> {
-    if rule.action != RuleAction::Allow || !tool_matches(rule, COMMAND_TOOL) || patternless(rule) {
+    if rule.action != RuleAction::Allow || !tool_matches(rule, COMMAND_TOOL) {
         return None;
+    }
+    if patternless(rule) {
+        return Some(
+            "it allows every command; full access mode is how to run commands unasked".into(),
+        );
     }
     over_broad_command(&rule.pattern)
 }
@@ -1147,8 +1241,24 @@ pub fn session_allows(
     }
 }
 
-/// Checks a rule before it is saved.
+/// Checks a new rule before it is saved: its shape ([`validate_rule_shape`]), and that it is
+/// not an allow rule that would let a command run any code ([`over_broad_rule`]).
 pub fn validate_rule(rule: &PermissionRule) -> Result<(), String> {
+    validate_rule_shape(rule)?;
+    if let Some(why) = over_broad_rule(rule) {
+        return Err(format!(
+            "an allow rule `{} {}` would let a command run any code ({why}); allow the exact \
+             commands you need instead",
+            rule.tool.trim(),
+            rule.pattern.trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Checks a rule's shape only: a tool name and lengths. A rule already saved is sent back with
+/// a set that changes something else, so it is checked this way rather than refused again.
+pub fn validate_rule_shape(rule: &PermissionRule) -> Result<(), String> {
     let tool = rule.tool.trim();
     if tool.is_empty() {
         return Err("a rule needs a tool name (or * for every tool)".into());
@@ -1550,18 +1660,49 @@ mod tests {
         assert_eq!(check("git status"), Some(Allow));
         assert_eq!(check("npm run test:unit"), Some(Allow));
         assert_eq!(check("npm run build"), None);
-        let everything = [rule(COMMAND_TOOL, "", Allow)];
+        // An allow rule for every command is not applied: the call asks.
+        for everything in [
+            rule(COMMAND_TOOL, "", Allow),
+            rule(COMMAND_TOOL, "*", Allow),
+            rule(COMMAND_TOOL, "**", Allow),
+            rule("*", "", Allow),
+            rule("run_*", "", Allow),
+        ] {
+            assert_eq!(
+                evaluate(
+                    std::slice::from_ref(&everything),
+                    &[],
+                    COMMAND_TOOL,
+                    &command("make")
+                ),
+                None,
+                "{everything:?}"
+            );
+            assert!(over_broad_rule(&everything).is_some(), "{everything:?}");
+            assert!(validate_rule(&everything).is_err(), "{everything:?}");
+        }
+        // A wildcard tool's rule still applies to the other tools, and a patternless deny or
+        // ask to commands.
+        let all = [rule("*", "", Allow)];
         assert_eq!(
-            evaluate(&everything, &[], COMMAND_TOOL, &command("make > out.txt")),
-            Some(Allow),
-            "a rule without a pattern allows the whole tool"
+            evaluate(&all, &[], "write_file", &path("/p/a", Some("a"))),
+            Some(Allow)
+        );
+        assert_eq!(
+            evaluate(
+                &[rule(COMMAND_TOOL, "", Ask)],
+                &[],
+                COMMAND_TOOL,
+                &command("make")
+            ),
+            Some(Ask)
         );
     }
 
     #[test]
     fn deny_rules_catch_any_part_of_a_line_and_the_program_path() {
         let rules = [
-            rule(COMMAND_TOOL, "", Allow),
+            rule(COMMAND_TOOL, "ls", Allow),
             rule(COMMAND_TOOL, "rm", Deny),
         ];
         let check = |line: &str| evaluate(&rules, &[], COMMAND_TOOL, &command(line));
@@ -1839,6 +1980,121 @@ mod tests {
     }
 
     #[test]
+    fn no_rule_is_suggested_for_a_program_whose_name_is_hidden() {
+        let suggested = |line: &str| suggest(COMMAND_TOOL, &command(line)).map(|rule| rule.pattern);
+        for line in [
+            "$SHELL -c 'rm -rf ~'",
+            "py''thon -c x",
+            r"p\ython -c x",
+            "py^thon -c x",
+            "pyth[o]n3 -c x",
+            "\"py\"thon x",
+            "${SHELL} x",
+            "%COMSPEC% /c x",
+        ] {
+            assert_eq!(suggested(line), None, "{line}");
+        }
+        // A program quoted whole is still named.
+        assert_eq!(suggested("\"git\" status"), Some("git status".into()));
+        // The same names are flagged in a saved rule's pattern.
+        for pattern in ["$SHELL", "py''thon", r"p\ython", "py^thon", "pyth[o]n3"] {
+            assert!(
+                over_broad_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_some(),
+                "{pattern}"
+            );
+            assert!(
+                validate_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_err(),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_rule_is_suggested_for_the_other_runners_and_wrappers() {
+        let suggested = |line: &str| suggest(COMMAND_TOOL, &command(line)).map(|rule| rule.pattern);
+        for line in [
+            "lua script.lua",
+            "lua5.4 x",
+            "pnpx create-app",
+            "watch -n 1 ls",
+            "wsl ls",
+            "docker exec box sh",
+            "docker run --rm img",
+            "docker --version",
+            "podman exec box sh",
+            "podman run img",
+            "direnv exec . make",
+            "devbox run build",
+            "mise exec -- make",
+            "mise x node",
+            "npm exec cowsay",
+            "npm x cowsay",
+            "npm --version",
+            "pnpm dlx create-app",
+            "pnpm exec tsc",
+            "yarn dlx create-app",
+            "bun x cowsay",
+        ] {
+            assert_eq!(suggested(line), None, "{line}");
+        }
+        assert_eq!(suggested("docker ps"), Some("docker ps".into()));
+        assert_eq!(suggested("npm run build"), Some("npm run".into()));
+        assert_eq!(suggested("pnpm install"), Some("pnpm install".into()));
+        assert_eq!(suggested("mise install"), Some("mise install".into()));
+        for pattern in [
+            "docker exec",
+            "docker",
+            "docker r*",
+            "npm exec",
+            "pnpm dlx",
+            "yarn dlx",
+            "bun x",
+            "mise x",
+            "devbox run",
+            "direnv exec",
+            "podman run",
+            "watch",
+            "wsl",
+            "lua",
+            "pnpx",
+        ] {
+            assert!(
+                over_broad_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_some(),
+                "{pattern}"
+            );
+        }
+        for pattern in [
+            "docker ps",
+            "npm run",
+            "npm test",
+            "pnpm install",
+            "yarn add",
+        ] {
+            assert!(
+                over_broad_rule(&rule(COMMAND_TOOL, pattern, Allow)).is_none(),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_rule_that_runs_any_code_is_refused_with_the_reason() {
+        let error = validate_rule(&rule(COMMAND_TOOL, "python", Allow)).unwrap_err();
+        assert!(error.contains("run_command python"), "{error}");
+        assert!(error.contains("any code"), "{error}");
+        let error = validate_rule(&rule(COMMAND_TOOL, "", Allow)).unwrap_err();
+        assert!(error.contains("every command"), "{error}");
+        // Deny and ask rules, and ordinary allow rules, are fine; the shape check alone takes
+        // a rule already saved.
+        assert!(validate_rule(&rule(COMMAND_TOOL, "python", Deny)).is_ok());
+        assert!(validate_rule(&rule(COMMAND_TOOL, "sudo", Ask)).is_ok());
+        assert!(validate_rule(&rule(COMMAND_TOOL, "git status", Allow)).is_ok());
+        assert!(validate_rule(&rule("write_file", "", Allow)).is_ok());
+        assert!(validate_rule_shape(&rule(COMMAND_TOOL, "python", Allow)).is_ok());
+        assert!(validate_rule_shape(&rule(" ", "", Allow)).is_err());
+    }
+
+    #[test]
     fn a_session_allowance_for_one_command_covers_that_command_only() {
         let mut allowed = std::collections::HashSet::new();
         allowed.insert(session_allowance(COMMAND_TOOL, &command("cargo test")).unwrap());
@@ -1867,7 +2123,7 @@ mod tests {
 
     #[test]
     fn rules_and_grants_are_validated() {
-        assert!(validate_rule(&rule("run_command", "cargo", Allow)).is_ok());
+        assert!(validate_rule(&rule("run_command", "cargo test", Allow)).is_ok());
         assert!(validate_rule(&rule(" ", "", Allow)).is_err());
         assert!(validate_rule(&rule("run command", "", Allow)).is_err());
         let grant = |path: &str| PathGrant {

@@ -1376,7 +1376,7 @@ async fn chaser_fixture() -> (Fixture, EnvironmentAgent) {
         "environments.update",
         json!({"id": fixture.env.id, "permissions": {"grants": [], "rules": [
             {"tool": "write_file", "pattern": "", "action": "allow"},
-            {"tool": "run_command", "pattern": "", "action": "allow"}
+            {"tool": "run_command", "pattern": "curl", "action": "allow"}
         ]}}),
     )
     .unwrap();
@@ -1584,7 +1584,7 @@ async fn a_review_cannot_write_run_or_reach_out_even_where_the_rules_allow_it() 
         "environments.update",
         json!({"id": fixture.env.id, "permissions": {"grants": [], "rules": [
             {"tool": "write_file", "pattern": "", "action": "allow"},
-            {"tool": "run_command", "pattern": "", "action": "allow"}
+            {"tool": "run_command", "pattern": "curl", "action": "allow"}
         ]}}),
     )
     .unwrap();

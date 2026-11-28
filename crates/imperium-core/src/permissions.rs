@@ -11,7 +11,7 @@ use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
 use imperium_config::PermissionSettings;
 use imperium_policy::permissions::{
     Permissions, RULES_NOT_APPLIED, SharedRules, home_dir, over_broad_rule, validate_grant,
-    validate_rule,
+    validate_rule, validate_rule_shape,
 };
 use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};
@@ -159,8 +159,13 @@ fn rule_to_wire(rule: &PermissionRule) -> wire::PermissionRule {
     }
 }
 
-/// A set as sent, trimmed and checked; an invalid grant or rule is refused with the reason.
-pub(crate) fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String> {
+/// A set as sent, trimmed and checked; an invalid grant or rule is refused with the reason. A
+/// new allow rule that would let a command run any code is refused ([`validate_rule`]); one
+/// already in `saved` (the set it replaces) is kept, so the rest of the set can still change.
+pub(crate) fn checked(
+    set: &wire::PermissionSet,
+    saved: &[wire::PermissionRule],
+) -> Result<wire::PermissionSet, String> {
     let mut grants: Vec<wire::PathGrant> = Vec::new();
     for grant in &set.grants {
         validate_grant(&grant_from_wire(grant))?;
@@ -170,9 +175,17 @@ pub(crate) fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, 
         }
     }
     let mut rules: Vec<wire::PermissionRule> = Vec::new();
+    let saved: Vec<wire::PermissionRule> = saved
+        .iter()
+        .map(|rule| rule_to_wire(&rule_from_wire(rule)))
+        .collect();
     for rule in &set.rules {
-        validate_rule(&rule_from_wire(rule))?;
         let rule = rule_to_wire(&rule_from_wire(rule));
+        if saved.contains(&rule) {
+            validate_rule_shape(&rule_from_wire(&rule))?;
+        } else {
+            validate_rule(&rule_from_wire(&rule))?;
+        }
         // A later rule for the same tool and pattern replaces an earlier one.
         rules.retain(|known| !(known.tool == rule.tool && known.pattern == rule.pattern));
         rules.push(rule);
@@ -296,7 +309,8 @@ pub(crate) fn set(
     state: &DaemonState,
     params: wire::PermissionSet,
 ) -> Result<wire::PermissionsResult, ErrorObject> {
-    let set = checked(&params).map_err(invalid)?;
+    let current: Vec<wire::PermissionRule> = saved(state)?.rules.iter().map(rule_to_wire).collect();
+    let set = checked(&params, &current).map_err(invalid)?;
     let settings = PermissionSettings {
         grants: set.grants.iter().map(grant_from_wire).collect(),
         rules: set.rules.iter().map(rule_from_wire).collect(),
@@ -733,7 +747,7 @@ mod tests {
                 rule(" cargo test ", wire::RuleAction::Deny),
             ],
         };
-        let clean = checked(&set).unwrap();
+        let clean = checked(&set, &[]).unwrap();
         assert_eq!(clean.grants.len(), 1);
         assert_eq!(clean.grants[0].path, "~/.cargo");
         assert_eq!(
@@ -747,7 +761,28 @@ mod tests {
             }],
             rules: Vec::new(),
         };
-        assert!(checked(&bad).is_err());
+        assert!(checked(&bad, &[]).is_err());
+
+        // A new allow rule that would run any code is refused with the reason; one already
+        // saved is kept, so the rest of the set can still change.
+        let broad = wire::PermissionSet {
+            grants: Vec::new(),
+            rules: vec![
+                rule("python", wire::RuleAction::Allow),
+                rule("git status", wire::RuleAction::Allow),
+            ],
+        };
+        let error = checked(&broad, &[]).unwrap_err();
+        assert!(error.contains("run_command python"), "{error}");
+        let every = wire::PermissionSet {
+            grants: Vec::new(),
+            rules: vec![rule("", wire::RuleAction::Allow)],
+        };
+        assert!(checked(&every, &[]).is_err());
+        let kept = checked(&broad, &[rule(" python ", wire::RuleAction::Allow)]).unwrap();
+        assert_eq!(kept.rules.len(), 2);
+        // Saved as a deny, it is new as an allow.
+        assert!(checked(&broad, &[rule("python", wire::RuleAction::Deny)]).is_err());
     }
 
     #[test]

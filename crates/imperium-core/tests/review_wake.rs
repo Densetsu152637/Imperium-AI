@@ -646,7 +646,7 @@ async fn a_command_asks(mode: PermissionMode, extra: &str, environment_rule: boo
                 "environments.create",
                 json!({"name": "Work", "folders": [world.clone], "project_worktrees": false,
                        "permissions": {"grants": [], "rules": [
-                           {"tool": "run_command", "pattern": "", "action": "allow"}]}}),
+                           {"tool": "run_command", "pattern": "echo", "action": "allow"}]}}),
             )
             .await
             .unwrap();
@@ -695,7 +695,7 @@ async fn a_command_asks(mode: PermissionMode, extra: &str, environment_rule: boo
 
 #[tokio::test]
 async fn a_woken_turn_asks_for_commands_in_every_mode() {
-    let allow = "[permissions]\nrules = [{ tool = \"run_command\", action = \"allow\" }]\n";
+    let allow = "[permissions]\nrules = [{ tool = \"run_command\", pattern = \"echo\", action = \"allow\" }]\n";
     // Full access, auto, accept edits, and default with a user-layer allow rule.
     a_command_asks(PermissionMode::Full, "", false).await;
     a_command_asks(PermissionMode::Auto, "", false).await;
