@@ -909,8 +909,14 @@ pub(crate) struct Shared {
     pub descriptions: Mutex<std::collections::HashMap<String, String>>,
     /// Whether a person reads the session's turns; see [`SessionConfig::attended`].
     pub attended: bool,
-    /// Tools the user allowed for the rest of the session, for every agent.
+    /// What the user allowed for the rest of the session, for every agent, keyed by
+    /// [`session_allowance`](imperium_policy::permissions::session_allowance): a tool's name, or
+    /// for `run_command` one exact command line (never the whole tool). Read and written through
+    /// [`Shared::allowed_for_session`] and [`Shared::allow_for_session`].
     pub allowed_tools: Mutex<HashSet<String>>,
+    /// Whether a tool-wide `run_command` allowance was found (and ignored) in
+    /// `allowed_tools`, so the warning is logged once.
+    pub ignored_command_allowance: AtomicBool,
     /// Tools an unattended session's starter allowed up front: they run without asking in
     /// every mode but plan, except calls the safety floor covers, which wait for the user's
     /// approval like any other.
@@ -974,6 +980,45 @@ impl Drop for OpenGate {
 }
 
 impl Shared {
+    /// Whether the user's "Always this session" answers cover a call to `tool` on `target`. A
+    /// `run_command` call is covered only by an answer given for that exact command line; a
+    /// tool-wide `run_command` entry is ignored, with a warning logged once.
+    pub(crate) fn allowed_for_session(
+        &self,
+        tool: &str,
+        target: &imperium_policy::permissions::Target,
+    ) -> bool {
+        let allowed = self
+            .allowed_tools
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let check = imperium_policy::permissions::session_allows(&allowed, tool, target);
+        if check.ignored_tool_wide && !self.ignored_command_allowance.swap(true, Ordering::SeqCst) {
+            tracing::warn!(
+                session = %self.session_id,
+                "ignoring a session allowance for every run_command call: an allowance for \
+                 commands covers one exact command line only"
+            );
+        }
+        check.allowed
+    }
+
+    /// Remembers "Always this session" for a call to `tool` on `target`: the tool, or for
+    /// `run_command` that exact command line. Nothing is remembered for a `run_command` call
+    /// without a command line.
+    pub(crate) fn allow_for_session(
+        &self,
+        tool: &str,
+        target: &imperium_policy::permissions::Target,
+    ) {
+        if let Some(key) = imperium_policy::permissions::session_allowance(tool, target) {
+            self.allowed_tools
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key);
+        }
+    }
+
     /// Waits until the checkpoint of the files before the running turn is taken. Reading every
     /// file of a large folder takes seconds to minutes (on Windows, writing each blob is slow),
     /// so the turn starts beside it and only a tool call, which could change a file, waits.
@@ -1124,7 +1169,17 @@ async fn run(
         user_requests: Mutex::default(),
         descriptions: Mutex::new(std::collections::HashMap::new()),
         attended: config.attended,
-        allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),
+        // A pre-approved `run_command` is honoured through `pre_approved` (never for a floored
+        // call); it is not a session allowance, which covers one exact command line only.
+        allowed_tools: Mutex::new(
+            config
+                .pre_approved
+                .iter()
+                .filter(|tool| tool.as_str() != imperium_policy::permissions::COMMAND_TOOL)
+                .cloned()
+                .collect(),
+        ),
+        ignored_command_allowance: AtomicBool::new(false),
         pre_approved: config.pre_approved.into_iter().collect(),
         tools: config.tools,
         extensions: config.extensions,

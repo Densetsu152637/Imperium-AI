@@ -836,7 +836,17 @@ export function EntryView({
                 items={[
                   ...(capped
                     ? []
-                    : [{ label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") }]),
+                    : [
+                        entry.tool === "run_command"
+                          ? {
+                              // A command allowed for the session is that exact command line only.
+                              label: "Always this command, this session",
+                              icon: ShieldCheck,
+                              title: "Runs this exact command line again without asking for the rest of the session; any other command still asks.",
+                              onSelect: () => onRespond(entry.requestId, "allow_for_session"),
+                            }
+                          : { label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") },
+                      ]),
                   ...(entry.suggestedRule && onAlwaysAllow
                     ? [
                         {

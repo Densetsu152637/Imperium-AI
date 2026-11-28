@@ -391,11 +391,18 @@ impl Agent {
         (users, tasks)
     }
 
-    /// Whether asking about `approve_tool` would be answered without the user: a tool the
-    /// session pre-approved, or one the user allowed for the rest of the session.
-    fn needs_no_question(&self, approve_tool: &str, floored: bool, sticky: bool) -> bool {
+    /// Whether asking about `approve_tool` on `target` would be answered without the user: a
+    /// tool the session pre-approved, or one the user allowed for the rest of the session (for
+    /// `run_command`, that exact command line).
+    fn needs_no_question(
+        &self,
+        approve_tool: &str,
+        target: &Target,
+        floored: bool,
+        sticky: bool,
+    ) -> bool {
         (!floored && self.shared.pre_approved.contains(approve_tool))
-            || (sticky && lock(&self.shared.allowed_tools).contains(approve_tool))
+            || (sticky && self.shared.allowed_for_session(approve_tool, target))
     }
 
     /// Whether the session is stopped or this agent paused: no question is raised then.
@@ -404,13 +411,14 @@ impl Agent {
     }
 
     /// What auto mode makes of a call whose decision is `decision`. `approve_tool` is the name
-    /// the question and the session allowance use, `tool` the call's own name, `input` what the
-    /// classifier would read of it.
+    /// the question and the session allowance use, `target` what the call is about, `tool` the
+    /// call's own name, `input` what the classifier would read of it.
     pub(super) async fn auto_gate(
         &self,
         decision: Decision,
         floored: bool,
         approve_tool: &str,
+        target: &Target,
         tool: &str,
         input: &(dyn Fn() -> CallInput + Sync),
     ) -> AutoGate {
@@ -424,7 +432,7 @@ impl Agent {
         if floored
             || self.bridged.load(Ordering::SeqCst)
             || self.workspace.permissions().mode() != PermissionMode::Auto
-            || self.needs_no_question(approve_tool, floored, true)
+            || self.needs_no_question(approve_tool, target, floored, true)
         {
             return AutoGate::NotApplicable;
         }

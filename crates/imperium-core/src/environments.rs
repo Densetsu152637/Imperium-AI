@@ -265,7 +265,7 @@ impl Environments {
         let permissions = params
             .permissions
             .as_ref()
-            .map(crate::permissions::checked)
+            .map(|set| crate::permissions::checked(set, &[]))
             .transpose()
             .map_err(EnvironmentError::Invalid)?
             .unwrap_or_default();
@@ -318,10 +318,15 @@ impl Environments {
         let requested = params.name.clone();
         let worktree_dir = params.worktree_dir.map(valid_worktree_dir).transpose()?;
         let runtime = params.runtime.map(valid_runtime).transpose()?;
+        // Rules the environment already has are not refused again.
+        let current = self
+            .get(&params.id)
+            .map(|env| env.permissions.rules)
+            .unwrap_or_default();
         let permissions = params
             .permissions
             .as_ref()
-            .map(crate::permissions::checked)
+            .map(|set| crate::permissions::checked(set, &current))
             .transpose()
             .map_err(EnvironmentError::Invalid)?;
         self.change_one(&params.id, |env| {

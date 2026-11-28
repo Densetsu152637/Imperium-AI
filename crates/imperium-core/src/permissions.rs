@@ -10,7 +10,8 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
 use imperium_config::PermissionSettings;
 use imperium_policy::permissions::{
-    Permissions, SharedRules, home_dir, validate_grant, validate_rule,
+    Permissions, RULES_NOT_APPLIED, SharedRules, home_dir, over_broad_rule, validate_grant,
+    validate_rule, validate_rule_shape,
 };
 use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};
@@ -158,8 +159,13 @@ fn rule_to_wire(rule: &PermissionRule) -> wire::PermissionRule {
     }
 }
 
-/// A set as sent, trimmed and checked; an invalid grant or rule is refused with the reason.
-pub(crate) fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String> {
+/// A set as sent, trimmed and checked; an invalid grant or rule is refused with the reason. A
+/// new allow rule that would let a command run any code is refused ([`validate_rule`]); one
+/// already in `saved` (the set it replaces) is kept, so the rest of the set can still change.
+pub(crate) fn checked(
+    set: &wire::PermissionSet,
+    saved: &[wire::PermissionRule],
+) -> Result<wire::PermissionSet, String> {
     let mut grants: Vec<wire::PathGrant> = Vec::new();
     for grant in &set.grants {
         validate_grant(&grant_from_wire(grant))?;
@@ -169,9 +175,17 @@ pub(crate) fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, 
         }
     }
     let mut rules: Vec<wire::PermissionRule> = Vec::new();
+    let saved: Vec<wire::PermissionRule> = saved
+        .iter()
+        .map(|rule| rule_to_wire(&rule_from_wire(rule)))
+        .collect();
     for rule in &set.rules {
-        validate_rule(&rule_from_wire(rule))?;
         let rule = rule_to_wire(&rule_from_wire(rule));
+        if saved.contains(&rule) {
+            validate_rule_shape(&rule_from_wire(&rule))?;
+        } else {
+            validate_rule(&rule_from_wire(&rule))?;
+        }
         // A later rule for the same tool and pattern replaces an earlier one.
         rules.retain(|known| !(known.tool == rule.tool && known.pattern == rule.pattern));
         rules.push(rule);
@@ -295,7 +309,8 @@ pub(crate) fn set(
     state: &DaemonState,
     params: wire::PermissionSet,
 ) -> Result<wire::PermissionsResult, ErrorObject> {
-    let set = checked(&params).map_err(invalid)?;
+    let current: Vec<wire::PermissionRule> = saved(state)?.rules.iter().map(rule_to_wire).collect();
+    let set = checked(&params, &current).map_err(invalid)?;
     let settings = PermissionSettings {
         grants: set.grants.iter().map(grant_from_wire).collect(),
         rules: set.rules.iter().map(rule_from_wire).collect(),
@@ -597,6 +612,49 @@ impl Drop for TurnCap {
     }
 }
 
+/// The one-time notice naming saved allow rules that would let a command run any code (an
+/// interpreter, a shell, a runner or a wrapper: [`over_broad_rule`]), each with the file it is
+/// saved in, or none when there are none. Such rules are not applied (the calls they would
+/// allow ask instead) and not removed or changed: `global` comes from the user configuration
+/// (`global_file`), `environments` from `environments_file`. Each is also logged as a warning.
+pub(crate) fn over_broad_rules_notice(
+    global: &[PermissionRule],
+    global_file: &Path,
+    environments: &[imperium_protocol::methods::EnvironmentInfo],
+    environments_file: &Path,
+) -> Option<String> {
+    let mut found = Vec::new();
+    let mut check = |rule: &PermissionRule, place: String| {
+        if let Some(why) = over_broad_rule(rule) {
+            tracing::warn!(
+                rule = %format!("{} {}", rule.tool, rule.pattern),
+                file = %place,
+                "a saved allow rule lets a command run any code ({why}); it is not applied"
+            );
+            found.push(format!("`{} {}` in {place}", rule.tool, rule.pattern));
+        }
+    };
+    for rule in global {
+        check(rule, global_file.display().to_string());
+    }
+    for env in environments {
+        for rule in &env.permissions.rules {
+            check(
+                &rule_from_wire(rule),
+                format!("{} (environment {})", environments_file.display(), env.name),
+            );
+        }
+    }
+    if found.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{RULES_NOT_APPLIED}, so the calls they would allow ask instead. Nothing was removed \
+         from your settings; review them in Settings → Permissions: {}",
+        found.join("; ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use imperium_api::PermissionMode;
@@ -689,7 +747,7 @@ mod tests {
                 rule(" cargo test ", wire::RuleAction::Deny),
             ],
         };
-        let clean = checked(&set).unwrap();
+        let clean = checked(&set, &[]).unwrap();
         assert_eq!(clean.grants.len(), 1);
         assert_eq!(clean.grants[0].path, "~/.cargo");
         assert_eq!(
@@ -703,7 +761,28 @@ mod tests {
             }],
             rules: Vec::new(),
         };
-        assert!(checked(&bad).is_err());
+        assert!(checked(&bad, &[]).is_err());
+
+        // A new allow rule that would run any code is refused with the reason; one already
+        // saved is kept, so the rest of the set can still change.
+        let broad = wire::PermissionSet {
+            grants: Vec::new(),
+            rules: vec![
+                rule("python", wire::RuleAction::Allow),
+                rule("git status", wire::RuleAction::Allow),
+            ],
+        };
+        let error = checked(&broad, &[]).unwrap_err();
+        assert!(error.contains("run_command python"), "{error}");
+        let every = wire::PermissionSet {
+            grants: Vec::new(),
+            rules: vec![rule("", wire::RuleAction::Allow)],
+        };
+        assert!(checked(&every, &[]).is_err());
+        let kept = checked(&broad, &[rule(" python ", wire::RuleAction::Allow)]).unwrap();
+        assert_eq!(kept.rules.len(), 2);
+        // Saved as a deny, it is new as an allow.
+        assert!(checked(&broad, &[rule("python", wire::RuleAction::Deny)]).is_err());
     }
 
     #[test]
@@ -824,6 +903,56 @@ mod tests {
         assert_eq!(
             session.evaluate("run_command", &target),
             Some(RuleAction::Deny)
+        );
+    }
+
+    #[test]
+    fn saved_rules_that_run_any_code_are_named_with_their_file() {
+        let rule = |tool: &str, pattern: &str, action: RuleAction| PermissionRule {
+            tool: tool.into(),
+            pattern: pattern.into(),
+            action,
+        };
+        let global = [
+            rule("run_command", "python", RuleAction::Allow),
+            rule("run_command", "cargo test", RuleAction::Allow),
+            rule("run_command", "bash", RuleAction::Deny),
+        ];
+        let env: imperium_protocol::methods::EnvironmentInfo =
+            serde_json::from_value(serde_json::json!({
+                "id": "e1",
+                "name": "Work",
+                "folders": [],
+                "permissions": {"rules": [
+                    {"tool": "run_command", "pattern": "sudo bash", "action": "allow"},
+                    {"tool": "run_command", "pattern": "git status", "action": "allow"},
+                ]},
+            }))
+            .unwrap();
+        let notice = super::over_broad_rules_notice(
+            &global,
+            Path::new("/cfg/config.toml"),
+            &[env],
+            Path::new("/data/environments.json"),
+        )
+        .expect("a notice");
+        assert!(notice.starts_with(RULES_NOT_APPLIED), "{notice}");
+        assert!(notice.contains("ask instead"), "{notice}");
+        assert!(notice.contains("`run_command python` in "), "{notice}");
+        assert!(notice.contains("config.toml"), "{notice}");
+        assert!(notice.contains("`run_command sudo bash` in "), "{notice}");
+        assert!(
+            notice.contains("environments.json (environment Work)"),
+            "{notice}"
+        );
+        assert!(
+            !notice.contains("cargo test") && !notice.contains("git status"),
+            "{notice}"
+        );
+        // Nothing to say: no notice.
+        assert!(
+            super::over_broad_rules_notice(&global[1..], Path::new("c"), &[], Path::new("e"))
+                .is_none()
         );
     }
 }

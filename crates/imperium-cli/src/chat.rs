@@ -197,6 +197,9 @@ enum Asking {
     Permission {
         request_id: u64,
         summary: String,
+        /// Whether the request is for `run_command`, whose "always" covers that exact command
+        /// line only.
+        command: bool,
     },
     /// An `ask_user` batch, answered one question per line.
     Questions {
@@ -242,8 +245,15 @@ struct Chat {
 impl Chat {
     fn prompt(&self) {
         match self.asking.front() {
-            Some(Asking::Permission { summary, .. }) => {
-                print!("\nAllow: {summary}? [y]es / [a]lways this session / [n]o: ");
+            Some(Asking::Permission {
+                summary, command, ..
+            }) => {
+                let always = if *command {
+                    "[a]lways this exact command this session"
+                } else {
+                    "[a]lways this session"
+                };
+                print!("\nAllow: {summary}? [y]es / {always} / [n]o: ");
             }
             Some(Asking::Questions {
                 tag,
@@ -820,11 +830,13 @@ impl Chat {
             SessionEvent::PermissionRequested {
                 request_id,
                 summary,
+                tool,
                 ..
             } => {
                 self.asking.push_back(Asking::Permission {
                     request_id,
                     summary: format!("{tag}{summary}"),
+                    command: tool == "run_command",
                 });
                 if self.asking.len() == 1 {
                     self.prompt();
@@ -938,6 +950,12 @@ impl Chat {
             }
             SessionEvent::TurnCompleted { .. } => {}
             SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
+            // Saved allow rules that are not applied are a warning: standard error says so too.
+            SessionEvent::Notice { message }
+                if message.starts_with(imperium_policy::permissions::RULES_NOT_APPLIED) =>
+            {
+                eprintln!("warning: {message}");
+            }
             SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
             SessionEvent::MemoryUsed { names } => {
                 println!("\n{tag}· recalled {}", names.join(", "));

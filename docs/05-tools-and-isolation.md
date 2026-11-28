@@ -792,12 +792,61 @@ allow rule skips the approval but not the required-context check of
 [workflow enforcement](18-workflow-contract.md).
 *Always this session* allows a tool for the session where its default would ask, but an ask
 rule asks every time, whatever the session allowed (an allow rule is how to stop the asking).
+For `run_command` (and a provider tool that runs a command, judged as `run_command`) it allows
+**that exact command line only** (trimmed), never the whole tool: after allowing `cargo test`,
+`cargo test -p x` or `python -c ...` still asks. The app labels it *Always this command, this
+session* and `imperium chat` *[a]lways this exact command this session*. A tool-wide
+`run_command` session allowance (as an older daemon kept) is ignored, with a warning logged once
+per session; a tool an unattended session was started with pre-approved is not a session
+allowance and still runs as described under [permission modes](#permission-modes-implemented).
 Rules apply to running sessions from their next call.
 
 Approval requests carry a `suggested_rule` (`permission_requested`): the command and its
 subcommand for a simple command line (none for a line of several commands, substitution, or
 redirection), `<folder>/**` for a file tool, the whole tool otherwise. The app's **Always allow**
 adds it to the session's environment with `permissions.add_rule` and allows the request.
+**No rule is suggested for a command that would run any code**
+(`imperium_policy::permissions::over_broad_command`): one whose program word hides its name
+(anything but letters, digits and `._+:/-`, plus `\` on Windows, and one pair of quotes around
+the whole word: `$SHELL -c`, `py''thon`, `p\ython`, `py^thon`, `pyth[o]n3`), or whose first
+word is
+
+- an interpreter or a shell: `python`, `python3`, `python2`, `pythonw` and versioned Pythons
+  such as `python3.12`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `lua` (and
+  `luajit`, `lua5.4`), `bash`, `sh`, `zsh`, `fish`, `dash`, `ksh`, `pwsh`, `powershell`, `cmd`,
+  `java`, `dotnet`, `osascript`, `wscript`, `cscript`, `mshta`, and the package runners `npx`,
+  `pnpx`, `bunx`, `uvx`, `pipx`;
+- a runner alone or with its running subcommand: `uv run`, `uv tool` (`uv tool run`),
+  `cargo run`, `go run`, `docker`, `podman` and `nerdctl` with `exec`, `run`, `compose` or
+  `container` (`docker compose exec`, `docker container run`), `kubectl exec`/`run`,
+  `direnv exec`, `devbox run`, `mise exec`/`x`, `npm exec`/`x`, `pnpm dlx`/`exec`,
+  `yarn dlx`/`exec`, `bun x` (the program alone, as in `docker` from `docker --version`, would
+  cover them, and a suggested rule stops at the second word, so a grouping subcommand such as
+  `compose` is flagged itself);
+- a wrapper that runs whatever follows it: `env`, `sudo`, `doas`, `nohup`, `timeout`, `nice`,
+  `ionice`, `xargs`, `time`, `command`, `exec`, `stdbuf`, `setsid`, `runas`, `watch`, `wsl`, so
+  `env python`, `sudo bash` and `timeout 5 sh` get none either.
+
+Such a call is approved once, or for that exact command for the session.
+
+**An allow rule that would let a command run any code is not applied, and a new one is
+refused** (`over_broad_rule`): an allow rule for `run_command` (or a wildcard tool such as `*`
+covering it) whose pattern is flagged as above, or that has no pattern (`""`, `*`, `**`: every
+command). A command such a rule would have allowed is judged as if the rule were not there, so
+it asks: a saved `run_command python` no longer allows `python -c ...`, and an allow rule for
+every command no longer lets commands run unasked (the `full` mode is how to do that). A
+wildcard rule still applies to the other tools, and deny and ask rules naming those programs, or
+without a pattern, apply as always. `validate_rule` refuses a new rule of that kind with the
+reason, for `permissions.set`, `permissions.add_rule`, `environments.create` and
+`environments.update`, and so in Settings → Permissions and the environment editor; a rule
+already saved in the set being replaced is only checked for shape, so the rest of the set can
+still change. Rules already saved (in the user configuration's `[permissions]` or an
+environment's rules in `environments.json`) are not deleted or changed: at start the daemon logs
+a warning for each, and the first session someone watches (not a background, pre-approved or
+evaluation one) shows a one-time notice, beginning "Saved allow rules that would let a command
+run any code are not applied", that names each rule and the file it is in, so the user can
+review it in Settings → Permissions. `imperium chat` writes that notice to standard error as a
+`warning:` line. A later stage migrates them.
 
 Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
 their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,

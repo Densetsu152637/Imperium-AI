@@ -6,8 +6,8 @@ folded in, adding the [opt-in settings](#opt-in-settings) and D10; revision 2 fo
 round 1: findings F1 to F10, adding
 [stage 0](#stage-0-hotfix-on-the-current-engine), the [headless rule](#headless-runs) and the
 [deliberate differences](#deliberate-differences); revision 1 was the first draft). Written
-against `experimental` at `0d444fe9`. Status: planned; stage 0 is being implemented
-separately.
+against `experimental` at `0d444fe9`. Status: planned; stage 0 is implemented in #356
+(implemented once it merges).
 
 The user asked for two things: "Refactor the permission mechanisms to mirror exactly claudes",
 and a fix for auto mode, which "does not do a good job at knowing what to approve and what to
@@ -593,32 +593,46 @@ Three further rules sit outside the per-call order:
 ## Stage 0: hotfix on the current engine
 
 - Objective: close E3 and E4 now, on today's rules engine, before any redesign lands.
-  "Always this session" is no longer offered for, and no longer stored or honoured for,
-  `run_command` (an `allow_for_session` answer to a command is treated as a single allow).
-  `suggest` returns no rule whose prefix is an interpreter, a shell, a wrapper or an
-  environment runner: `python`, `python3`, `py`, `bash`, `sh`, `zsh`, `fish`, `pwsh`,
-  `powershell`, `cmd`, `node`, `deno`, `bun`, `perl`, `ruby`, `php`, `lua`, `env`, `xargs`,
-  `npx`, `pnpx`, `bunx`, `uvx`, `uv run`, `pipx run`, `timeout`, `time`, `nice`, `nohup`,
-  `stdbuf`, `watch`, `sudo`, `doas`, `docker exec`, `docker run`, `direnv exec`, `devbox run`,
-  `mise exec` and the like (the implementation's constant is the authority; this list follows
-  it). For those calls the prompt offers no saved rule.
+  "Always this session" on `run_command` allows **that exact command line only** (trimmed),
+  never the whole tool: the session allowance is keyed `run_command <line>`
+  (`session_allowance`), a tool-wide `run_command` entry is ignored with a warning logged once,
+  and the prompt says so (*Always this command, this session* in the app, *[a]lways this exact
+  command this session* in `imperium chat`). `suggest` returns no rule for a command whose
+  program word hides its name (`$SHELL`, `py''thon`, `p\ython`, `py^thon`, `pyth[o]n3`) or
+  whose prefix is an interpreter, a shell, a wrapper or a runner: `python` (and versioned),
+  `py`, `bash`, `sh`, `zsh`, `fish`, `pwsh`, `powershell`, `cmd`, `node`, `deno`, `bun`,
+  `perl`, `ruby`, `php`, `lua`, `env`, `xargs`, `npx`, `pnpx`, `bunx`, `uvx`, `pipx`, `uv run`,
+  `cargo run`, `go run`, `timeout`, `time`, `nice`, `nohup`, `stdbuf`, `watch`, `wsl`, `sudo`,
+  `doas`, `uv tool`, `docker`/`podman`/`nerdctl` `exec`/`run`/`compose`/`container`,
+  `kubectl exec`/`run`, `direnv exec`, `devbox run`,
+  `mise exec`/`x`, `npm exec`/`x`, `pnpm dlx`/`exec`, `yarn dlx`/`exec`, `bun x` and the like
+  (the implementation's constants are the authority; this list follows them). For those
+  calls the prompt offers no saved rule.
 - Depends on: none.
-- Owned paths: `crates/imperium-policy/src/permissions.rs` (`suggest`),
-  `crates/imperium-engine/src/agent/tools.rs` (`approve_full`), `apps/desktop/src/panels/SessionPanel.tsx`
-  (hide "Always this session" for `run_command`), `docs/05-tools-and-isolation.md`.
+- Owned paths: `crates/imperium-policy/src/permissions.rs` (`suggest`, `over_broad_rule`,
+  `session_allowance`, `validate_rule`), `crates/imperium-engine/src/agent/tools.rs`
+  (`approve_full`), `crates/imperium-engine/src/session.rs`, `crates/imperium-core/src/permissions.rs`,
+  `apps/desktop/src/panels/SessionPanel.tsx`, `crates/imperium-cli/src/chat.rs`,
+  `docs/05-tools-and-isolation.md`.
 - Tests: `suggest` returns `None` for each listed prefix, also with a path (`/usr/bin/python3`),
-  an extension (`PYTHON.EXE`) and a leading assignment; `cargo test` still suggests
-  `cargo test`; an `allow_for_session` answer to `run_command` does not add it to
-  `allowed_tools`, so the next command asks; other tools' session allowances are unchanged.
+  an extension (`PYTHON.EXE`), a leading assignment, a wrapper and a hidden name; `cargo test`
+  still suggests `cargo test`; "always this session" on one command leaves another asking and
+  the same command unasked; a stored tool-wide `run_command` allowance is ignored; other
+  tools' session allowances are unchanged.
 - Acceptance checks: CI green; no protocol change.
-- Status: in progress (implementation dispatched separately, 2026-11-29)
-- Outcome:
-- Saved rules: interpreter, shell, wrapper and runner **allow rules users already saved** (for
-  example `run_command python`) are not applied from stage 0 on: a call they would have
-  allowed asks instead, and a one-time notice lists each such rule and where it is saved. The
-  rules stay in the file untouched; [stage 2](#stage-2-configuration-shape-and-migration-report)
+- Status: implemented once #356 merges.
+- Outcome: as built, the session allowance for commands is the exact command line rather than
+  removed. Over-broad allow rules (the list above, hidden names, and patternless allows on
+  `run_command` or a wildcard tool covering it, consistent with F5) are not applied, so their
+  calls ask; `validate_rule` refuses a new one in `permissions.set`, `permissions.add_rule`
+  and the environment RPCs, while rules already saved in a set being replaced are kept.
+- Saved rules: interpreter, shell, wrapper, runner and patternless **allow rules users already
+  saved** (for example `run_command python`) are not applied from stage 0 on: a call they
+  would have allowed asks instead, and a one-time notice (the first attended session; a
+  `warning:` line on stderr in `imperium chat`) lists each such rule and where it is saved.
+  The rules stay in the file untouched; [stage 2](#stage-2-configuration-shape-and-migration-report)
   later converts them to "needs review, not applied". Tests: a saved `run_command python`
-  allow makes `python x.py` ask, and the notice names it once.
+  allow makes `python -c ...` ask, and the notice names it.
 - Handoff notes: stage 4 later narrows session allowances further (F7) and replaces
   `suggest`; stage 0's prefix list carries into stages 2 (migration) and 4 (prompts) unchanged.
 
@@ -702,8 +716,8 @@ Three further rules sit outside the per-call order:
   `apps/desktop/src/App.tsx`, `apps/desktop/src/sessions/`, `crates/imperium-cli/` (chat prompt),
   `docs/05-tools-and-isolation.md`, `docs/07-desktop-ui.md`.
 - Tests: per-subcommand rules (at most five); no saved rule for interpreters, shells, wrappers
-  or runners (E3, kept from stage 0); no session allowance for `run_command` (E4, kept from
-  stage 0), MCP tools or `open_pull_request`; no session allowance and no saved "don't ask
+  or runners (E3, kept from stage 0); no session allowance for `run_command` (E4: stage 0
+  narrowed it to the exact command line), MCP tools or `open_pull_request`; no session allowance and no saved "don't ask
   again" rule for any `browser_*` tool (navigate, click, type, `form_input`, batch, read), whose
   prompt defers to the browser plan's `SiteGrants` (a site the user granted there runs
   unasked, any other site asks, and nothing is written to the environment's rules); edit
