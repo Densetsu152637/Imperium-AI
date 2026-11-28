@@ -191,6 +191,9 @@ pub(crate) async fn run_connection(
 ) {
     let (notify, mut notifications) = mpsc::unbounded_channel::<Notification>();
     let (reply, mut replies) = mpsc::unbounded_channel::<Response>();
+    // Output of the terminals this connection is attached to: written to it alone, past the
+    // topic filter (it chose those terminals by attaching).
+    let mut terminal_frames = connection.terminal_frames();
     loop {
         let outgoing = tokio::select! {
             incoming = socket.recv() => {
@@ -225,6 +228,9 @@ pub(crate) async fn run_connection(
                 }
             }
             Some(response) = replies.recv() => serde_json::to_string(&response),
+            Some(notification) = next_terminal_frame(&mut terminal_frames) => {
+                serde_json::to_string(&notification)
+            }
             Some(notification) = notifications.recv() => {
                 // The connection's topic choice covers session events too.
                 if !connection.receives(&notification) {
@@ -244,6 +250,14 @@ pub(crate) async fn run_connection(
         if socket.send(Message::Text(text.into())).await.is_err() {
             break;
         }
+    }
+}
+
+/// The next terminal notification for the connection; never, when it has no channel.
+async fn next_terminal_frame(frames: &mut Option<crate::TerminalFrames>) -> Option<Notification> {
+    match frames {
+        Some(frames) => frames.recv().await,
+        None => std::future::pending().await,
     }
 }
 

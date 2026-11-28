@@ -10,6 +10,10 @@ description = "Same-user local sockets for the Imperium daemon: a Unix domain so
 [dependencies]
 tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
 
+[target.'cfg(unix)'.dependencies]
+# Marking inherited descriptors close-on-exec in a child (`inherited_fds.rs`).
+libc = "0.2.191"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # The presence check of plugin approvals (`macos_presence.rs`): LocalAuthentication.
 block2 = "0.6.2"

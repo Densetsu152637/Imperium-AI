@@ -6,7 +6,7 @@
 //! after an hour with nothing attached, and when the daemon stops; it is **not** daemon work, so
 //! it keeps no idle daemon alive. The shell runs outside every isolation tier and permission
 //! rule (it is the user's), so no agent, tool, hook or mod reaches this module: only the
-//! protocol's desktop-only `terminal.*` methods will (stage 2b).
+//! protocol's desktop-only `terminal.*` methods do (stage 2b, `rpc/terminal.rs`).
 //!
 //! Terminal bytes go nowhere but the terminal's ring and its subscribers: nothing here logs
 //! them, only ids, sizes and exit codes.
@@ -53,6 +53,8 @@ pub enum TerminalError {
     DaemonLimit,
     #[error("no terminal {0}")]
     NotFound(String),
+    #[error("the daemon is stopping")]
+    Stopping,
     #[error(transparent)]
     Shell(#[from] ShellError),
     #[error(transparent)]
@@ -183,6 +185,8 @@ pub struct TerminalService {
     /// Opens one at a time, so two at once cannot both pass the limits.
     opening: tokio::sync::Mutex<()>,
     next: std::sync::atomic::AtomicU64,
+    /// Set by [`DaemonState::stop_terminals`]: nothing opens after it.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 impl TerminalService {
@@ -190,6 +194,10 @@ impl TerminalService {
         self.terminals
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Terminal>> {
@@ -253,6 +261,9 @@ impl DaemonState {
         }
         let terminals = self.terminals();
         let _opening = terminals.opening.lock().await;
+        if terminals.closing() {
+            return Err(TerminalError::Stopping);
+        }
         let session = match self.session(session_id) {
             Some(session) => session,
             None if self.is_archived(session_id) => {
@@ -320,14 +331,29 @@ impl DaemonState {
             }),
             pty,
         });
-        // The session may have been archived or deleted while the shell started.
-        if self.session(session_id).is_none() {
-            end_in_background(vec![terminal]);
-            return Err(TerminalError::NoSession(session_id.to_owned()));
-        }
         let info = terminal.info();
+        // Inserted first, then checked: archive and delete take the session out of the map
+        // before they end its terminals, and shutdown sets `closing` before it takes them all,
+        // so a session archived (or a daemon stopping) while the shell started either finds this
+        // terminal in the map and ends it, or is seen here and the terminal ends itself.
+        terminals
+            .map()
+            .insert(info.terminal_id.clone(), Arc::clone(&terminal));
+        let refused = if terminals.closing() {
+            Some(TerminalError::Stopping)
+        } else if self.session(session_id).is_none() {
+            Some(TerminalError::NoSession(session_id.to_owned()))
+        } else {
+            None
+        };
+        if let Some(error) = refused {
+            // Whoever took it out of the map first ends it; here only if nobody did.
+            if terminals.map().remove(&info.terminal_id).is_some() {
+                end_in_background(vec![terminal]);
+            }
+            return Err(error);
+        }
         tracing::info!(terminal = %info.terminal_id, session = %session_id, cols, rows, "opened a terminal");
-        terminals.map().insert(info.terminal_id.clone(), terminal);
         Ok(info)
     }
 
@@ -406,6 +432,10 @@ impl DaemonState {
 
     /// Ends every terminal and waits up to `timeout` for their processes to end (shutdown).
     pub async fn stop_terminals(&self, timeout: Duration) {
+        // Before taking them: an open still starting its shell sees it and ends that shell.
+        self.terminals()
+            .closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let all = self.terminals().take(|_| false);
         if all.is_empty() {
             return;

@@ -170,7 +170,10 @@ impl Runner for ProcessRunner {
         timeout: Duration,
     ) -> RunFuture<'a> {
         Box::pin(async move {
-            let mut child = Command::new(&spec.program)
+            let mut command = Command::new(&spec.program);
+            // A remote runtime's client (`docker exec`, `ssh`) inherits nothing beyond stdio.
+            imperium_ipc::close_inherited_on_exec(command.as_std_mut());
+            let mut child = command
                 .args(&spec.args)
                 .stdin(if stdin.is_some() {
                     Stdio::piped()

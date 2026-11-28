@@ -23,12 +23,16 @@ pub fn shell(command: &str) -> Command {
     {
         let mut process = Command::new("cmd");
         process.arg("/C").raw_arg(command).env(SPAWNED_MARK, "1");
+        imperium_ipc::close_inherited_on_exec(process.as_std_mut());
         process
     }
     #[cfg(not(windows))]
     {
         let mut process = Command::new("sh");
         process.arg("-c").arg(command).env(SPAWNED_MARK, "1");
+        // Only 0, 1 and 2 reach the command: not a descriptor another thread has not yet
+        // marked close-on-exec, such as a terminal pane's pseudo terminal while it opens.
+        imperium_ipc::close_inherited_on_exec(process.as_std_mut());
         process
     }
 }

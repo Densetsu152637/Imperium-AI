@@ -1098,6 +1098,72 @@ change anything are that mutation and `disablePullRequestAutoMerge`.
   repository allows it. Both are read from the user's own config only (a project's `.imperium`
   files are never merged as settings) and neither turns anything on.
 
+### The user's terminals (implemented)
+
+The desktop app's terminal panes ([plan](plans/terminal-file-panes.md)) run the user's own shell
+in a session's working folder. That shell is the user's, not an agent's: it runs **outside every
+isolation tier and permission rule**, keeps `GH_TOKEN` and the like, and has no resource caps. So
+no agent reaches it: no tool, hook, MCP bridge method, mod or export touches a terminal, and the
+daemon answers `terminal.*` only to the installed desktop app on the local socket, run by a
+person (`app_identity::InstalledApp` and `peer::may_grant`; see
+[02](02-architecture.md#protocol)). A command an agent runs at any tier holds the daemon's
+token, but fails that gate: it is not the app, and it carries the spawn mark.
+
+What the shell inherits from the daemon is cleaned (decision D6 of the plan): the start-up and
+loader variables (`ENV`, `BASH_ENV`, `ZDOTDIR`, `PROMPT_COMMAND`, `NODE_OPTIONS`,
+`PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `LD_*`, `DYLD_*`, `GIT_CONFIG*`)
+and the daemon's own `IMPERIUM_*` are dropped, `PATH` keeps only its absolute entries, and on
+Windows `NoDefaultCurrentDirectoryInExePath=1` keeps `cmd` from running a program of that name
+from the repository. The list is **not exhaustive**: it guards against what the daemon itself
+inherited, and the user's own start-up files (direnv, prompt hooks) do in a repository what they
+do in any terminal opened there.
+
+**Residual risks at tier 0.** A command at isolation tier 0 runs as the user with the user's
+full rights, so the gate is not a boundary against it, and neither are resource caps (a tier-0
+command can start whatever it likes outside them). What it can still do:
+
+- open the terminal's device itself (`/dev/pts/<n>` on Linux, `/dev/ttys<n>` on macOS,
+  `AttachConsole` and `WriteConsoleInput` on Windows), read what is typed and write to it;
+- on Linux, pass the app check by running the desktop app's own executable: it opens
+  `/proc/<pid>/exe` of the running app (or the installed file) lazily, forks, calls `setsid`
+  to leave the daemon's session, clears the spawn mark and `exec`s the app with arguments or an
+  environment of its choosing, and the peer the daemon sees is then the installed app outside
+  the daemon's tree;
+- on Windows, `DuplicateHandle` the desktop app's own connection (the named pipe the app
+  holds) out of the app's process, which runs as the same user, and speak on it;
+- with a per-user install (the AppImage or a folder in the user's home, a per-user Windows
+  install), replace the app's binary, which the identity check then accepts.
+
+These are why the plan narrows its goals at tier 0 to the plain case: an agent's shell or an
+`imperium` command reaching for a terminal is refused; a command set on evading the check is
+not stopped. The OS sandbox tier keeps a command from the terminal devices (tested, below);
+how far it and the container tier stop the other three is not claimed here.
+
+What a connection can make the daemon hold is bounded: there are at most sixteen terminals
+(four per session), each with a 1 MiB ring, and for each terminal it is attached to a connection
+has at most 1 MiB of output queued (what its transport has not taken yet, plus what waits to be
+sent) before it is told it lagged and nothing more is queued for it, so at most 16 × 1 MiB per
+connection.
+
+Every command the daemon starts for an agent (every tier's `run_command` and background
+commands, hooks, scheduled commands, MCP servers and remote-runtime clients) inherits no
+descriptor beyond stdin, stdout and stderr: between `fork` and `exec` everything from 3 up is
+made close-on-exec (`close_range` with `CLOSE_RANGE_CLOEXEC` on Linux, a loop up to the
+descriptor limit elsewhere; `imperium_ipc::close_inherited_on_exec`). `portable-pty` marks a new
+pseudo terminal close-on-exec only after `openpty` returns, so without this a command forked in
+that moment would hold the user's terminal (a test runs a storm of commands while terminals open
+and close and checks none holds one). Opening the pseudo terminal with close-on-exec in one step
+would need replacing `portable-pty`'s spawn; it is not done.
+
+The OS sandbox tier hides the device: bubblewrap mounts a fresh `/dev` (`--dev /dev`, with a
+devpts of its own), so the host's `/dev/pts/<n>` is not there, and the
+Seatbelt profile refuses reading, writing and `ioctl` on every `/dev/tty...` but `/dev/tty`
+itself (the command's own controlling terminal), every `/dev/pty...` and `/dev/ptmx`, after every
+allow (`/dev/null`, `/dev/zero` and `/dev/urandom` stay). A test opens a terminal, runs a
+command at that tier (bubblewrap on Linux, Seatbelt on macOS) that tries to open the terminal's
+device for reading and for writing, and fails if either succeeds, while the same command outside
+the sandbox opens it.
+
 ## Isolation tiers
 
 The UI always shows the active tier for each session and agent.

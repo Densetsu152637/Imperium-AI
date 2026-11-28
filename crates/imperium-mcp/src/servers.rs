@@ -432,6 +432,9 @@ async fn start(spec: ServerSpec, auth: Option<Arc<dyn TokenSource>>) -> Result<S
                 ));
             }
             let mut process = Command::new(command);
+            // A server inherits nothing beyond stdio (not a terminal pane's pseudo terminal
+            // that another thread has not yet marked close-on-exec).
+            imperium_ipc::close_inherited_on_exec(process.as_std_mut());
             if env.iter().any(|(key, _)| key == CLEAN_ENV) {
                 process.env_clear().envs(plugin_child_env());
             }

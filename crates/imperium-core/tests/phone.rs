@@ -223,15 +223,15 @@ async fn a_paired_phone_cannot_open_or_type_into_a_terminal() {
     )
     .await;
     assert!(next(&mut phone, Some(1), None).await["result"].is_object());
-    let calls = [
-        "terminal.open",
-        "terminal.create",
-        "terminal.list",
-        "terminal.attach",
-        "terminal.input",
-        "terminal.resize",
-        "terminal.close",
-    ];
+    // Every terminal method the protocol defines (the table the router is checked against), and
+    // a name it does not.
+    let mut calls: Vec<&str> = include_str!("../../imperium-protocol/snapshots/methods.txt")
+        .lines()
+        .filter_map(|line| line.strip_prefix("method "))
+        .filter(|name| name.contains("terminal"))
+        .collect();
+    assert!(calls.len() >= 7, "{calls:?}");
+    calls.push("terminal.create");
     for (id, method) in (2..).zip(calls) {
         send(
             &mut phone,

@@ -141,7 +141,11 @@ mod policy;
 mod pull_requests;
 mod sessions;
 mod system;
+mod terminal;
 use errors::*;
+#[cfg(feature = "testing")]
+pub use terminal::testing as terminal_gate_testing;
+pub use terminal::{TerminalCaller, TerminalFrames, TerminalGate};
 
 /// A session's events, to be forwarded to this connection as notifications.
 #[derive(Debug)]
@@ -243,6 +247,8 @@ pub struct Connection {
     pr_watch: Option<crate::pr_monitor::Watch>,
     /// Held from `system.lease` until the connection ends.
     lease: Option<crate::lifetime::LeaseGuard>,
+    /// The desktop-only gate's verdict and the terminals this connection is attached to.
+    terminal: terminal::TerminalLink,
 }
 
 impl Connection {
@@ -268,6 +274,7 @@ impl Connection {
             events: crate::events::EventFilter::default(),
             pr_watch: None,
             lease: None,
+            terminal: terminal::TerminalLink::new(),
         }
     }
 
@@ -300,6 +307,22 @@ impl Connection {
         self
     }
 
+    /// This connection, with `gate` deciding whether it may use terminals instead of the
+    /// desktop-app check. For tests; there is no such switch in a release build.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn with_terminal_gate(mut self, gate: Arc<dyn TerminalGate>) -> Self {
+        self.terminal.gate = gate;
+        self
+    }
+
+    /// The `terminal.output` and `terminal.changed` notifications of the terminals this
+    /// connection is attached to, for the transport to write to this connection alone (never
+    /// through the broadcast path or its topic filter). Taken once; `None` afterwards.
+    pub fn terminal_frames(&mut self) -> Option<TerminalFrames> {
+        self.terminal.take_frames()
+    }
+
     /// A connection limited to `allowed` methods (a paired phone's scopes).
     pub fn restricted(state: Arc<DaemonState>, allowed: Vec<&'static str>) -> Self {
         Connection {
@@ -318,6 +341,7 @@ impl Connection {
             events: crate::events::EventFilter::default(),
             pr_watch: None,
             lease: None,
+            terminal: terminal::TerminalLink::new(),
         }
     }
 
@@ -445,6 +469,10 @@ impl Connection {
 
     /// Hands the request to the group that knows its method.
     fn dispatch(&mut self, mut c: Dispatch<'_>) -> Result<Value, ErrorObject> {
+        // First: every method naming terminals is gated before its params are read.
+        if let Some(outcome) = self.dispatch_terminal(&mut c) {
+            return outcome;
+        }
         if let Some(outcome) = self.dispatch_system(&mut c) {
             return outcome;
         }
@@ -500,9 +528,11 @@ impl Connection {
 
 impl Drop for Connection {
     /// The evaluation sessions this connection made go with it, so a client that vanishes
-    /// leaves no session running (or the model's key held).
+    /// leaves no session running (or the model's key held); and it is detached from every
+    /// terminal, so a terminal nothing else watches ends after the hour unattached.
     fn drop(&mut self) {
         self.eval_sessions.close(&self.state);
+        self.terminal.close(&self.state);
     }
 }
 
@@ -792,6 +822,8 @@ mod tests {
             .collect();
         assert!(methods.len() > 100, "{} methods", methods.len());
         let mut connection = handshaken();
+        // Terminals are gated before their params are read; here the gate lets the call through.
+        connection.terminal.gate = Arc::new(terminal::AdmitAll);
         for name in methods {
             let handled = connection.handle_text(&request(2, name, json!(1)));
             let response = handled.response.as_ref().expect("an immediate reply");

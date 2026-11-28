@@ -9,6 +9,7 @@
 
 #![warn(unreachable_pub)]
 
+mod inherited_fds;
 mod loader_env;
 #[cfg(target_os = "macos")]
 mod macos_presence;
@@ -20,6 +21,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub use inherited_fds::close_inherited_on_exec;
 pub use loader_env::refused_variable;
 #[cfg(target_os = "macos")]
 pub use macos_presence::device_owner_check;

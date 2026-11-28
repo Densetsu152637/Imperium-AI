@@ -9,6 +9,8 @@ description = "Built-in agent tools (files, commands) confined to a workspace"
 
 [dependencies]
 imperium-api = { version = "0.2.0", path = "../imperium-api" }
+# Children inherit no descriptor beyond stdio (`close_inherited_on_exec`).
+imperium-ipc = { version = "0.2.0", path = "../imperium-ipc" }
 imperium-policy = { version = "0.2.0", path = "../imperium-policy" }
 # Walks folders for glob and grep the way ripgrep does, honouring .gitignore and .ignore files.
 ignore = "0.4.23"

@@ -1,18 +1,22 @@
-//! Stage 2a of `docs/plans/terminal-file-panes.md`: the daemon's terminal service, called in
-//! process.
+//! Stages 2a and 2b of `docs/plans/terminal-file-panes.md`: the daemon's terminal service, called
+//! in process, and `terminal.*` over the protocol behind the desktop-only gate ([`protocol`]).
 //!
 //! This test binary has no libtest harness (`harness = false`): its `main` first runs
 //! [`imperium_core::run_pty_supervisor_if_asked`], as the daemon's own `main` does, so on Linux a
 //! terminal opened with the production spec re-runs **this executable** through
 //! `/proc/self/exe pty-supervisor` and the supervisor really runs (review N7). One test also
 //! starts the real `imperium-core` executable as the supervisor, so its `main` dispatch runs too.
-//! Every wait is bounded.
+//! Every wait is bounded. The daemon's log is captured at TRACE for the whole run, so a test can
+//! check that no terminal byte reaches it.
+
+#[path = "terminal/protocol.rs"]
+mod protocol;
 
 use std::ffi::OsString;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use imperium_core::DaemonState;
@@ -27,7 +31,7 @@ const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 type Test = fn() -> Pin<Box<dyn Future<Output = ()>>>;
 
 macro_rules! tests {
-    ($($name:ident),* $(,)?) => {
+    ($($name:path),* $(,)?) => {
         &[$((
             stringify!($name),
             (|| -> Pin<Box<dyn Future<Output = ()>>> { Box::pin($name()) }) as Test,
@@ -35,9 +39,49 @@ macro_rules! tests {
     };
 }
 
+/// Everything the daemon logged in this run.
+static LOG: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+struct Capture;
+
+impl std::io::Write for Capture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        LOG.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The daemon's log so far, at every level.
+fn captured_log() -> String {
+    String::from_utf8_lossy(
+        &LOG.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned()
+}
+
 fn main() {
     imperium_core::run_pty_supervisor_if_asked();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(protocol::HELPER) {
+        protocol::run_helper(&args[1..]);
+        return;
+    }
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(|| Capture)
+        .init();
     let all: &[(&str, Test)] = tests![
+        // First: the OS sandbox refuses to start while a daemon folder registered by an earlier
+        // test's daemon (its home, deleted with it) is missing, and the list is process-wide.
+        protocol::a_command_at_the_os_sandbox_tier_cannot_open_the_terminal_device,
         a_terminal_starts_in_the_workspace_root_with_the_default_shell,
         the_daemon_executable_itself_runs_the_supervisor,
         the_fifth_in_a_session_and_the_seventeenth_in_the_daemon_are_refused,
@@ -49,13 +93,25 @@ fn main() {
         an_environment_file_cannot_choose_the_shell_or_turn_terminals_off,
         terminals_turned_off_are_refused,
         a_remote_runtime_session_and_an_archived_session_are_refused,
-        a_client_with_the_daemon_token_cannot_open_or_type_into_a_terminal,
+        protocol::a_client_with_the_daemon_token_cannot_open_or_type_into_a_terminal,
+        protocol::a_token_holder_claiming_a_desktop_lease_is_refused,
+        protocol::the_gate_runs_once_per_connection,
+        protocol::open_prints_the_workspace_root_and_a_resize_reaches_the_shell,
+        protocol::a_closed_connection_is_detached_and_the_hour_rule_applies,
+        protocol::the_sentinel_stays_in_the_terminal,
+        protocol::attach_with_since_replays_exactly_what_was_missed,
+        protocol::a_lagging_connection_is_told_and_reattaches,
+        protocol::opening_while_archiving_or_stopping_leaves_nothing,
+        protocol::a_real_child_with_the_spawn_mark_is_refused,
+        protocol::no_command_inherits_a_terminal_while_terminals_open,
+        protocol::a_token_holder_cannot_change_the_terminal_settings,
+        protocol::a_server_refuses_every_terminal,
         the_path_search_never_returns_the_working_folder_or_the_session_folders,
         unix_shell_choice,
         windows_shell_choice_ignores_comspec_and_path,
         the_environment_drops_start_up_and_loader_variables_and_keeps_the_mark,
+        the_shell_path_keeps_only_absolute_entries,
     ];
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--list") {
         for (name, _) in all {
             println!("{name}: test");
@@ -154,6 +210,11 @@ fn fixture(extra: &str) -> Fixture {
 }
 
 impl Fixture {
+    /// The daemon's home: its configuration and data folders.
+    fn home(&self) -> &Path {
+        self._home.path()
+    }
+
     fn session(&self) -> String {
         let (session, _) = self
             .state
@@ -574,93 +635,6 @@ fn evaluated(marker: &str) -> String {
     }
 }
 
-/// The methods a protocol caller would use to reach a terminal, with parameters that would be
-/// valid ones.
-fn terminal_calls(session: &str, terminal: &str) -> Vec<(&'static str, serde_json::Value)> {
-    use base64::Engine;
-    let data =
-        base64::engine::general_purpose::STANDARD.encode(format!("{}{NEWLINE}", typed("AGENT")));
-    vec![
-        (
-            "terminal.open",
-            serde_json::json!({"session_id": session, "cols": 80, "rows": 24}),
-        ),
-        (
-            "terminal.create",
-            serde_json::json!({"session_id": session, "cols": 80, "rows": 24}),
-        ),
-        ("terminal.list", serde_json::json!({"session_id": session})),
-        (
-            "terminal.attach",
-            serde_json::json!({"terminal_id": terminal}),
-        ),
-        (
-            "terminal.input",
-            serde_json::json!({"terminal_id": terminal, "data": data}),
-        ),
-        (
-            "terminal.resize",
-            serde_json::json!({"terminal_id": terminal, "cols": 10, "rows": 10}),
-        ),
-        (
-            "terminal.close",
-            serde_json::json!({"terminal_id": terminal}),
-        ),
-    ]
-}
-
-/// Whatever reads the daemon's endpoint file (an agent's command at tier 0, an MCP server, a
-/// hook, a plugin, an `imperium` command an agent runs) holds the token and gets this
-/// connection, over loopback TCP or the local socket. It opens no terminal and types into none:
-/// in stage 2a no protocol method reaches the service at all, and stage 2b's `terminal.*` must
-/// keep this test passing behind the desktop-only gate (D2).
-async fn a_client_with_the_daemon_token_cannot_open_or_type_into_a_terminal() {
-    let fixture = fixture(&known_shell());
-    let session = fixture.session();
-    let terminal = fixture.open(&session).await;
-    let mut connection = imperium_core::Connection::new(Arc::clone(&fixture.state));
-    let reply =
-        |connection: &mut imperium_core::Connection, method: &str, params: serde_json::Value| {
-            let frame =
-                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-            connection
-                .handle_text(&frame.to_string())
-                .response
-                .unwrap_or_else(|| panic!("no immediate reply to {method}"))
-                .outcome
-        };
-    let handshake = reply(
-        &mut connection,
-        "system.handshake",
-        serde_json::json!({"client": {"name": "agent", "version": "0"}, "protocol": {"major": 0, "minor": 2}}),
-    );
-    assert!(matches!(
-        handshake,
-        imperium_protocol::jsonrpc::Outcome::Result(_)
-    ));
-    for (method, params) in terminal_calls(&session, terminal.id()) {
-        let outcome = reply(&mut connection, method, params);
-        assert!(
-            matches!(outcome, imperium_protocol::jsonrpc::Outcome::Error(_)),
-            "{method} was answered: {outcome:?}"
-        );
-    }
-    // Only the terminal opened in process exists, at its size, and nothing was typed into it.
-    assert_eq!(fixture.state.terminals().ids(), [terminal.id()]);
-    assert_eq!((terminal.info().cols, terminal.info().rows), (80, 24));
-    // A positive control: input that does reach the shell is evaluated and shown.
-    terminal
-        .pty()
-        .write(format!("{}{NEWLINE}", typed("OWNER")).as_bytes())
-        .unwrap();
-    wait_for(&terminal, &evaluated("OWNER")).await;
-    assert!(
-        !output(&terminal).contains(&evaluated("AGENT")),
-        "a caller typed into the terminal"
-    );
-    fixture.state.stop_terminals(BOUND).await;
-}
-
 /// A runner for remote runtimes that runs nothing and says it worked.
 #[derive(Debug)]
 struct NoRemote;
@@ -833,6 +807,16 @@ async fn the_environment_drops_start_up_and_loader_variables_and_keeps_the_mark(
         "DYLD_INSERT_LIBRARIES",
         "IMPERIUM_SECRETS_PASSPHRASE_FILE",
         "IMPERIUM_DAEMON__PORT",
+        "PYTHONSTARTUP",
+        "PERL5OPT",
+        "RUBYOPT",
+        "JAVA_TOOL_OPTIONS",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_GLOBAL",
         "IMPERIUM_SPAWNED_BY_DAEMON",
         "TERM",
         "PWD",
@@ -863,8 +847,25 @@ async fn the_environment_drops_start_up_and_loader_variables_and_keeps_the_mark(
         "DYLD_INSERT_LIBRARIES",
         "IMPERIUM_SECRETS_PASSPHRASE_FILE",
         "IMPERIUM_DAEMON__PORT",
+        "PYTHONSTARTUP",
+        "PERL5OPT",
+        "RUBYOPT",
+        "JAVA_TOOL_OPTIONS",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_GLOBAL",
     ] {
         assert_eq!(value(gone), None, "{gone}");
+    }
+    // Windows: `cmd` and `CreateProcess` do not look in the working folder for a bare program.
+    let no_current = value("NoDefaultCurrentDirectoryInExePath");
+    if cfg!(windows) {
+        assert_eq!(no_current.as_deref(), Some("1"));
+    } else {
+        assert_eq!(no_current, None);
     }
     assert_eq!(value("IMPERIUM_SPAWNED_BY_DAEMON").as_deref(), Some("1"));
     assert_eq!(value("IMPERIUM_SESSION_ID").as_deref(), Some("session-7"));
@@ -880,4 +881,35 @@ async fn the_environment_drops_start_up_and_loader_variables_and_keeps_the_mark(
         value("IMPERIUM_HOME").as_deref(),
         Some("inherited-IMPERIUM_HOME")
     );
+}
+
+/// `PATH` keeps only its absolute entries: an empty or relative one is searched from the
+/// working folder, the repository.
+async fn the_shell_path_keeps_only_absolute_entries() {
+    let absolute: Vec<PathBuf> = if cfg!(windows) {
+        vec![
+            PathBuf::from(r"C:\Windows\System32"),
+            PathBuf::from(r"D:\tools"),
+        ]
+    } else {
+        vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/tools/bin")]
+    };
+    let mut entries = vec![PathBuf::from("."), PathBuf::new(), PathBuf::from("bin")];
+    entries.insert(1, absolute[0].clone());
+    entries.push(absolute[1].clone());
+    if cfg!(windows) {
+        // Drive-relative and rooted-without-a-drive entries depend on the working folder too.
+        entries.push(PathBuf::from(r"C:relative"));
+        entries.push(PathBuf::from(r"\rooted"));
+    }
+    let path = std::env::join_paths(&entries).unwrap();
+    // On Windows the name is `Path`, in any case.
+    let name = if cfg!(windows) { "Path" } else { "PATH" };
+    let env = shell_env([(OsString::from(name), path)], "s", Path::new("/w"));
+    let kept: Vec<_> = env
+        .iter()
+        .filter(|(key, _)| key == name)
+        .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
+        .collect();
+    assert_eq!(kept, [absolute]);
 }

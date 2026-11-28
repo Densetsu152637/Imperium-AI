@@ -268,12 +268,14 @@ impl DaemonState {
         meta["pull_request_url"] = summary.pull_request_url.clone().into();
         write_meta(&path, &meta.to_string())?;
         session.stop_processes();
-        self.end_session_terminals(id);
         // Dropping the daemon's handle stops the session once its current step ends.
         self.sessions
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .remove(id);
+        // After the session left the map: a terminal still starting then sees it gone (see
+        // `open_terminal`).
+        self.end_session_terminals(id);
         self.forget_browser(id);
         self.pr_monitor().forget(self, id);
         self.placements
