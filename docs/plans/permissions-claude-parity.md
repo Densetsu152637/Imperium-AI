@@ -330,17 +330,24 @@ prompt shows:
 - **Once:** allow this call.
 - **Don't ask again** (saved): for a command, one prefix rule per subcommand that needed
   approval (at most five), written as Claude Code writes them (`Bash(npm test *)`); for a
-  fetch, `WebFetch(domain:<host>)`; for an MCP or other tool, the bare tool name. Saved to the
-  environment's rules. Never offered for a prefix that is an interpreter, a shell, a wrapper
+  fetch, `WebFetch(domain:<host>)`; for an MCP or other tool, the bare tool name (browser
+  tools excepted, below). Saved to the environment's rules. Never offered for a prefix that is an interpreter, a shell, a wrapper
   or an environment runner (`python`, `bash`, `powershell`, `node`, `sh -c`, `npx`, `docker
   exec`, `timeout`, ...); those offer the exact command as the rule, or nothing.
 - **For this session:** file edits inside the working directories (Claude Code's "allow all
   edits during this session"), and tools whose arguments cannot widen what they do (such as
   `set_model_card`). Not for memory saves, which already ask outside the permission
   judgement, nor for `run_command` (E4, removed in
-  [stage 0](#stage-0-hotfix-on-the-current-engine)), MCP tools, `open_pull_request` or
-  `browser_open`, whose arguments decide what they reach: those offer **Once** and
-  **Don't ask again** only.
+  [stage 0](#stage-0-hotfix-on-the-current-engine)), MCP tools or `open_pull_request`, whose
+  arguments decide what they reach: those offer **Once** and **Don't ask again** only.
+- **Browser tools:** every `browser_*` tool (`browser_open`, navigate, click, type,
+  `form_input`, batch, read and the rest) is argument-dependent: none gets a session
+  allowance, and none gets a "don't ask again" rule of this plan's own. Which sites the
+  browser may use without asking is decided only by the browser plan's `SiteGrants`; this
+  plan keeps no separate store for `browser_open` or any other browser tool and defers to
+  `SiteGrants` for every browser site decision. A bare `browser_*` allow rule written by hand
+  is accepted but never widens past `SiteGrants`; deny and ask rules on browser tools still
+  apply first.
 - **Yes, and switch to auto mode:** allows the call and sets the session to `auto`; not on a
   prompt an ask rule or the floor forced, as in Claude Code.
 - **No, with a comment:** the comment goes to the agent as the reason and the turn continues;
@@ -696,7 +703,11 @@ Three further rules sit outside the per-call order:
   `docs/05-tools-and-isolation.md`, `docs/07-desktop-ui.md`.
 - Tests: per-subcommand rules (at most five); no saved rule for interpreters, shells, wrappers
   or runners (E3, kept from stage 0); no session allowance for `run_command` (E4, kept from
-  stage 0), MCP tools, `open_pull_request` or `browser_open`; edit session allowance limited
+  stage 0), MCP tools or `open_pull_request`; no session allowance and no saved "don't ask
+  again" rule for any `browser_*` tool (navigate, click, type, `form_input`, batch, read), whose
+  prompt defers to the browser plan's `SiteGrants` (a site the user granted there runs
+  unasked, any other site asks, and nothing is written to the environment's rules); edit
+  session allowance limited
   to working directories; comment reaches the agent; bare "No" stops the root turn; one-time-only
   prompts for floor, ask rule, cap, `always_asks` and bridged calls.
 - Acceptance checks: CI green (Rust and web jobs); protocol version bumped with the generated
