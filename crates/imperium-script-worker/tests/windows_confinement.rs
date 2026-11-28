@@ -1,5 +1,10 @@
-//! Windows confinement of the worker (plan C1, "Windows"; stage 1b tests). A probe is launched
-//! through the daemon's confined launch and reports what it can do.
+//! Windows confinement of the worker (plan C1, "Windows"; stage 1b and 1c tests). A probe is
+//! launched through the daemon's confined launch and reports what it can do.
+//!
+//! The probe runs in the worker's AppContainer, which reads only what names its package SID (or
+//! `ALL APPLICATION PACKAGES`). So that a denial below is the label's doing and not only the
+//! container's, the folders a test labels, and the control files it expects to be readable, are
+//! first opened to the container with [`open_to_container`].
 #![cfg(windows)]
 #![allow(unsafe_code)]
 
@@ -11,7 +16,7 @@ use std::{
 };
 
 use imperium_script::windows::{
-    Confined,
+    Confined, appcontainer,
     labels::{self, Labelled},
     spawn,
 };
@@ -70,6 +75,11 @@ fn arg(text: impl Into<OsString>) -> OsString {
     text.into()
 }
 
+/// Lets the worker's AppContainer read `path` (and, for a folder, what it holds and will hold).
+fn open_to_container(path: &std::path::Path) {
+    appcontainer::grant_read_execute(path, path.is_dir()).unwrap();
+}
+
 /// A handle to `file` that a child created with plain inheritance would get.
 fn make_inheritable(file: &std::fs::File) {
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
@@ -121,6 +131,7 @@ impl Drop for Credential {
 #[tokio::test]
 async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_spawn() {
     let root = tempfile::tempdir().unwrap();
+    open_to_container(root.path());
     let data = root.path().join("data");
     std::fs::create_dir(&data).unwrap();
     // A file from before the label, and one created after it.
@@ -130,6 +141,11 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
     let outside = tempfile::tempdir().unwrap();
     let control = outside.path().join("control.txt");
     std::fs::write(&control, "readable").unwrap();
+    open_to_container(&control);
+    // A file only the user may read, as every file in the user's profile and projects is: the
+    // AppContainer closes it although it carries no label.
+    let private = outside.path().join("private.txt");
+    std::fs::write(&private, "the user's own").unwrap();
     let inherited_path = outside.path().join("inherited.txt");
     std::fs::write(&inherited_path, "inherit").unwrap();
     let inherited = std::fs::File::open(&inherited_path).unwrap();
@@ -150,6 +166,8 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
         data.join("secrets.enc").into(),
         arg("--read"),
         control.clone().into(),
+        arg("--read"),
+        private.clone().into(),
         arg("--pipe"),
         arg(pipe.address()),
         arg("--handle"),
@@ -166,9 +184,25 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
 
     let confined = &seen["confined"];
     assert!(confined.contains("integrity=0x1000"), "{seen:?}");
-    assert!(confined.contains("privileges=0"), "{seen:?}");
+    assert!(
+        confined.contains("privileges=change-notify-only"),
+        "{seen:?}"
+    );
+    assert!(confined.contains("appcontainer=yes"), "{seen:?}");
     assert!(confined.contains("job=yes"), "{seen:?}");
-    assert_eq!(seen["env_count"], "0", "{seen:?}");
+    // Only the folder variables the AppContainer launch needs, which it points at the container's
+    // own folders.
+    assert!(
+        seen["env_names"]
+            .split(',')
+            .filter(|name| !name.is_empty())
+            .all(|name| {
+                imperium_script::windows::launch::CONTAINER_VARIABLES
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            }),
+        "{seen:?}"
+    );
     assert_eq!(seen["cwd_empty"], "true", "{seen:?}");
     assert!(seen["write_profile"].starts_with("denied"), "{seen:?}");
     assert!(
@@ -183,9 +217,23 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
         seen["read_1"].starts_with("denied"),
         "secrets.enc: {seen:?}"
     );
-    assert_eq!(seen["read_2"], "allowed", "an unlabelled file: {seen:?}");
+    assert_eq!(
+        seen["read_2"], "allowed",
+        "a file open to the container: {seen:?}"
+    );
+    assert!(
+        seen["read_3"].starts_with("denied"),
+        "a file only the user may read: {seen:?}"
+    );
     assert!(seen["pipe"].starts_with("denied"), "{seen:?}");
     assert!(seen["spawn"].starts_with("denied"), "{seen:?}");
+    // N1: the job refuses a process that asks to leave it (`ERROR_ACCESS_DENIED`), and does not
+    // allow breakaway at all.
+    assert!(
+        seen["breakaway"].starts_with("denied") && seen["breakaway"].contains("os error 5"),
+        "{seen:?}"
+    );
+    assert_eq!(seen["job_breakaway_ok"], "no", "{seen:?}");
     assert_eq!(seen["handle"], "closed", "{seen:?}");
     // The working folder is outside the labelled folders, and labelled Low.
     assert!(
@@ -202,14 +250,20 @@ async fn a_low_worker_cannot_write_read_the_daemons_files_reach_the_daemon_or_sp
         !probed.folder.exists(),
         "the working folder outlived the probe"
     );
-    // Recorded, not asserted (plan C9): the keyring and the network.
-    eprintln!("KEYRING low_read={}", seen["cred_read"]);
-    eprintln!("NETWORK low_connect={}", seen["connect"]);
+    // C9: the user's Credential Manager entries and the network are closed to the container.
+    eprintln!("KEYRING container_read={}", seen["cred_read"]);
+    eprintln!("NETWORK container_connect={}", seen["connect"]);
+    assert!(
+        seen["cred_read"].starts_with("denied"),
+        "the worker read the user's Credential Manager entry: {seen:?}"
+    );
+    assert!(seen["connect"].starts_with("denied"), "{seen:?}");
 }
 
 #[tokio::test]
 async fn labels_are_set_once_and_cover_files_created_and_renamed_later() {
     let root = tempfile::tempdir().unwrap();
+    open_to_container(root.path());
     let folders: Vec<PathBuf> = ["data", "config", "sessions", "scratch"]
         .iter()
         .map(|name| root.path().join(name))
@@ -245,20 +299,26 @@ async fn labels_are_set_once_and_cover_files_created_and_renamed_later() {
     std::fs::write(&staged, "secret").unwrap();
     std::fs::rename(&staged, folders[0].join("history.json")).unwrap();
     reads.push(folders[0].join("history.json"));
-    // A file moved in from an unlabelled folder.
+    // Files moved in from unlabelled folders: one the container could read where it was, one only
+    // the user could.
+    let open = tempfile::tempdir().unwrap();
+    open_to_container(open.path());
+    std::fs::write(open.path().join("moved.txt"), "secret").unwrap();
+    std::fs::rename(open.path().join("moved.txt"), folders[0].join("moved.txt")).unwrap();
     let outside = tempfile::tempdir().unwrap();
-    std::fs::write(outside.path().join("moved.txt"), "secret").unwrap();
+    std::fs::write(outside.path().join("private.txt"), "secret").unwrap();
     std::fs::rename(
-        outside.path().join("moved.txt"),
-        folders[0].join("moved.txt"),
+        outside.path().join("private.txt"),
+        folders[0].join("private.txt"),
     )
     .unwrap();
-    let control = outside.path().join("control.txt");
+    let control = open.path().join("control.txt");
     std::fs::write(&control, "readable").unwrap();
 
     let moved_in = folders[0].join("moved.txt");
+    let moved_private = folders[0].join("private.txt");
     let mut args = Vec::new();
-    for path in reads.iter().chain([&moved_in, &control]) {
+    for path in reads.iter().chain([&moved_in, &moved_private, &control]) {
         args.push(arg("--read"));
         args.push(path.clone().into());
     }
@@ -272,10 +332,16 @@ async fn labels_are_set_once_and_cover_files_created_and_renamed_later() {
         );
     }
     let moved = reads.len();
-    assert_eq!(seen[&format!("read_{}", moved + 1)], "allowed", "{seen:?}");
-    // Recorded (plan C1, N2): a file moved in keeps the descriptor it had.
+    assert_eq!(seen[&format!("read_{}", moved + 2)], "allowed", "{seen:?}");
+    // A file moved in keeps the descriptor it had (plan C1, N2): no label. One whose descriptor
+    // never named the container stays closed to it.
+    assert!(
+        seen[&format!("read_{}", moved + 1)].starts_with("denied"),
+        "a user-only file moved in was readable: {seen:?}"
+    );
+    // Recorded: one that was open to the container where it was stays open (the residual).
     eprintln!(
-        "MOVED_IN low_read={} label={:?}",
+        "MOVED_IN open_to_container_read={} label={:?}",
         seen[&format!("read_{moved}")],
         labels::label_of(&moved_in).ok()
     );

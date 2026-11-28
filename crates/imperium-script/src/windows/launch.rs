@@ -4,29 +4,39 @@
 //!
 //! 1. `token`: a restricted copy of the daemon's token (`CreateRestrictedToken` with
 //!    `DISABLE_MAX_PRIVILEGE`, the Administrators group deny-only), every remaining privilege
-//!    removed, and its integrity lowered to Low.
-//! 2. `job`: a job object with a memory limit of twice `script_memory_mb`, one active process,
-//!    kill-on-close, death on an unhandled exception, and every UI restriction.
-//! 3. `folder`: an empty working folder outside the daemon's labelled folders, labelled Low.
-//! 4. `pipes`: three named pipes (stdin, stdout, stderr) whose names are random and whose only
+//!    removed but `SeChangeNotifyPrivilege` (bypass traverse checking, which every Low and
+//!    AppContainer process holds; without it the container would need an entry on every folder
+//!    above its executable), and its integrity lowered to Low.
+//! 2. `appcontainer`: the worker's AppContainer ([`super::appcontainer`]): its package SID, and
+//!    read and execute on the program for that SID when nothing grants it yet.
+//! 3. `job`: a job object with a memory limit of twice `script_memory_mb`, one active process,
+//!    kill-on-close, death on an unhandled exception, every UI restriction, and no breakaway.
+//! 4. `folder`: an empty working folder outside the daemon's labelled folders, labelled Low and
+//!    readable by the package SID.
+//! 5. `pipes`: three named pipes (stdin, stdout, stderr) whose names are random and whose only
 //!    access is the daemon's user at Medium integrity, each opened once by the daemon for the
-//!    child and accepting no other client.
-//! 5. `process`: `CreateProcessAsUserW` with the token, suspended, an empty environment, the
-//!    working folder, and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming only the three pipe ends,
-//!    so nothing else the daemon holds is inherited (N6). It is detached from any console: a
+//!    child (not inheritable) and accepting no other client.
+//! 6. `process`: `CreateProcessAsUserW` with the token, in the AppContainer with no capabilities
+//!    (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`), suspended, with an environment of only the
+//!    folder variables an AppContainer launch needs ([`CONTAINER_VARIABLES`]), the
+//!    working folder, and no handle inheritance at all. It is detached from any console: a
 //!    console would need a `conhost` process, which the job's one-process limit refuses (the
 //!    worker then dies with `STATUS_DLL_INIT_FAILED`).
-//! 6. `assign`: the process joins the job while it is still suspended.
-//! 7. `resume`: only then does its thread start.
+//! 7. `handles`: the three pipe ends are duplicated into the suspended child (`DuplicateHandle`)
+//!    and written as its standard handles into its process parameters, where `GetStdHandle`
+//!    reads them. No handle the daemon holds is ever inheritable, so a process the daemon starts
+//!    meanwhile (a `run_command`) cannot inherit a pipe end (N6, review M1).
+//! 8. `assign`: the process joins the job while it is still suspended.
+//! 9. `resume`: only then does its thread start.
 //!
-//! The worker itself refuses to run unless its token is Low, holds no privilege and it is in a
-//! job (the worker crate's `confine/windows.rs`), so a launch that skipped a step still runs no
-//! program.
+//! The worker itself refuses to run unless its token is Low, holds no privilege but
+//! `SeChangeNotifyPrivilege`, is an AppContainer token and it is in a job (the worker crate's
+//! `confine/windows.rs`), so a launch that skipped a step still runs no program.
 
 use std::{
     ffi::{OsStr, OsString, c_void},
     io,
-    mem::{size_of, size_of_val},
+    mem::{offset_of, size_of, size_of_val},
     path::{Path, PathBuf},
     ptr,
     sync::{
@@ -36,43 +46,51 @@ use std::{
 };
 
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-use windows_sys::Win32::{
-    Foundation::{
-        ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-        LocalFree,
-    },
-    Security::{
-        AdjustTokenPrivileges, Authorization::ConvertStringSidToSidW, CreateRestrictedToken,
-        CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid, LUID_AND_ATTRIBUTES, PSID,
-        SE_PRIVILEGE_REMOVED, SECURITY_ATTRIBUTES, SID_AND_ATTRIBUTES, SetTokenInformation,
-        TOKEN_ALL_ACCESS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TokenIntegrityLevel,
-        TokenPrivileges, WinBuiltinAdministratorsSid,
-    },
-    Storage::FileSystem::{CreateFileW, OPEN_EXISTING},
-    System::{
-        JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-            JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOB_OBJECT_UILIMIT_DESKTOP,
-            JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
-            JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
-            JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
-            JOB_OBJECT_UILIMIT_WRITECLIPBOARD, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
-            JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+use windows_sys::{
+    Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation},
+    Win32::{
+        Foundation::{
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
+            GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
         },
-        Threading::{
-            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, DETACHED_PROCESS,
-            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-            GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, OpenProcessToken,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-            WaitForSingleObject,
+        Security::{
+            AdjustTokenPrivileges, Authorization::ConvertStringSidToSidW, CreateRestrictedToken,
+            CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid, LUID_AND_ATTRIBUTES, PSID,
+            SE_PRIVILEGE_REMOVED, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+            SetTokenInformation, TOKEN_ALL_ACCESS, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES,
+            TokenIntegrityLevel, TokenPrivileges, WinBuiltinAdministratorsSid,
+        },
+        Storage::FileSystem::{CreateFileW, OPEN_EXISTING},
+        System::{
+            Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory},
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+                JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOB_OBJECT_UILIMIT_DESKTOP,
+                JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+                JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+                JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+                JOB_OBJECT_UILIMIT_WRITECLIPBOARD, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
+                JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+            },
+            Threading::{
+                CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+                DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+                GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
+                OpenProcessToken, PEB, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                PROCESS_BASIC_INFORMATION, PROCESS_INFORMATION, RTL_USER_PROCESS_PARAMETERS,
+                ResumeThread, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+                WaitForSingleObject,
+            },
         },
     },
 };
 
-use super::{Descriptor, Handle, current_user_sid, labels, token_information, wide};
+use super::{
+    Descriptor, Handle, appcontainer, appcontainer::Sid, current_user_sid, labels,
+    token_information, wide,
+};
 
 /// Low integrity: `SECURITY_MANDATORY_LOW_RID`.
 const LOW_INTEGRITY_SID: &str = "S-1-16-4096";
@@ -86,6 +104,10 @@ const SE_GROUP_INTEGRITY: u32 = 0x20;
 
 /// `SECURITY_MAX_SID_SIZE`.
 const MAX_SID_BYTES: usize = 68;
+
+/// The locally unique id of `SeChangeNotifyPrivilege` (`SE_CHANGE_NOTIFY_PRIVILEGE`), the one
+/// privilege the worker keeps.
+const CHANGE_NOTIFY_LUID: u32 = 23;
 
 /// A program launched confined, with the daemon's ends of its pipes.
 #[derive(Debug)]
@@ -159,6 +181,7 @@ impl LowFolder {
         let folder = Self(path);
         labels::set_label(&folder.0, LOW_FOLDER_LABEL)
             .map_err(|err| format!("cannot label {} Low: {err}", folder.0.display()))?;
+        appcontainer::grant_read_execute(&folder.0, true)?;
         Ok(folder)
     }
 
@@ -193,6 +216,10 @@ pub fn spawn(
 
     fail_if("token")?;
     let token = low_token().map_err(|err| format!("token: {err}"))?;
+    fail_if("appcontainer")?;
+    let package = appcontainer::package_sid()
+        .and_then(|sid| appcontainer::grant_read_execute(program, false).map(|()| sid))
+        .map_err(|err| format!("appcontainer: {err}"))?;
     fail_if("job")?;
     let job = job(memory_mb).map_err(|err| format!("job: {err}"))?;
     fail_if("folder")?;
@@ -206,7 +233,7 @@ pub fn spawn(
         command.push(' ');
         command.push_str(&quote(arg));
     }
-    let child = create_suspended(&token, program, &command, folder.path(), &pipes.child)
+    let child = create_suspended(&token, program, &command, folder.path(), package)
         .map_err(|err| format!("process: {err}"))?;
     let process = Handle(child.hProcess);
     let thread = Handle(child.hThread);
@@ -216,14 +243,17 @@ pub fn spawn(
         job,
         pid: child.dwProcessId,
     };
-    // The child holds its own copies of the pipe ends now.
     let Pipes {
         servers,
         child: child_ends,
     } = pipes;
-    drop(child_ends);
 
     let assign = (|| {
+        fail_if("handles")?;
+        give_standard_handles(confined.process.0, &child_ends)
+            .map_err(|err| format!("handles: {err}"))?;
+        // The child holds its own copies of the pipe ends now.
+        drop(child_ends);
         fail_if("assign")?;
         // SAFETY: both handles are open and owned here; the process is still suspended.
         if unsafe { AssignProcessToJobObject(confined.job.0, confined.process.0) } == 0 {
@@ -305,7 +335,7 @@ fn low_token() -> io::Result<Handle> {
     Ok(restricted)
 }
 
-/// Removes every privilege `DISABLE_MAX_PRIVILEGE` left (it keeps `SeChangeNotifyPrivilege`).
+/// Removes every privilege `DISABLE_MAX_PRIVILEGE` left but `SeChangeNotifyPrivilege` (step 1).
 fn remove_all_privileges(token: &Handle) -> io::Result<()> {
     let buffer = token_information(token.0, TokenPrivileges)?;
     // SAFETY: the buffer holds a TOKEN_PRIVILEGES: a count, then that many entries.
@@ -314,6 +344,10 @@ fn remove_all_privileges(token: &Handle) -> io::Result<()> {
         let count = (*privileges).PrivilegeCount as usize;
         std::slice::from_raw_parts((&raw const (*privileges).Privileges).cast(), count).to_vec()
     };
+    let entries: Vec<LUID_AND_ATTRIBUTES> = entries
+        .into_iter()
+        .filter(|entry| !(entry.Luid.LowPart == CHANGE_NOTIFY_LUID && entry.Luid.HighPart == 0))
+        .collect();
     if entries.is_empty() {
         return Ok(());
     }
@@ -472,7 +506,7 @@ impl Pipes {
     }
 
     /// One pipe: the daemon writes when `to_child`, reads otherwise. The child's end is opened
-    /// here, inheritable, and is the pipe's only client.
+    /// here, not inheritable, and is the pipe's only client; step 7 duplicates it into the child.
     fn pair(name: &str, sddl: &str, to_child: bool) -> io::Result<(NamedPipeServer, Handle)> {
         let descriptor = Descriptor::from_sddl(sddl)?;
         let mut attributes = SECURITY_ATTRIBUTES {
@@ -491,25 +525,20 @@ impl Pipes {
         let server = unsafe {
             options.create_with_security_attributes_raw(name, (&raw mut attributes).cast())
         }?;
-        let inherit = SECURITY_ATTRIBUTES {
-            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: ptr::null_mut(),
-            bInheritHandle: 1,
-        };
         let access = if to_child {
             GENERIC_READ
         } else {
             GENERIC_WRITE
         };
         let path = wide(name);
-        // SAFETY: `path` is NUL-terminated; `inherit` is valid for the call; a synchronous open
-        // of an existing pipe.
+        // SAFETY: `path` is NUL-terminated; no security attributes (so the handle is not
+        // inheritable); a synchronous open of an existing pipe.
         let client = unsafe {
             CreateFileW(
                 path.as_ptr(),
                 access,
                 0,
-                &raw const inherit,
+                ptr::null(),
                 OPEN_EXISTING,
                 0,
                 ptr::null_mut(),
@@ -522,15 +551,46 @@ impl Pipes {
     }
 }
 
-/// Step 5: `CreateProcessAsUserW`, suspended, inheriting exactly `handles`.
+/// The only variables the worker's environment holds. An AppContainer launch rewrites the folder
+/// variables to the container's own folders (under `%LOCALAPPDATA%\Packages\<name>\AC`) and
+/// fails with `ERROR_ENVVAR_NOT_FOUND` when the block lacks them, so an empty block (stage 1b) no
+/// longer works. They name folders, not secrets; nothing else of the daemon's is passed.
+pub const CONTAINER_VARIABLES: [&str; 5] =
+    ["APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "USERPROFILE"];
+
+/// A Unicode environment block of the daemon's values of [`CONTAINER_VARIABLES`], sorted, each
+/// `NAME=value` NUL-terminated, then a final NUL.
+fn container_environment() -> Vec<u16> {
+    let mut block: Vec<u16> = Vec::new();
+    for name in CONTAINER_VARIABLES {
+        if let Some(value) = std::env::var_os(name) {
+            let mut entry = OsString::from(name);
+            entry.push("=");
+            entry.push(value);
+            block.extend(wide(entry));
+        }
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
+/// Step 6: `CreateProcessAsUserW` in the AppContainer, suspended, inheriting nothing.
 fn create_suspended(
     token: &Handle,
     program: &Path,
     command: &str,
     folder: &Path,
-    handles: &[Handle; 3],
+    package: &Sid,
 ) -> io::Result<PROCESS_INFORMATION> {
-    let inherited: [HANDLE; 3] = [handles[0].0, handles[1].0, handles[2].0];
+    let capabilities = SECURITY_CAPABILITIES {
+        AppContainerSid: package.as_psid(),
+        Capabilities: ptr::null_mut(),
+        CapabilityCount: 0,
+        Reserved: 0,
+    };
     let mut size = 0_usize;
     // SAFETY: a size query with no list.
     unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &raw mut size) };
@@ -544,14 +604,15 @@ fn create_suspended(
         return Err(io::Error::last_os_error());
     }
     let result = (|| {
-        // SAFETY: the list was initialized for one attribute; `inherited` outlives its use.
+        // SAFETY: the list was initialized for one attribute; `capabilities` and the SID it
+        // points to outlive its use.
         if unsafe {
             UpdateProcThreadAttribute(
                 list_ptr,
                 0,
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                inherited.as_ptr().cast(),
-                size_of_val(&inherited),
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                (&raw const capabilities).cast(),
+                size_of::<SECURITY_CAPABILITIES>(),
                 ptr::null_mut(),
                 ptr::null(),
             )
@@ -561,19 +622,14 @@ fn create_suspended(
         }
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.StartupInfo.hStdInput = inherited[0];
-        startup.StartupInfo.hStdOutput = inherited[1];
-        startup.StartupInfo.hStdError = inherited[2];
         startup.lpAttributeList = list_ptr;
         let application = wide(program);
         let mut command = wide(command);
         let folder = wide(folder);
-        // An empty Unicode environment block: just its terminator.
-        let environment = [0_u16; 2];
+        let environment = container_environment();
         let mut info = PROCESS_INFORMATION::default();
         // SAFETY: every pointer is valid and outlives the call; `command` is writable as the
-        // call requires; the attribute list names only inheritable handles we own.
+        // call requires; no handle is inherited.
         let created = unsafe {
             CreateProcessAsUserW(
                 token.0,
@@ -581,7 +637,7 @@ fn create_suspended(
                 command.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
-                1,
+                0,
                 CREATE_SUSPENDED
                     | CREATE_UNICODE_ENVIRONMENT
                     | DETACHED_PROCESS
@@ -600,6 +656,119 @@ fn create_suspended(
     // SAFETY: the list was initialized above and is deleted once.
     unsafe { DeleteProcThreadAttributeList(list_ptr) };
     result
+}
+
+/// Step 7: duplicates `ends` (stdin, stdout, stderr) into the suspended `process` and writes their
+/// values into its process parameters' `StandardInput`, `StandardOutput` and `StandardError`,
+/// which `GetStdHandle` (and so Rust's standard streams) reads.
+///
+/// `RTL_USER_PROCESS_PARAMETERS` is documented only in part: the three handles are the third to
+/// fifth pointer-sized fields of its `Reserved2`, after `ConsoleHandle` and `ConsoleFlags`, on
+/// every Windows version since NT. `CreateProcess` has built the structure in the child before it
+/// returns, and the child reads it only once it runs.
+fn give_standard_handles(process: HANDLE, ends: &[Handle; 3]) -> io::Result<()> {
+    let mut values: [HANDLE; 3] = [ptr::null_mut(); 3];
+    for (end, value) in ends.iter().zip(values.iter_mut()) {
+        // SAFETY: `end` is a handle this process owns; `process` is the child, opened with every
+        // access by its creation; `value` is a valid out-pointer. The copy is not inheritable.
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                end.0,
+                process,
+                value,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    // SAFETY: an all-zero PROCESS_BASIC_INFORMATION is a valid value to be overwritten.
+    let mut basic: PROCESS_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut returned = 0_u32;
+    // SAFETY: `basic` is the structure the class names, with its size; valid out-pointers.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessBasicInformation,
+            (&raw mut basic).cast(),
+            size_of::<PROCESS_BASIC_INFORMATION>() as u32,
+            &raw mut returned,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(format!(
+            "NtQueryInformationProcess: {status:#x}"
+        )));
+    }
+    let peb = basic.PebBaseAddress.cast::<u8>();
+    let mut parameters: *mut RTL_USER_PROCESS_PARAMETERS = ptr::null_mut();
+    read_child(
+        process,
+        peb.wrapping_add(offset_of!(PEB, ProcessParameters)),
+        &mut parameters,
+    )?;
+    if parameters.is_null() {
+        return Err(io::Error::other("the child has no process parameters"));
+    }
+    let parameters = parameters.cast::<u8>();
+    // `MaximumLength` and `Length`, the first two fields: the structure must reach the handles.
+    let mut lengths = [0_u32; 2];
+    read_child(process, parameters, &mut lengths)?;
+    let standard = offset_of!(RTL_USER_PROCESS_PARAMETERS, Reserved2) + 2 * size_of::<HANDLE>();
+    if (lengths[1] as usize) < standard + size_of_val(&values) {
+        return Err(io::Error::other(format!(
+            "the child's process parameters are {} bytes, too short to hold its standard handles",
+            lengths[1]
+        )));
+    }
+    let mut written = 0_usize;
+    // SAFETY: the three handle fields inside the child's parameters, checked above to lie within
+    // the structure; `values` is valid for its size; the child is suspended.
+    if unsafe {
+        WriteProcessMemory(
+            process,
+            parameters.wrapping_add(standard).cast(),
+            values.as_ptr().cast(),
+            size_of_val(&values),
+            &raw mut written,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if written != size_of_val(&values) {
+        return Err(io::Error::other(
+            "the standard handles were written in part",
+        ));
+    }
+    Ok(())
+}
+
+/// Reads a `T` from `address` in the child `process`.
+fn read_child<T: Copy>(process: HANDLE, address: *const u8, value: &mut T) -> io::Result<()> {
+    let mut read = 0_usize;
+    // SAFETY: `value` is valid for writes of its size; the call checks `address` in the child.
+    if unsafe {
+        ReadProcessMemory(
+            process,
+            address.cast(),
+            std::ptr::from_mut(value).cast(),
+            size_of::<T>(),
+            &raw mut read,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if read != size_of::<T>() {
+        return Err(io::Error::other("a short read of the child's memory"));
+    }
+    Ok(())
 }
 
 /// Quotes one command-line argument the way the C runtime parses it back.

@@ -1334,22 +1334,46 @@ wired into the engine. Every bundle and CLI package already carries the worker.
   `memory.max` at twice the budget. On macOS it calls `sandbox_init` with a profile that starts from
   `(deny default)` and allows reading its own binary and the system libraries and a few `sysctl`
   keys, so there is no file access, network, process creation or `mach-lookup` (no pasteboard).
-  macOS enforces no memory limit on a process, so the daemon watches the worker's resident memory
-  and kills it past twice the budget (the program ends as out of memory).
+  macOS enforces no memory limit on a process, so the daemon watches the worker's physical
+  footprint (what macOS charges it, compressed and swapped memory included) and kills it past
+  twice the budget (the program ends as out of memory).
 - **On Windows the daemon confines the worker as it launches it**: suspended, with a restricted
-  copy of its own token (no privileges, the Administrators group deny-only) at Low integrity, in a
-  job object (memory at twice the budget, one process, killed when the job closes, every UI
-  restriction), with an empty environment, an empty working folder labelled Low outside Imperium's
-  folders, and only its three pipe ends inherited (a handle list). Only then does its thread run.
-  The worker checks it is at Low integrity, without privileges and in a job, and refuses to run
-  otherwise. So that a Low process cannot read what Imperium keeps, the daemon puts one
-  inheritable Medium `NO_READ_UP` label on the data folder, the config folder and the
-  environments' working folders (when `workspaces.root` puts them elsewhere) at start, and again
-  where the working folders move; files and environments made later inherit it. A folder already
-  labelled is only read. When a file in them cannot take the label, code mode is unavailable and
-  the reason names the file. What remains after an escape from the interpreter on Windows (reading
-  the user's other files, the network) is the accepted risk the plan records
-  ([C9](plans/code-mode.md#windows-confinement-mitigation-and-accepted-risk)).
+  copy of its own token (no privilege but `SeChangeNotifyPrivilege`, bypass traverse checking;
+  the Administrators group deny-only) at Low integrity, in an AppContainer with no capabilities
+  (`Imperium.ScriptWorker`, a profile made once per user), in a job object (memory at twice the
+  budget, one process, no breakaway, killed when the job closes, every UI restriction), with an
+  empty environment and an empty working folder labelled Low outside Imperium's folders. It
+  inherits no handle at all: the daemon opens the three pipe ends non-inheritable, duplicates them
+  into the suspended worker and writes them as its standard handles, so no handle the daemon holds
+  is ever inheritable by another process it starts. Only then does its thread run. The worker
+  checks it is at Low integrity, holds no other privilege, is in an AppContainer and in a job, and
+  refuses to run otherwise.
+  - **The AppContainer** closes to the worker everything whose access list does not name its
+    package SID or `ALL APPLICATION PACKAGES`: the user's own files and projects, the user's
+    Credential Manager entries (a Low process outside a container can read them with `CredReadW`;
+    the container cannot, and CI checks it), the network (no capability, loopback included) and
+    the daemon's pipe and port. The daemon adds the package SID to two access lists only: read and
+    execute on the worker's executable (unless something already grants it, as `Program Files`
+    does for every container) and read on the worker's empty working folder.
+  - **The labels**: so that a Low process cannot read what Imperium keeps even where an access list
+    lets every container in, the daemon puts one inheritable Medium `NO_READ_UP` label on the data
+    folder, the config folder and the environments' working folders (when `workspaces.root` puts
+    them elsewhere), and again where the working folders move. It does this only once code mode is
+    enabled (from stage 2, when `harness.code_mode` is on at start or is turned on), not on every
+    start. Files and environments made later inherit it, and so does a file written beside and
+    renamed over (the atomic-write pattern). A folder already labelled is only read. When a file in
+    them cannot take the label, code mode is unavailable and the reason names the file.
+  - **Residual: a file moved in keeps its old descriptor.** A file *moved* (renamed) into a
+    labelled folder from elsewhere on the same volume keeps the security descriptor it had: no
+    label, and the access list of where it came from. The worker can read it only if that old
+    access list lets its container in (a file from under `Program Files` or `Windows`, say); a
+    file from the user's own folders stays closed to it. Copies and new files are covered. The
+    daemon does not sweep its folders to relabel such files before each program: the walk would
+    cost a pass over every file in the data folder per program, and the container already closes
+    the files a move from the user's folders brings.
+  What remains after an escape from the interpreter on Windows (reading a file an access list
+  opens to every container, CPU and memory up to the job's limits) is the accepted risk the plan
+  records ([C9](plans/code-mode.md#windows-confinement-mitigation-and-accepted-risk)).
 - **The driver** is `crates/imperium-script`. It refuses a program that names `eval` or `exec`
   before any worker starts (hygiene, not a boundary: every host effect still passes through
   dispatch). It starts one worker per program, accepts only the events of the plan's allowlist

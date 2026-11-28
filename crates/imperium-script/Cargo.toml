@@ -21,18 +21,24 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["process", "io-util", "time", "sync", "rt", "macros", "net"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The resident-memory watchdog (watchdog.rs): `proc_pidinfo` and `kill`.
+# The memory watchdog (watchdog.rs): `proc_pid_rusage` (the physical footprint) and `kill`.
 libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
-# The confined launch (windows/launch.rs) and the folder labels (windows/labels.rs).
+# The confined launch (windows/launch.rs), the worker's AppContainer (windows/appcontainer.rs)
+# and the folder labels (windows/labels.rs). `Wdk_System_Threading`, `Win32_System_Kernel` and
+# `Win32_System_Diagnostics_Debug` find and write the suspended child's standard handles.
 getrandom = "0.4.3"
 windows-sys = { version = "0.61.2", features = [
+    "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_JobObjects",
+    "Win32_System_Kernel",
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }

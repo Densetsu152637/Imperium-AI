@@ -2,7 +2,8 @@
 
 Revision: 2026-11-26, revision 5 (final review: D1, and the label and call-state refinements; delta review of revision 3: N1 to N7 and the F12 follow-up; plan critic round 1: findings F1 to F12, all accepted, with the root's decisions on F3 and F4; the root's answers recorded as [settled decisions](#settled-decisions)); written against `experimental`
 at `1c066512`. Roadmap [item 65](../12-roadmap.md#next-in-order); Imperium-Research roadmap R2.8.
-Status: stage 1 built (1a in pull request #303, 1b in #328), stages 2 to 6 planned.
+Status: stage 1 built (1a in pull request #303, 1b in #328, its security follow-ups 1c in #341),
+stages 2 to 6 planned.
 
 The model gets one more tool, `run_script`, whose argument is a short Python program. Inside the
 program every tool the agent may use is a Python function. Each such call goes through the agent's
@@ -226,15 +227,19 @@ next program takes; it is still used once. Stage 1 measures cold start (A4).
   on macOS can exhaust host memory. Stage 1b may add an optional daemon-side RSS watchdog that
   kills a worker above a ceiling.
 - **Windows.** The daemon launches the worker **suspended**, with a restricted token
-  (`CreateRestrictedToken`: privileged groups disabled, all privileges removed) at **Low**
-  integrity, assigns it to a Job Object (memory limit at twice `script_memory_mb`,
-  active-process limit 1, kill-on-job-close, UI restrictions), and only then resumes it. Its
-  environment is empty and its working folder an empty low-integrity folder. It inherits exactly
-  its three pipe handles (stdin, stdout and stderr): the launch uses `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
-  naming only them (N6), so no other inheritable handle the daemon holds leaks into it.
+  (`CreateRestrictedToken`: privileged groups disabled, every privilege removed but
+  `SeChangeNotifyPrivilege`) at **Low** integrity, in an **AppContainer** with no capabilities
+  (stage 1c), assigns it to a Job Object (memory limit at twice `script_memory_mb`,
+  active-process limit 1, kill-on-job-close, no breakaway, UI restrictions), and only then resumes
+  it. Its environment is empty and its working folder an empty low-integrity folder the container
+  may read. It inherits nothing: the daemon opens the three pipe ends (stdin, stdout and stderr)
+  non-inheritable, duplicates them into the suspended worker with `DuplicateHandle` and writes them
+  as its standard handles (stage 1c, replacing 1b's inheritable ends and handle list, N6), so no
+  handle the daemon holds is ever inheritable.
   So that a Low process cannot read what the daemon and its sessions keep, the daemon sets one
   **inheritable `NO_READ_UP` mandatory label at Medium integrity** (object inherit and container
-  inherit) at start on the **data folder**, the **config folder**, and each environment's
+  inherit), once code mode is enabled (stage 1c: not on every start), on the **data folder**, the
+  **config folder**, and each environment's
   **sessions folder and scratch folder** (N2). Inheritance covers every file and folder in them,
   including temporary files, renamed files and files created later: the endpoint file, the secret
   store, journals and their `.results/` folders, `history.json`, logs, memory, attachments, and
@@ -254,7 +259,8 @@ next program takes; it is still used once. Stage 1 measures cold start (A4).
   (F1). The daemon starts the worker in an empty folder of its own (mode 0700, removed with the
   run). The unsafe calls live in one opt-in module (`confine/fds.rs`).
 - Everywhere: empty environment, empty working folder, and nothing inherited beyond the two
-  pipes and stderr (Windows: the handle list above; Linux and macOS: the descriptor sweep above).
+  pipes and stderr (Windows: the duplicated handles above; Linux and macOS: the descriptor sweep
+  above).
 
 **Fail closed.** If any part of a platform's confinement cannot be applied (seccomp unavailable,
 `sandbox_init` fails, the token, label or job call fails), the worker exits before reading a
@@ -574,43 +580,55 @@ boundaries as `tool_loading` does. The default is `off` until stage 6, then `aut
 
 | Threat | Mitigation | Residual risk |
 | --- | --- | --- |
-| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; a separate worker process per program; OS confinement applied before any program is read, failing closed (C1); pinned versions under Imperium's lock, escape suite on every update | Linux and macOS: an escaped worker can do little beyond its pipes (no file opens or reads, no network, no processes); on macOS it can still exhaust host memory, which has no OS limit (C1). Windows: see [below](#windows-confinement-mitigation-and-accepted-risk) |
+| Sandbox escape from the interpreter (VM bug) | Monty's language-level sandbox; a separate worker process per program; OS confinement applied before any program is read, failing closed (C1); pinned versions under Imperium's lock, escape suite on every update | Linux and macOS: an escaped worker can do little beyond its pipes (no file opens or reads, no network, no processes); on macOS it can still exhaust host memory, which has no OS limit (C1; the daemon's footprint watchdog is a backstop). Windows: see [below](#windows-confinement-mitigation-and-accepted-risk) |
 | A lying worker (forged calls, unknown events) | The driver trusts no worker output: every call must use a handle it issued and is re-checked against the script-refused set and universe at dispatch (C3, F1); events outside the allowlist kill the worker (F7) | None beyond the dispatch rules |
 | Capability through the bindings | Every inner call is `run_tool`: same refusals, rules, hooks, approvals as direct calls; script-refused set (C4) | A program chains read-then-send in one model step (read a secret, `web_fetch` a URL with it in the query). Today the model can do the same in two steps; code mode removes the pause between them, not a check. Auto mode does not settle inner sends, writes or commands (C4); the desktop shows each inner call live |
 | Prompt injection from tool results | **The control is per-call dispatch**: whatever a program does, each call it makes is judged on its own name and actual arguments by the same rules, hooks and approvals as a direct call, and the stricter auto-mode rule for inner sends, writes and commands (C4). Removing `eval` and `exec` (A2) is hygiene, not a boundary: without them a program can still pass tool output on as data. The printed output enters the context as a tool result with the existing untrusted-data framing | **Data to arguments**: a value from one result (an injected URL, path or command) can become a later call's argument without the model reading it. Each such call is still judged, and in auto mode it is asked rather than classified, but a person approving it sees only the final arguments. The tests that a renamed or aliased tool cannot bypass a refusal stay (stage 2, stage 5) |
 | Resource exhaustion | C5 budgets; memory limit in the worker plus an OS limit (Linux, Windows; none on macOS, C1); at most `script_workers` workers; code length cap; output cap; `request_timeout` | Many programs at once queue for workers, bounded by each wall budget |
-| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows an inheritable `NO_READ_UP` label on the data, config, sessions and scratch folders; files reach the program only through `read_file` and its path checks | Windows: user files outside those folders, and files moved into them from elsewhere, are readable after an escape, and so is the OS keyring (the stage 1b test found a Low worker can `CredRead` it; below) |
-| Network | None inside the interpreter; Linux and macOS confinement deny it; web tools go through their own rules | Windows: an escaped worker can open connections (below) |
+| Secrets | Worker environment cleared, so no `GH_TOKEN`, API keys or daemon token; no file access on Linux and macOS; on Windows an AppContainer (stage 1c), so nothing the user's access lists do not open to every container, and an inheritable `NO_READ_UP` label on the data, config, sessions and scratch folders; files reach the program only through `read_file` and its path checks | Windows: a file whose access list opens it to every AppContainer (`ALL APPLICATION PACKAGES`, as under `Program Files` and `Windows`) is readable after an escape, including one moved into a labelled folder from such a place (below). The keyring is closed: the stage 1c test shows the container's `CredReadW` fails |
+| Network | None inside the interpreter; Linux and macOS confinement deny it; on Windows the AppContainer has no network capability (loopback included); web tools go through their own rules | None beyond a container escape |
 | Denial through approvals | A program that asks 40 times is bounded by `script_calls`, and a denial is an ordinary error the program sees | The user sees up to 40 prompts. Approve-for-session works as today |
 
 #### Windows confinement: mitigation and accepted risk
 
-Mitigation (C1, root decisions on F3 and N2): a restricted, Low-integrity token, so the worker
-cannot write the user's files, registry or medium-integrity processes; a Job Object (memory, one
-process, kill on close, UI limits); an empty environment and folder; only its three pipes (stdin, stdout, stderr) inherited
-(N6; on Linux and macOS the worker closes every other descriptor, F1); and one inheritable Medium `NO_READ_UP` label on the data folder, the config folder and
-every environment's sessions and scratch folders. Everything Imperium keeps there is unreadable to
-a Low process whatever its name or age: the endpoint file and token, the encrypted secret store
-and its key, journals, results, history, logs, memory, attachments, and the plaintext MCP
-environment variables and headers in the config files. The daemon's named pipe keeps its Medium
-`NO_WRITE_UP` label, so a Low process cannot connect, and the loopback listener needs the token it
-cannot read.
+Mitigation (C1, root decisions on F3 and N2; stage 1c): a restricted, Low-integrity token in an
+AppContainer with no capabilities, so the worker cannot write the user's files, registry or
+medium-integrity processes, and cannot read or open anything whose access list does not name its
+package SID or `ALL APPLICATION PACKAGES`; a Job Object (memory, one process, no breakaway, kill on
+close, UI limits); an empty environment and folder; only its three pipes (stdin, stdout, stderr),
+duplicated into it while it is suspended (N6, stage 1c; on Linux and macOS the worker closes every
+other descriptor, F1); and one inheritable Medium `NO_READ_UP` label on the data folder, the config
+folder and every environment's sessions and scratch folders, set once code mode is enabled.
+Everything Imperium keeps there is unreadable to a Low process whatever its name or age: the
+endpoint file and token, the encrypted secret store and its key, journals, results, history, logs,
+memory, attachments, and the plaintext MCP environment variables and headers in the config files.
+The daemon's named pipe keeps its Medium `NO_WRITE_UP` label, so a Low process cannot connect, and
+the loopback listener needs the token it cannot read and is closed to the container anyway.
 
-**The OS keyring.** On Windows the keychain backend is Credential Manager. Stage 1 tests whether a
-Low worker can `CredRead` an Imperium entry. **Stage 1b found that it can** (see its Outcome), so
-the second case below applies. If it cannot, the keyring is covered. If it can,
-secrets in the keyring are part of the accepted residual below, accepted **only while
-`harness.code_mode` is off by default**: the stage 6 default change is then blocked until the
-secrets are moved out of reach of Low processes (for example into the labelled encrypted store) or
-the worker moves to an AppContainer, and 13 records this revisit.
+**The OS keyring.** On Windows the keychain backend is Credential Manager. Stage 1b found that a
+Low worker outside a container *can* `CredReadW` the user's entries. Stage 1c moved the worker
+into an AppContainer, and its test shows the container's `CredReadW` of a test entry in the CI
+runner's own store fails, so Imperium's keyring secrets are out of the worker's reach. The
+condition this section set on the stage 6 default change ("until the secrets are moved out of
+reach of Low processes or the worker moves to an AppContainer") is met. **What still blocks the
+stage 6 default change** is only S2: the stage 4 independent security review must pass, and
+stages 2 to 5 must be built.
 
-What remains: an escape from the language-level sandbox on Windows is a **user-level read
-compromise**. The escaped code could read any file the user can read outside the labelled
-folders (the user's documents and projects, SSH keys, browser profiles, other tools' tokens) and,
-subject to the keyring test, Imperium's keyring entries, and send it over the network; and it
-could use CPU and memory up to the job's limits. It cannot write the user's files, start
-processes, read anything in Imperium's labelled folders, or drive the daemon. The risk is accepted
-because:
+Why an AppContainer. It was the first choice and works with the existing launch (one more
+attribute on the same `CreateProcessAsUserW`, over the same restricted token), so a restricted
+token with restricting SIDs, the fallback, was not needed and was not tried. A Less Privileged
+AppContainer (LPAC, which also refuses `ALL APPLICATION PACKAGES`) would be stronger still, but
+the loader and the C runtime then need explicit grants on system folders and registry keys
+(capabilities such as `lpacCom` and `registryRead`) that differ between Windows releases; that is
+left to the stage 4 review.
+
+What remains: an escape from the language-level sandbox on Windows can read only what an access
+list opens to every AppContainer: files under `Program Files` and `Windows`, and a file the daemon
+moved into its folders from such a place (a moved file keeps its old descriptor, stage 1b). It
+cannot read the user's documents, projects, SSH keys, browser profiles or other tools' tokens,
+Imperium's labelled folders or its keyring entries; it cannot write the user's files, start
+processes, reach the network or drive the daemon. It can use CPU and memory up to the job's
+limits. The risk is accepted because:
 
 1. An escape needs a memory-safety bug in Monty's VM followed by native code execution. Monty has
    no C dependencies and no FFI, implements no file, network or process operation, and has a
@@ -619,12 +637,11 @@ because:
 2. Without an escape the program has no capability at all, so the residual applies only to a
    chained exploit, not to ordinary misbehaviour or injected text.
 3. The mode is off by default until stage 4 passes (S2), then on only for local models (S1).
-4. Stage 1 tests the token, the job and the labels (below), and the worker fails closed when any
-   of them cannot be applied.
+4. Stages 1b and 1c test the token, the container, the job and the labels (below), and the worker
+   fails closed when any of them cannot be applied.
 
-Revisit (an AppContainer profile with no network or file capabilities, or Monty's WebAssembly
-runtime under wasmtime on Windows) if the stage 4 review finds a practical escape, if a Monty
-escape advisory is published, or when 05's AppContainer work lands for commands.
+Revisit (an LPAC worker, or Monty's WebAssembly runtime under wasmtime on Windows) if the stage 4
+review finds a practical escape or asks for LPAC, or if a Monty escape advisory is published.
 
 ### C10. Evaluations
 
@@ -770,7 +787,7 @@ behaves as today unless a user or an evaluation turns it on. Stage 5 needs item 
     labelled Low; the worker holds no handle beyond its three pipes (an
     inheritable test handle opened by the daemon before launch is absent in the worker, N6); a
     Low worker's `CredRead` of an Imperium Credential Manager entry is tested and its outcome
-    recorded in C9 (N2).
+    recorded in C9 (N2; stage 1c makes it an assertion: the container's read fails).
   - Fail closed (F10): with confinement forced to fail (a test hook on each OS), no program runs,
     `run_script` is reported unavailable, and the reason names what failed.
   - Measurements (A4, F12): cold start, binary size and resident memory with and without
@@ -971,8 +988,8 @@ owns.
 
 Findings that refute or change the plan (recorded for stages 4 and 6):
 
-- **The keyring is readable at Low (C9).** A Low worker's `CredReadW` of a generic Credential
-  Manager entry of the user succeeds. So Imperium's keyring secrets on Windows are part of the
+- **The keyring is readable at Low (C9; resolved in 1c).** A Low worker's `CredReadW` of a
+  generic Credential Manager entry of the user succeeds. So Imperium's keyring secrets on Windows are part of the
   accepted residual only while `harness.code_mode` is off by default: **the stage 6 default change
   is blocked** until those secrets are out of a Low process's reach (the labelled encrypted store,
   or an AppContainer worker), as C9 provides.
@@ -994,10 +1011,71 @@ Findings that refute or change the plan (recorded for stages 4 and 6):
   in C9's accepted residual.
 - **No per-environment labelling step**: the label on the working-folder root is inherited by every
   environment folder made later, so "applied when a new environment is added" needs no code.
-- **The inheritable handles' window**: the three child pipe ends are inheritable from their
+- **The inheritable handles' window (resolved in 1c)**: the three child pipe ends are inheritable from their
   creation until the launch returns (milliseconds); a process the daemon starts in that window
   without a handle list (a `run_command`) could inherit them. They are useless without the matching
   server ends, and stage 4 reviews it.
+
+### Stage 1c: Status and Outcome
+
+Status: built in pull request #341 (`fix/code-mode-1b-followups`), the security follow-ups of the
+1b review. Still default-off and unreachable.
+
+Built:
+
+- **M1, pipe ends by duplication** (`windows/launch.rs`, new stage `handles`). The daemon opens the
+  child's three pipe ends non-inheritable, creates the worker suspended with no handle inheritance
+  at all (`bInheritHandles` false, no handle list), duplicates the ends into it with
+  `DuplicateHandle` and writes their values into its process parameters' `StandardInput`,
+  `StandardOutput` and `StandardError` (found through `NtQueryInformationProcess` and the PEB, a
+  bounds check on the parameters' length first), where `GetStdHandle` reads them. No handle the
+  daemon holds is inheritable at any point, so 1b's window, in which a concurrent `run_command`
+  could inherit a pipe end, is gone. The worker needs no change.
+- **C9, the AppContainer** (`windows/appcontainer.rs`, new launch stage `appcontainer`, new
+  worker check `appcontainer`). The worker runs in the AppContainer `Imperium.ScriptWorker` with no
+  capabilities, made once per user with `CreateAppContainerProfile` (later starts derive the same
+  SID), attached through `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` to the same
+  `CreateProcessAsUserW` over the same restricted Low token. The daemon adds the package SID, for
+  read and execute, to the worker executable's access list unless an entry already grants it (to
+  the package or `ALL APPLICATION PACKAGES`, as `Program Files` does), and, inheritable, to the
+  worker's working folder. The token keeps `SeChangeNotifyPrivilege` (bypass traverse checking:
+  without it the container would need an entry on every folder above the executable and the
+  working folder) and no other privilege; the worker checks exactly that, and that its token is an
+  AppContainer token.
+- **M3**: the macOS watchdog reads `ri_phys_footprint` (`proc_pid_rusage`, `RUSAGE_INFO_V2`), the
+  memory macOS charges the process with compressed and swapped pages, instead of the resident size.
+- **M4**: the daemon no longer labels its folders at every start. `code_mode::enable` labels them
+  and marks code mode enabled; `code_mode::follow_move` relabels after `workspaces.move` only once
+  it was. Nothing calls `enable` yet: stage 2 calls it at start when `harness.code_mode` is not
+  `off`, and when the setting is turned on. Until then `labels::status` reports the folders
+  unlabelled, which no caller reaches, since nothing starts a worker.
+- **The moved-in residual** is documented in 05 and C9; no re-label sweep was added (below).
+
+Tests (Windows, `tests/windows_confinement.rs` and `tests/confinement.rs`, CI): the probe reports
+`appcontainer=yes` and `privileges=change-notify-only`; it cannot read a user-only file outside
+the labelled folders, while a control file opened to the container is readable; its
+`CredReadW` of a generic test entry written into the CI runner's own Credential Manager fails;
+its loopback `connect` fails; `CREATE_BREAKAWAY_FROM_JOB` fails with `ERROR_ACCESS_DENIED` and its
+job's limits allow no breakaway (N1); it holds no handle the test made inheritable before the
+launch. The label tests open their folders to the container first, so their denials are the
+label's. A user-only file moved into a labelled folder is not readable; a file moved in from a
+folder opened to the container is, and is logged as the residual. The forced-failure test covers
+the two new launch stages and the new worker check. macOS: the watchdog test runs against the
+footprint. `imperium-core`: nothing is labelled until code mode is enabled.
+
+Findings and decisions:
+
+- **The keyring is closed (C9).** The container's `CredReadW` fails, so the stage 6 condition on
+  the keyring is met; what still blocks the default change is S2 (the stage 4 review) and stages
+  2 to 5.
+- **Restricting SIDs were not tried**: the AppContainer, first in preference, works with the
+  existing launch. LPAC was not adopted (system grants that vary by release); stage 4 decides.
+- **No re-label sweep at launch.** A file moved into a labelled folder keeps its old descriptor.
+  With the container, such a file is readable by an escaped worker only if its old access list
+  opened it to every AppContainer; one moved from the user's own folders stays closed. A sweep
+  of the data and config folders before each program would walk every file there each time (the
+  data folder grows with every session), so it is not cheap, and the container already closes
+  the common case. Stage 4 still checks the daemon's moves into these folders.
 
 ## Stage 2: The tool, the driver and dispatch
 
@@ -1123,7 +1201,8 @@ Findings that refute or change the plan (recorded for stages 4 and 6):
 - Objective: an independent review of stages 1 to 3 against C9 before evaluations run programs
   at scale.
 - Work: a security reviewer (not the implementer) reviews the worker confinement on each OS
-  (the seccomp filter, the macOS profile, the Windows token, job, handle list and labels), the
+  (the seccomp filter, the macOS profile, the Windows token, AppContainer, job, duplicated
+  handles and labels, and whether the worker can move to an LPAC), the
   protocol driver and its event allowlist, the worker loop (upstream's `monty_proto::worker`, or
   the owned loop over `monty::MontyRun` if stage 1 chose it, F12), the dispatch twins, the
   resolver, the suspension and approval-wait budgets, the RAII guard and the approval prefix, and
@@ -1210,7 +1289,7 @@ Findings that refute or change the plan (recorded for stages 4 and 6):
   fails, the default stays `off` and 13 records why. If programs fail mainly on the subset, the next
   step is a prompt line listing what is unsupported; if the model rarely writes programs, the next
   step is the sentence's wording; neither changes the runtime choice.
-- Depends on: stage 5 released, and the stage 4 review recorded as passed (S2); and, if the stage 1 keyring test found a Low worker can read Imperium's Credential Manager entries, that fixed first ([C9](#windows-confinement-mitigation-and-accepted-risk)).
+- Depends on: stage 5 released, and the stage 4 review recorded as passed (S2). The keyring condition C9 set (a Low worker could read the user's Credential Manager entries, stage 1b) was met in stage 1c: the worker runs in an AppContainer and CI shows its `CredReadW` fails ([C9](#windows-confinement-mitigation-and-accepted-risk)).
 
 ## Rollout
 
@@ -1236,11 +1315,12 @@ adds a sidecar; root checks the `Experimental` run for that merge and that the r
   `cargo deny`, the weekly advisory check, the escape suite on every update, one worker process
   per program and fail-closed OS confinement contain the risk. The WebAssembly runtime is the
   fallback.
-- **Windows confinement.** A Low-integrity restricted token, a job object and `NO_READ_UP`
-  label on Imperium's data, config, sessions and scratch folders stop writes, child processes,
-  memory abuse and access to everything Imperium keeps; reads of unlabelled user files and network use after an escape are a
-  user-level read compromise, accepted with its rationale
-  ([C9](#windows-confinement-mitigation-and-accepted-risk)) and restated in 05.
+- **Windows confinement.** A Low-integrity restricted token in an AppContainer, a job object and
+  a `NO_READ_UP` label on Imperium's data, config, sessions and scratch folders stop writes, child
+  processes, memory abuse, the network, the keyring, the user's own files and access to everything
+  Imperium keeps; reads of files an access list opens to every AppContainer after an escape are
+  accepted with their rationale ([C9](#windows-confinement-mitigation-and-accepted-risk)) and
+  restated in 05.
 - **Seccomp allowlist drift.** A Monty or Rust standard library update can need a new system
   call; the worker then fails closed and CI's confinement tests fail, rather than the allowlist
   being widened silently.

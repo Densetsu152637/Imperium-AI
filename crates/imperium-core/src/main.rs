@@ -54,8 +54,8 @@ async fn run() -> anyhow::Result<()> {
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;
     end_children_with_daemon();
-    // Windows: the NO_READ_UP labels code mode's Low-integrity worker needs, in the background.
-    imperium_core::code_mode::label_folders(&paths, &settings.workspaces.root(&paths));
+    // Code mode's Windows labels are set only when code mode is enabled
+    // (`imperium_core::code_mode::enable`), not on every start.
 
     let listener = TcpListener::bind(SocketAddr::from((
         Ipv4Addr::LOCALHOST,
