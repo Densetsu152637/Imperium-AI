@@ -339,6 +339,7 @@ impl Agent {
                     effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
+                let reserved_output = request.max_tokens;
                 let started = Instant::now();
                 let mut first_text = None;
                 let emitter = &self.shared.emitter;
@@ -476,6 +477,7 @@ impl Agent {
                         client: client.as_ref(),
                         model: &self.model,
                         usage: completion.usage,
+                        reserved_output,
                     },
                     &Request {
                         messages: &self.messages,

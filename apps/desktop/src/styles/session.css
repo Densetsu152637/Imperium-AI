@@ -1049,9 +1049,32 @@
   background: transparent;
 }
 
+/* The pre-allocated buffer: hatched, so it reads as reserved and not yet used. */
+.context-segment.ctx-buffer,
+.context-swatch.ctx-buffer {
+  background: repeating-linear-gradient(135deg, var(--text-muted) 0 2px, transparent 2px calc(6 * var(--px)));
+}
+
+.context-swatch.ctx-buffer {
+  border: 1px solid var(--text-muted);
+}
+
+/* Narrow panes: names wrap rather than push the page sideways. */
+.context-breakdown {
+  min-width: 0;
+}
+
+.context-table th[scope="row"] {
+  overflow-wrap: anywhere;
+}
+
+.context-table tfoot tr:first-child th,
+.context-table tfoot tr:first-child td {
+  border-top: 1px solid var(--border-strong);
+}
+
 .context-table tfoot th,
 .context-table tfoot td {
-  border-top: 1px solid var(--border-strong);
   border-bottom: 0;
   color: var(--text);
   font-weight: var(--fw-semibold);
