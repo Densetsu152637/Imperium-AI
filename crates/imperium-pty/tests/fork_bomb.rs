@@ -7,7 +7,7 @@ mod common;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use common::{BOUND, session_members, spec, wait_for_number, wait_until, work_dir};
+use common::{BOUND, session_members, spec, wait_until, work_dir};
 use imperium_pty::Pty;
 
 /// How many more tasks than the user has now the bomb may start.
@@ -23,14 +23,45 @@ const HEADROOM: usize = 400;
 /// died on `newosproc` and it shut the runner down mid-job. So the script checks that the limit
 /// took and exits before the bomb if it did not.
 ///
+/// The kernel does not enforce `RLIMIT_NPROC` for uid 0 (nor with `CAP_SYS_RESOURCE` or
+/// `CAP_SYS_ADMIN`): the limit reads back but the bomb would run uncapped. So the script refuses
+/// to start as root, before the `ulimit`. A non-root user with one of those capabilities is not
+/// detected; CI runs as an ordinary user.
+///
 /// The shell then stays (`exec sleep`, which needs no fork once the cap is reached): a shell that
 /// exits ends the terminal, and the supervisor would kill the bomb before it spreads.
 fn script() -> String {
     format!(
-        "n=$(ps -L -u \"$(id -u)\" -o lwp= | wc -l); cap=$((n + {HEADROOM})); \
-         ulimit -u \"$cap\" && [ \"$(ulimit -u)\" = \"$cap\" ] || {{ echo NO-CAP; exit 99; }}; \
+        "[ \"$(id -u)\" != 0 ] || {{ echo NO-CAP-ROOT; exit 99; }}; \
+         n=$(ps -L -u \"$(id -u)\" -o lwp= | wc -l); cap=$((n + {HEADROOM})); \
+         ulimit -u \"$cap\" && [ \"$(ulimit -u)\" = \"$cap\" ] || {{ echo NO-CAP-LIMIT; exit 99; }}; \
          echo \"CAP:$cap:E\"; b() {{ b | b & }}; b; exec sleep 60"
     )
+}
+
+/// Waits for the script to report its cap; a refusal fails the test at once, with the reason.
+fn wait_for_cap(pty: &Pty) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let text = common::output(pty);
+        assert!(
+            !text.contains("NO-CAP-ROOT"),
+            "the fork bomb refused to start: it runs as root, where RLIMIT_NPROC is not enforced; \
+             run this test as an ordinary user"
+        );
+        assert!(
+            !text.contains("NO-CAP-LIMIT"),
+            "the fork bomb refused to start: `ulimit -u` did not take; output: {text:?}"
+        );
+        if common::number_between(&text, "CAP:", ":E").is_some() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the fork bomb's cap; output so far: {text:?}"
+        );
+        sleep(Duration::from_millis(25));
+    }
 }
 
 #[test]
@@ -40,7 +71,7 @@ fn an_exponential_fork_bomb_is_ended() {
     let pty = Pty::spawn(spec("/bin/bash", &["-c", &script], dir.path())).unwrap();
     let supervisor = pty.pid().unwrap();
     // The cap is in force before the bomb's first fork, or the test stops here.
-    wait_for_number(&pty, "CAP:", ":E");
+    wait_for_cap(&pty);
     let deadline = Instant::now() + BOUND;
     while session_members(supervisor).len() <= 100 {
         if Instant::now() >= deadline {
