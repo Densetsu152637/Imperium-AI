@@ -766,10 +766,16 @@ wrapper that runs whatever follows it (`env`, `sudo`,
 `setsid`, `runas`), so `env python`, `sudo bash` and `timeout 5 sh` get none either. Such a
 call is approved once, or for that exact command for the session.
 
-Allow rules of that kind **already saved** (in the user configuration's `[permissions]` or an
-environment's rules in `environments.json`) are kept as they are and still apply: at start the
-daemon logs a warning naming each one and the file it is in, so the user can review it in
-Settings → Permissions. A later stage migrates them.
+An allow rule of that kind (`run_command` or a wildcard tool, pattern flagged by
+`over_broad_rule`) **is not applied**: a command it would have allowed is judged as if the rule
+were not there, so it asks (a saved `run_command python` no longer allows `python -c ...`). Deny
+and ask rules naming those programs apply as always. Rules already saved (in the user
+configuration's `[permissions]` or an environment's rules in `environments.json`) are not
+deleted or changed: at start the daemon logs a warning for each, and the first session someone
+watches (not a background, pre-approved or evaluation one) shows a one-time notice, beginning
+"Saved allow rules that would let a command run any code are not applied", that names each rule
+and the file it is in, so the user can review it in Settings → Permissions. `imperium chat`
+writes that notice to standard error as a `warning:` line. A later stage migrates them.
 
 Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
 their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,

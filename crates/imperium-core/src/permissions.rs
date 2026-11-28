@@ -10,7 +10,8 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
 use imperium_config::PermissionSettings;
 use imperium_policy::permissions::{
-    Permissions, SharedRules, home_dir, over_broad_rule, validate_grant, validate_rule,
+    Permissions, RULES_NOT_APPLIED, SharedRules, home_dir, over_broad_rule, validate_grant,
+    validate_rule,
 };
 use imperium_policy::{AgentProfile, Allowlist, ProfileRules};
 use imperium_protocol::agents::{AgentPermissions, ToolAccess};
@@ -597,24 +598,26 @@ impl Drop for TurnCap {
     }
 }
 
-/// Saved allow rules that would let a command run any code (an interpreter, a shell, a runner
-/// or a wrapper: [`over_broad_rule`]), each named with the file it is saved in, and logged as a
-/// warning so the user can review them. They are not removed or changed: `global` comes from
-/// the user configuration (`global_file`), `environments` from `environments_file`.
-pub(crate) fn warn_over_broad_rules(
+/// The one-time notice naming saved allow rules that would let a command run any code (an
+/// interpreter, a shell, a runner or a wrapper: [`over_broad_rule`]), each with the file it is
+/// saved in, or none when there are none. Such rules are not applied (the calls they would
+/// allow ask instead) and not removed or changed: `global` comes from the user configuration
+/// (`global_file`), `environments` from `environments_file`. Each is also logged as a warning.
+pub(crate) fn over_broad_rules_notice(
     global: &[PermissionRule],
     global_file: &Path,
     environments: &[imperium_protocol::methods::EnvironmentInfo],
     environments_file: &Path,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
+) -> Option<String> {
+    let mut found = Vec::new();
     let mut check = |rule: &PermissionRule, place: String| {
         if let Some(why) = over_broad_rule(rule) {
-            warnings.push(format!(
-                "the saved allow rule `{} {}` in {place} lets a command run any code ({why}); \
-                 it is kept as saved, so review it in Settings → Permissions",
-                rule.tool, rule.pattern
-            ));
+            tracing::warn!(
+                rule = %format!("{} {}", rule.tool, rule.pattern),
+                file = %place,
+                "a saved allow rule lets a command run any code ({why}); it is not applied"
+            );
+            found.push(format!("`{} {}` in {place}", rule.tool, rule.pattern));
         }
     };
     for rule in global {
@@ -628,10 +631,14 @@ pub(crate) fn warn_over_broad_rules(
             );
         }
     }
-    for warning in &warnings {
-        tracing::warn!("{warning}");
+    if found.is_empty() {
+        return None;
     }
-    warnings
+    Some(format!(
+        "{RULES_NOT_APPLIED}, so the calls they would allow ask instead. Nothing was removed \
+         from your settings; review them in Settings → Permissions: {}",
+        found.join("; ")
+    ))
 }
 
 #[cfg(test)]
@@ -887,25 +894,30 @@ mod tests {
                 ]},
             }))
             .unwrap();
-        let warnings = super::warn_over_broad_rules(
+        let notice = super::over_broad_rules_notice(
             &global,
             Path::new("/cfg/config.toml"),
             &[env],
             Path::new("/data/environments.json"),
-        );
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings[0].contains("run_command python"), "{warnings:?}");
-        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        )
+        .expect("a notice");
+        assert!(notice.starts_with(RULES_NOT_APPLIED), "{notice}");
+        assert!(notice.contains("ask instead"), "{notice}");
+        assert!(notice.contains("`run_command python` in "), "{notice}");
+        assert!(notice.contains("config.toml"), "{notice}");
+        assert!(notice.contains("`run_command sudo bash` in "), "{notice}");
         assert!(
-            warnings[1].contains("run_command sudo bash"),
-            "{warnings:?}"
+            notice.contains("environments.json (environment Work)"),
+            "{notice}"
         );
-        assert!(warnings[1].contains("environments.json"), "{warnings:?}");
-        assert!(warnings[1].contains("Work"), "{warnings:?}");
-        // Nothing to warn about: nothing is said.
         assert!(
-            super::warn_over_broad_rules(&global[1..], Path::new("c"), &[], Path::new("e"))
-                .is_empty()
+            !notice.contains("cargo test") && !notice.contains("git status"),
+            "{notice}"
+        );
+        // Nothing to say: no notice.
+        assert!(
+            super::over_broad_rules_notice(&global[1..], Path::new("c"), &[], Path::new("e"))
+                .is_none()
         );
     }
 }

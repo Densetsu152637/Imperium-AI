@@ -478,6 +478,16 @@ impl DaemonState {
             workspace = workspace.with_project_worktrees();
         }
         let unattended = options.background || !options.pre_approved.is_empty();
+        // Saved allow rules that are not applied, named once: in the first session someone
+        // watches.
+        if !unattended && eval.is_none() {
+            let notice = self
+                .over_broad_notice
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            notices.extend(notice);
+        }
         let permission_mode = options.permission_mode.unwrap_or(if unattended {
             self.unattended_mode(settings)
         } else {

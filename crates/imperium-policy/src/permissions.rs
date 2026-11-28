@@ -716,6 +716,11 @@ fn evaluate_command(
             if risky && rule.action == RuleAction::Allow {
                 return false;
             }
+            // An allow rule that would run any code (`run_command python`, `sudo`, `npx`) is
+            // not applied: the call asks as if the rule were not there.
+            if over_broad_rule(rule).is_some() {
+                return false;
+            }
             prefix_matches(&rule.pattern, &words)
         }));
     }
@@ -1084,9 +1089,14 @@ pub fn over_broad_command(pattern: &str) -> Option<String> {
     None
 }
 
+/// How the notice naming saved allow rules that are not applied ([`over_broad_rule`]) begins,
+/// so a client can pick it out (the CLI also writes it to standard error).
+pub const RULES_NOT_APPLIED: &str =
+    "Saved allow rules that would let a command run any code are not applied";
+
 /// Why a saved rule would allow arbitrary code, when it would: an allow rule for `run_command`
-/// whose pattern [`over_broad_command`] flags. Such rules are kept as saved; the daemon names
-/// them in a warning at load so the user can review them.
+/// whose pattern [`over_broad_command`] flags. Such a rule is not applied to commands (the call
+/// asks instead) but kept as saved; the daemon names it in a one-time notice.
 pub fn over_broad_rule(rule: &PermissionRule) -> Option<String> {
     if rule.action != RuleAction::Allow || !tool_matches(rule, COMMAND_TOOL) || patternless(rule) {
         return None;
@@ -1786,6 +1796,45 @@ mod tests {
             );
         }
         assert!(over_broad_rule(&rule("write_file", "python", Allow)).is_none());
+    }
+
+    #[test]
+    fn a_saved_rule_that_runs_any_code_is_not_applied_and_the_call_asks() {
+        for (global, environment) in [
+            (vec![rule(COMMAND_TOOL, "python", Allow)], Vec::new()),
+            (Vec::new(), vec![rule(COMMAND_TOOL, "python", Allow)]),
+            (vec![rule("*", "sudo", Allow)], Vec::new()),
+        ] {
+            let permissions =
+                Permissions::new(SharedRules::new(global), SharedRules::new(environment));
+            for line in ["python -c 'print(1)'", "sudo python x"] {
+                let target = command(line);
+                assert_eq!(permissions.evaluate(COMMAND_TOOL, &target), None, "{line}");
+                assert_eq!(
+                    permissions
+                        .judge(COMMAND_TOOL, &target, CallKind::Execute, None)
+                        .decision,
+                    ASK,
+                    "{line}"
+                );
+            }
+        }
+        // Deny and ask rules naming an interpreter still apply, and other allow rules too.
+        let permissions = Permissions::new(
+            SharedRules::new(vec![
+                rule(COMMAND_TOOL, "python", Deny),
+                rule(COMMAND_TOOL, "cargo test", Allow),
+            ]),
+            SharedRules::default(),
+        );
+        assert_eq!(
+            permissions.evaluate(COMMAND_TOOL, &command("python -c x")),
+            Some(Deny)
+        );
+        assert_eq!(
+            permissions.evaluate(COMMAND_TOOL, &command("cargo test -p x")),
+            Some(Allow)
+        );
     }
 
     #[test]

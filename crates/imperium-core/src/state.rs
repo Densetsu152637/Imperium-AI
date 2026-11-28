@@ -422,6 +422,9 @@ pub struct DaemonState {
     /// Global and environment permission rules as running sessions see them, and the global
     /// path grants.
     permissions: crate::permissions::PermissionStore,
+    /// The notice naming saved allow rules that are not applied because they would run any code,
+    /// until the first session started after load shows it.
+    over_broad_notice: Mutex<Option<String>>,
     /// Budgets and the usage ledger they count.
     budgets: crate::budgets::BudgetBook,
     /// The session search index, opened on first use.
@@ -490,8 +493,9 @@ impl DaemonState {
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
         let permissions = crate::permissions::PermissionStore::new(&settings.permissions);
-        // Saved allow rules that would run any code are kept, and named for the user to review.
-        crate::permissions::warn_over_broad_rules(
+        // Saved allow rules that would run any code are not applied, and named once for the
+        // user to review (the first session started shows the notice).
+        let over_broad_notice = crate::permissions::over_broad_rules_notice(
             &settings.permissions.rules,
             &paths.user_config_file(),
             &environments.list(),
@@ -546,6 +550,7 @@ impl DaemonState {
             runner: OnceLock::new(),
             resources: Arc::default(),
             permissions,
+            over_broad_notice: Mutex::new(over_broad_notice),
             budgets,
             session_index: OnceLock::new(),
             measurements: model_awareness::Measurements::default(),

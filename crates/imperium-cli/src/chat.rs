@@ -950,6 +950,12 @@ impl Chat {
             }
             SessionEvent::TurnCompleted { .. } => {}
             SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
+            // Saved allow rules that are not applied are a warning: standard error says so too.
+            SessionEvent::Notice { message }
+                if message.starts_with(imperium_policy::permissions::RULES_NOT_APPLIED) =>
+            {
+                eprintln!("warning: {message}");
+            }
             SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
             SessionEvent::MemoryUsed { names } => {
                 println!("\n{tag}· recalled {}", names.join(", "));
