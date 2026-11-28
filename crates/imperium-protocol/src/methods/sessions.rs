@@ -496,6 +496,34 @@ pub struct SessionDeleteResult {
     pub failed: Vec<String>,
 }
 
+/// `session.erase`: permanently deletes a session, running or archived. A running session is
+/// stopped first, and given a short time to end its turn; then everything the daemon stored for
+/// it is removed: its journal (the transcript), its record, its saved tool results, its agents'
+/// kept state, its attachments, its checkpoints and its scratch folder. The call fails, naming
+/// the paths, when a file could not be removed. Nothing outside the session's own storage is touched: its git
+/// worktrees and the project's files stay, and no branch is removed. Announced to every client
+/// as `session.deleted`. It is the desktop app's alone (the app asks over its own local-socket
+/// connection after the user confirms): an agent, a mod, a paired phone, any other local
+/// process or a plain token holder is refused with `-32005`, and a daemon running as a server
+/// refuses it with `-32010` (feature `session_erase`). An environment's persistent agent is
+/// turned off with `environments.update` instead. `session.delete` stays for the command line,
+/// and is now the user's own process's alone too (`-32005` for an agent's command, a mod, a
+/// phone or a plain token holder; `-32010`, feature `session_delete`, on a server).
+#[derive(Debug)]
+pub struct SessionErase;
+
+impl Method for SessionErase {
+    const NAME: &'static str = "session.erase";
+    type Params = SessionEraseParams;
+    type Result = Accepted;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionEraseParams {
+    pub session_id: String,
+}
+
 /// Notification sent to every client when a session is deleted; the payload is
 /// [`SessionDeleteParams`] (without `remove_worktrees`' effect).
 pub const SESSION_DELETED: &str = "session.deleted";

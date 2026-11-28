@@ -156,7 +156,7 @@ async fn call(connection: &mut Connection, method: &str, params: Value) -> Resul
 }
 
 async fn connect(state: &Arc<DaemonState>) -> Connection {
-    let mut connection = Connection::new(Arc::clone(state));
+    let mut connection = Connection::new(Arc::clone(state)).as_desktop_app_for_tests();
     call(
         &mut connection,
         "system.handshake",

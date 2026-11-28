@@ -177,6 +177,10 @@ pub mod server_features {
     pub const CONTAINER_TIER: &str = "container_tier";
     /// vLLM in Docker (`imperium runtime vllm setup --docker`).
     pub const VLLM_DOCKER: &str = "vllm_docker";
+    /// `session.erase`.
+    pub const SESSION_ERASE: &str = "session_erase";
+    /// `session.delete`.
+    pub const SESSION_DELETE: &str = "session_delete";
 }
 
 #[cfg(test)]

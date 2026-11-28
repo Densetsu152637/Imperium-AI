@@ -1,5 +1,12 @@
 use super::*;
 
+/// How long `erase_session` waits for a stopped session to end its turn before it deletes.
+const ERASE_STOP_WAIT: Duration = Duration::from_secs(10);
+/// How many times `erase_session` sweeps for files a halting agent wrote, and how long it lets
+/// them settle between sweeps.
+const ERASE_SWEEPS: usize = 10;
+const ERASE_SETTLE: Duration = Duration::from_millis(100);
+
 impl DaemonState {
     /// Sessions with a turn running: the user's, and background ones.
     pub(crate) fn working_sessions(&self) -> (u32, u32) {
@@ -384,6 +391,108 @@ impl DaemonState {
             },
         );
         Ok(result)
+    }
+
+    /// Permanently deletes a session, running or archived (`session.erase`), in this order: a
+    /// running session is stopped and given a bounded time to end its turn, so nothing writes to
+    /// its files any more; then [`Self::delete_session`] forgets it and removes what it stores;
+    /// then the transcript goes (the journal, the saved conversation and the branch turns file
+    /// beside it). Only the session's own storage is touched: its git worktrees stay, and so do
+    /// the project's files and every branch. A persistent agent's session is refused, and so is
+    /// an unknown id. Fails, naming each path, when a file could not be removed (the session is
+    /// forgotten all the same).
+    pub async fn erase_session(&self, id: &str) -> Result<(), String> {
+        let persistent = self
+            .placements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(|placement| placement.persistent);
+        if persistent {
+            return Err(
+                "this is a persistent agent of its environment; delete the agent in the environment".into(),
+            );
+        }
+        let running = self.session(id);
+        let mut stopped = true;
+        if let Some(session) = &running {
+            session.stop();
+            let deadline = tokio::time::Instant::now() + ERASE_STOP_WAIT;
+            while session.status().0 == SessionStatus::Working {
+                if tokio::time::Instant::now() >= deadline {
+                    stopped = false;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+        // Refuses an id that names no session, so `id` is a known one below.
+        self.delete_session(id, false)?;
+        // Let go of the session: its journal closes with the last holder.
+        drop(running);
+        // A stopped agent may still save its state as it halts, after the first removal: sweep
+        // until a sweep finds nothing, so nothing of the session comes back.
+        // Only the last sweep's failures count: an earlier one may have lost a race.
+        let mut left = Vec::new();
+        let mut settled = false;
+        for _ in 0..ERASE_SWEEPS {
+            left.clear();
+            if !self.sweep_erased(id, &mut left) {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(ERASE_SETTLE).await;
+        }
+        let mut problems = Vec::new();
+        if !stopped {
+            problems.push(format!(
+                "it did not stop within {} s, so it may have kept writing",
+                ERASE_STOP_WAIT.as_secs()
+            ));
+        }
+        if !settled {
+            problems.push("its files kept coming back".to_string());
+        }
+        if !left.is_empty() {
+            left.sort();
+            left.dedup();
+            problems.push(format!("these could not be removed: {}", left.join("; ")));
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the session was deleted from the lists, but {}",
+                problems.join("; ")
+            ))
+        }
+    }
+
+    /// Removes what is left of an erased session's own storage beside its journal; whether
+    /// anything was there. A failure is named in `failed`.
+    fn sweep_erased(&self, id: &str, failed: &mut Vec<String>) -> bool {
+        let sessions = self.paths.data_dir().join("sessions");
+        let journal = sessions.join(format!("{id}.jsonl"));
+        let mut found = false;
+        let mut note = |path: &Path, result: std::io::Result<()>| match result {
+            Ok(()) => found = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failed.push(format!("{}: {error}", path.display())),
+        };
+        for path in [
+            journal.clone(),
+            sessions.join(format!("{id}.messages.json")),
+            sessions.join(format!("{id}.turns.jsonl")),
+        ] {
+            note(&path, std::fs::remove_file(&path));
+        }
+        for path in [
+            imperium_engine::agents_dir(&journal),
+            imperium_engine::results_dir(&journal),
+        ] {
+            note(&path, std::fs::remove_dir_all(&path));
+        }
+        found
     }
 
     /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in

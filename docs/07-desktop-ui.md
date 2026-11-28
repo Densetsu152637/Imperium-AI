@@ -1461,8 +1461,14 @@ environment (or *Show* in a session's menu) opens that environment's view, which
 sessions, with *All sessions* to return; clicking the row opens the session and selects its
 environment. An environment's persistent agents are listed above everything else in its group,
 titled *<environment> · <agent name>* (not renamed) and marked persistent in their tooltip; a session on
-worktrees has a tooltip line for each worktree and branch. Deleting a session is `session.delete` (`imperium session delete`), and a session
-deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
+worktrees has a tooltip line for each worktree and branch. Every session's ⋯ menu ends with *Delete…* (an environment's persistent agent shows it off: its environment turns it off), in the archived list too. It opens a dialog that names the session and says the delete is
+permanent: it removes the transcript and the session's stored data, stops the session first if it is running, and
+touches nothing in the project folders. *Delete session* confirms, *Cancel* or Esc keeps it, and a refusal is shown in the dialog.
+The app asks through its own `session_erase` command (`src-tauri/src/session_erase.rs`), which sends the daemon's
+desktop-only `session.erase` over the app's own local-socket connection (the webview cannot send it, and a server
+refuses it, so the item then fails with the daemon's reason). The session leaves every list and any view of it (its
+transcript, a subagent's log) closes when the daemon announces `session.deleted`, which a session deleted elsewhere
+(`imperium session delete`, `session.delete`) also does. The session's top bar shows only its
 icon, title, and status badge (with *Resume now* while paused); everything else about the
 session sits in the footer under the composer.
 

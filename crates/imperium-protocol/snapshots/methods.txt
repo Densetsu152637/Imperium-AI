@@ -117,6 +117,7 @@ method session.compare_pick
 method session.control
 method session.create
 method session.delete
+method session.erase
 method session.eval_create
 method session.eval_result
 method session.export

@@ -29,12 +29,13 @@ use imperium_protocol::methods::{
     ProjectListResult, ProjectMessage, ProjectMessageParams, ProjectMessageResult, ScheduleList,
     ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult,
     SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult,
-    SessionDelete, SessionDeleteParams, SessionExport, SessionExportParams, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionRunTool,
-    SessionRunToolParams, SessionRunToolResult, SessionSearch, SessionSearchParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
-    SessionToolResult, SessionToolResultParams, SessionToolResultResult, SessionTools,
-    SessionToolsParams, SessionToolsResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionDelete, SessionDeleteParams, SessionErase, SessionEraseParams, SessionExport,
+    SessionExportParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
+    SessionRespondParams, SessionRunTool, SessionRunToolParams, SessionRunToolResult,
+    SessionSearch, SessionSearchParams, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSubscribeResult, SessionToolResult, SessionToolResultParams,
+    SessionToolResultResult, SessionTools, SessionToolsParams, SessionToolsResult, Shutdown,
+    ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
 use imperium_protocol::methods::{
@@ -538,6 +539,11 @@ impl EvalSessions {
             list.ids.push(id.to_string());
             true
         }
+    }
+
+    /// Whether `id` is one of this connection's evaluation sessions.
+    pub(crate) fn owns(&self, id: &str) -> bool {
+        self.list().ids.iter().any(|known| known == id)
     }
 
     /// Lets go of `id`: its owner deleted it.
@@ -1325,7 +1331,7 @@ mod tests {
 
     #[tokio::test]
     async fn attachments_are_staged_inside_the_session_and_checked_again_on_send() {
-        let mut connection = handshaken();
+        let mut connection = handshaken().as_desktop_app_for_tests();
         let project = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("notes.md"), "# Plan").unwrap();
