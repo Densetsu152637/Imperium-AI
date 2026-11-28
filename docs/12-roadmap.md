@@ -984,6 +984,24 @@ and `environments.agent_update` (protocol 0.28)
     setting that raises it. The existing CAS and code-mode limits are reused, not doubled. CI
     runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
     themselves ([plan](plans/resource-caps.md)).
+<!-- markdownlint-disable-next-line MD029 -->
+69. **Built-in reference MCP server** (planned). Imperium ships an offline reference server as a
+    built-in [MCP](05-tools-and-isolation.md#mcp) server, so a small local model (Princeps in
+    particular) looks words and APIs up instead of guessing them from its weights. One `lookup`
+    tool spans several sources: a dictionary (WordNet, plus Wiktionary for definitions,
+    inflections, spelling and synonyms), and offline documentation a coding agent uses (the Rust
+    standard library and crate docs, MDN, the Python docs). Each answer names its source and
+    version. It is a deferred tool under `tool_loading=auto`, so its schema costs nothing until a
+    model asks for it, and it is listed under Connectors as built in, where it can be turned
+    off. The data packs are downloaded on first use, pinned and verified by hash, and stored under
+    `<data>`; they are read-only, and the server runs in a cap unit
+    ([item 68](#next-in-order)) with no network after the download. Licences: WordNet is
+    permissive; Wiktionary data is CC BY-SA, so Imperium ships its attribution, and a derived
+    pack is shared under the same licence. Princeps training data gets tool-use traces in which
+    the model calls `lookup` instead of inventing a definition or signature
+    ([item 67](#next-in-order)). An eval through `imperium run --headless --json` measures
+    definition and API-signature accuracy and the unnecessary-call rate, with and without the
+    tool; the server stays only if it helps.
 
 Custom agents come from Imperium's own open-weight model (Princeps, run under the Emperor and
 Consul harness profiles, [item 67](#next-in-order)), or from agent files
