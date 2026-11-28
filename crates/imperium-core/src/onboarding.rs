@@ -1,7 +1,8 @@
 //! Setting up models from the app without editing files: model folders (`models.add_folder`,
 //! `models.remove_folder`), the default model (`models.use`), a test prompt (`models.test`),
 //! and the llama.cpp runtime (`runtime.status`, `runtime.set_server`, `runtime.install`; the
-//! automatic install and package-manager updates are in [`crate::llama_runtime`]).
+//! update check, `runtime.update` and package-manager updates are in [`crate::llama_runtime`]).
+//! Nothing downloads without the user's yes: `runtime.status` only lists what is on offer.
 //!
 //! Each change is written to the user's `config.toml` through the settings table (as
 //! `config.set` does) and applied to the running daemon at once: the live settings take the new
@@ -16,18 +17,19 @@ use imperium_api::{LocalModels, LocalRequest};
 use imperium_config::{SetError, Settings};
 use imperium_local::hardware::{Hardware, probe};
 use imperium_local::runtime::{
-    GITHUB_API, build_number, install, llama_cpp_ref, pack_for, packs_for, pinned_build,
-    remove_earlier_releases, resolve,
+    AutoInstall, GITHUB_API, Resolved, activate, build_number, install, installed_ref,
+    llama_cpp_ref, pack_for, packs_for, pinned_build, ref_build, resolve,
 };
 use imperium_local::runtime_check::{
     self, find_existing, find_unverified, has_cuda_backend, home_dir,
 };
+use imperium_local::runtime_release::{Checked, SOURCE, plan, read_cache};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
     LocalModelListResult, ModelAddEndpointParams, ModelAddEndpointResult, ModelFolderParams,
     ModelRescanResult, ModelTestParams, ModelTestResult, ModelUseParams, ModelUseResult,
-    RUNTIME_INSTALL_PROGRESS, RuntimeDevice, RuntimeInstallJob, RuntimeSetServerParams,
-    RuntimeStatusResult,
+    RUNTIME_INSTALL_PROGRESS, RuntimeDevice, RuntimeDownloadOffer, RuntimeInstallJob,
+    RuntimeSetServerParams, RuntimeStatusResult,
 };
 use serde_json::{Value, json};
 
@@ -578,8 +580,6 @@ pub(crate) async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResu
         local.set_server(resolved.label(), resolved.server.clone());
     }
     let server = resolved.server.clone();
-    // Opening the panel is a first need of a runtime: one is installed now when none is usable.
-    crate::llama_runtime::install_if_needed(&state, &resolved, &hardware).await;
     let check = match resolved.check.clone() {
         Some(check) => check,
         None => {
@@ -609,6 +609,33 @@ pub(crate) async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResu
         .collect();
     let backend = crate::llama_runtime::backend_label(&resolved, &device_ids);
     let build = build_number(check.version.as_deref());
+    // While local models are off nothing about the runtime is checked, offered or installed.
+    let local_on = settings.models.local.enabled;
+    let cached = if local_on {
+        read_cache(state.data_dir())
+    } else {
+        None
+    };
+    let current = build.or_else(|| {
+        installed_ref(state.data_dir(), &server)
+            .as_deref()
+            .and_then(ref_build)
+    });
+    let update_check = local_on.then(|| {
+        crate::llama_runtime::describe(
+            &state,
+            &resolved,
+            current,
+            &hardware,
+            cached.as_ref(),
+            llamacpp.check_updates,
+        )
+    });
+    let offers = if local_on {
+        download_offers(&state, &resolved, &hardware, cached.as_ref())
+    } else {
+        Vec::new()
+    };
     // Unverified downloads are listed last and only run once the user picks one.
     let candidates = find_existing(home.as_deref())
         .into_iter()
@@ -654,7 +681,86 @@ pub(crate) async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResu
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone(),
+        update_check,
+        offers,
     }
+}
+
+/// The downloads on offer, none started: llama.cpp when local models are on and no usable
+/// runtime is there (the size comes from the last check of the latest release, when there is
+/// one), and vLLM when a vLLM model folder is listed and no vLLM is set up. Each waits for the
+/// user's yes.
+fn download_offers(
+    state: &DaemonState,
+    resolved: &Resolved,
+    hardware: &Hardware,
+    checked: Option<&Checked>,
+) -> Vec<RuntimeDownloadOffer> {
+    let mut offers = Vec::new();
+    let packs = packs_for(&state.settings().runtime.llamacpp.backend, hardware);
+    let why = match crate::llama_runtime::decide(state, resolved, hardware) {
+        AutoInstall::Keep => None,
+        AutoInstall::Missing => Some("No llama.cpp runtime is installed.".to_string()),
+        AutoInstall::CpuOnly => Some(
+            "The llama-server found here runs on the CPU only, and this computer has a GPU."
+                .to_string(),
+        ),
+        AutoInstall::Outdated => Some(format!(
+            "Imperium's llama.cpp build is older than {}.",
+            llama_cpp_ref()
+        )),
+    };
+    if let Some(why) = why {
+        let bytes = checked
+            .and_then(|checked| plan(&checked.release, &packs, GITHUB_API).ok())
+            .map(|planned| planned.bytes);
+        offers.push(RuntimeDownloadOffer {
+            runtime: "llamacpp".into(),
+            source: SOURCE.into(),
+            message: format!(
+                "{why} Imperium can download llama.cpp's latest release for this computer ({}) \
+                 from {SOURCE}, verified against its SHA-256 checksums, and use it. Nothing is \
+                 downloaded until you approve it.",
+                packs[0]
+            ),
+            bytes,
+            command: "imperium runtime install".into(),
+        });
+    }
+    offers.extend(vllm_offer(state));
+    offers
+}
+
+/// vLLM is on offer when a Hugging Face model folder (`vllm:<id>`) is listed and neither a
+/// `runtime.vllm.command` nor the managed environment is there. Setting it up is
+/// `imperium runtime vllm setup`, which shows what it needs and asks first.
+fn vllm_offer(state: &DaemonState) -> Option<RuntimeDownloadOffer> {
+    if !state.settings().runtime.vllm.command.trim().is_empty()
+        || imperium_local::vllm_env::managed(state.data_dir()).is_some()
+    {
+        return None;
+    }
+    let needed = state
+        .local_models()
+        .models
+        .iter()
+        .any(|row| row.runtime == "vllm");
+    needed.then(|| RuntimeDownloadOffer {
+        runtime: "vllm".into(),
+        source: "pypi.org (vLLM, installed with uv) or Docker Hub".into(),
+        message:
+            "A model folder needs vLLM, which is not set up. Imperium can create its own vLLM \
+                  environment (about 10 to 15 GiB, on Linux or WSL2 with an NVIDIA GPU); the \
+                  command shows the requirements and asks before downloading anything. Nothing is \
+                  downloaded until you approve it."
+                .into(),
+        bytes: None,
+        command: if cfg!(windows) {
+            "imperium runtime vllm setup --wsl".into()
+        } else {
+            "imperium runtime vllm setup".into()
+        },
+    })
 }
 
 /// Applies a setting `config.set` just saved, for the settings this module applies live
@@ -754,6 +860,86 @@ pub(crate) async fn set_server(
     Ok(runtime_status(state).await)
 }
 
+/// Points `runtime.llamacpp.custom_path` at `server`, a build an update installed beside the
+/// user's own folder, and applies it to the running daemon.
+pub(crate) fn use_custom_server(state: &DaemonState, server: &Path) -> Result<(), ErrorObject> {
+    let value = Value::String(server.display().to_string());
+    save(
+        state,
+        "runtime.llamacpp.custom_path",
+        &value,
+        |next, fresh| {
+            next.runtime
+                .llamacpp
+                .custom_path
+                .clone_from(&fresh.runtime.llamacpp.custom_path);
+        },
+    )?;
+    apply_server(state);
+    Ok(())
+}
+
+/// Starts a job in the install slot (`runtime.install` and `runtime.update` share it): the new
+/// job, or the one already running.
+pub(crate) fn begin_job(
+    state: &DaemonState,
+    pack: &str,
+) -> Result<RuntimeInstallJob, RuntimeInstallJob> {
+    let job = {
+        let mut slot = state
+            .runtime_install
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(running) = slot.as_ref().filter(|job| job.state == "running") {
+            return Err(running.clone());
+        }
+        let job = RuntimeInstallJob {
+            pack: pack.to_string(),
+            state: "running".into(),
+            done_bytes: 0,
+            total_bytes: 0,
+            message: None,
+        };
+        *slot = Some(job.clone());
+        job
+    };
+    state.announce(RUNTIME_INSTALL_PROGRESS, &job);
+    Ok(job)
+}
+
+/// A progress callback for an installation: it announces the job's bytes at most every
+/// [`PROGRESS_INTERVAL`].
+pub(crate) fn job_progress(state: Arc<DaemonState>) -> impl Fn(&str, u64, u64) + Send + Sync {
+    let last = std::sync::Mutex::new(
+        Instant::now()
+            .checked_sub(PROGRESS_INTERVAL)
+            .unwrap_or_else(Instant::now),
+    );
+    move |installing: &str, done: u64, total: u64| {
+        let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.elapsed() < PROGRESS_INTERVAL && done != 0 {
+            return;
+        }
+        *last = Instant::now();
+        update_install(&state, |job| {
+            installing.clone_into(&mut job.pack);
+            job.done_bytes = done;
+            job.total_bytes = total;
+        });
+    }
+}
+
+/// Ends the running job: done with `message` (where the server is), or failed with the reason.
+pub(crate) fn finish_job(state: &DaemonState, ok: bool, message: String) {
+    update_install(state, |job| {
+        job.state = if ok { "done" } else { "failed" }.into();
+        if ok {
+            job.done_bytes = job.total_bytes.max(job.done_bytes);
+        }
+        job.message = Some(message);
+    });
+}
+
 fn update_install(state: &DaemonState, change: impl FnOnce(&mut RuntimeInstallJob)) {
     let job = {
         let mut slot = state
@@ -835,17 +1021,25 @@ pub(crate) async fn install_runtime(
             Ok(installed) => {
                 tracing::info!(
                     pack = %installed.pack,
+                    release = %installed.release,
                     server = %installed.server.display(),
                     skipped = ?installed.skipped,
                     "llama.cpp runtime installed"
                 );
+                // New loads use it from now on; the build used before stays for rollback and
+                // no more than two are kept.
+                if let Err(error) = activate(state.data_dir(), &installed.release) {
+                    tracing::warn!(%error, "the installed llama.cpp build was not switched to");
+                    update_install(&state, |job| {
+                        job.state = "failed".into();
+                        job.message = Some(format!(
+                            "{} is installed but could not be switched to: {error}",
+                            installed.release
+                        ));
+                    });
+                    return;
+                }
                 apply_server(&state);
-                // One earlier release stays until the new build has loaded a model.
-                let data_dir = state.data_dir().to_path_buf();
-                let _ = tokio::task::spawn_blocking(move || {
-                    remove_earlier_releases(&data_dir, false);
-                })
-                .await;
                 update_install(&state, |job| {
                     job.state = "done".into();
                     job.pack.clone_from(&installed.pack);

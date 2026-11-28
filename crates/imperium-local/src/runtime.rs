@@ -8,10 +8,13 @@
 //! machine that starts, takes the flags Imperium passes, and preferably sees the GPU
 //! ([`resolve`]).
 //!
-//! llama.cpp has no updater of its own, so the build moves with Imperium: when an update pins a
-//! newer release, [`auto_install`] says to install it the next time a local model is needed;
-//! the earlier build is kept (and used) until the new one has passed its checks and loaded a
-//! model once ([`refs_to_remove`]).
+//! llama.cpp has no updater of its own. An install or an update (`imperium runtime update`)
+//! fetches llama.cpp's latest release, installs it beside the others under
+//! `runtimes/llama.cpp/<build>/`, smoke-tests it, and only then switches to it ([`activate`]);
+//! the build used before stays for rollback (`imperium runtime use --build`), and no more than
+//! two builds are kept. A `custom_path` outside the data folder is never modified: an update
+//! installs the new build in a sibling folder instead ([`Place::Beside`]). Nothing is downloaded
+//! without the user's approval: [`auto_install`] only says when to offer it.
 
 use imperium_api::encoding::hex;
 use std::future::Future;
@@ -21,7 +24,7 @@ use std::pin::Pin;
 
 use futures_util::StreamExt;
 use imperium_config::LlamaCppSettings;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::hardware::{Hardware, platform};
@@ -47,23 +50,135 @@ pub fn archive_name(pack: &str) -> String {
     format!("imperium-runtime-llama.cpp-{pack}")
 }
 
-/// The folder a build (`<os>-<arch>-<backend>`) is installed in.
+/// The folder a build (`<os>-<arch>-<backend>`) of the pinned release is installed in.
 pub fn pack_dir(data_dir: &Path, pack: &str) -> PathBuf {
-    runtimes_root(data_dir).join(archive_name(pack))
+    pack_dir_in(data_dir, llama_cpp_ref(), pack)
 }
 
-fn runtimes_root(data_dir: &Path) -> PathBuf {
-    releases_root(data_dir).join(llama_cpp_ref())
+/// The folder a build of `release` (such as `b12900`) is installed in.
+pub fn pack_dir_in(data_dir: &Path, release: &str, pack: &str) -> PathBuf {
+    release_root(data_dir, release).join(archive_name(pack))
+}
+
+fn release_root(data_dir: &Path, release: &str) -> PathBuf {
+    releases_root(data_dir).join(release)
 }
 
 /// The folder holding one folder per installed llama.cpp release.
-fn releases_root(data_dir: &Path) -> PathBuf {
+pub fn releases_root(data_dir: &Path) -> PathBuf {
     data_dir.join("runtimes").join("llama.cpp")
 }
 
 /// The build number of a release ref such as `b12180`.
 pub fn ref_build(reference: &str) -> Option<u64> {
     reference.strip_prefix('b')?.parse().ok()
+}
+
+/// Whether `reference` is a llama.cpp release ref of the plain form `b<digits>`: the only form
+/// used as a folder name, so nothing else (a path, `b+5`) is ever joined onto a path.
+pub fn valid_ref(reference: &str) -> bool {
+    reference.strip_prefix('b').is_some_and(|digits| {
+        !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// Which installed release new loads use, kept in `active.json` beside the releases: the one a
+/// first install or an update switched to, and the one before it (kept for rollback, so at most
+/// two builds stay installed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Active {
+    pub release: String,
+    #[serde(default)]
+    pub previous: Option<String>,
+}
+
+fn active_path(data_dir: &Path) -> PathBuf {
+    releases_root(data_dir).join("active.json")
+}
+
+/// The release in use and the one kept before it; `None` before the first switch, or when the
+/// file is unreadable or names something that is not a release ref.
+pub fn read_active(data_dir: &Path) -> Option<Active> {
+    let text = std::fs::read_to_string(active_path(data_dir)).ok()?;
+    let active: Active = serde_json::from_str(&text).ok()?;
+    (valid_ref(&active.release) && active.previous.as_deref().is_none_or(valid_ref))
+        .then_some(active)
+}
+
+/// Switches new loads to the installed `release`, keeps the one used before as `previous`, and
+/// deletes every other installed release (never more than two builds stay). The files of a
+/// build still in use (a model loaded from it, on Windows) are left for a later try.
+pub fn activate(data_dir: &Path, release: &str) -> std::io::Result<()> {
+    if !valid_ref(release) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{release} is not a llama.cpp release"),
+        ));
+    }
+    let previous = match read_active(data_dir) {
+        Some(old) if old.release != release => Some(old.release),
+        Some(old) => old.previous,
+        None => installed_refs(data_dir)
+            .into_iter()
+            .find(|name| name != release),
+    }
+    .filter(|name| name != release);
+    let active = Active {
+        release: release.to_string(),
+        previous,
+    };
+    let path = active_path(data_dir);
+    std::fs::create_dir_all(releases_root(data_dir))?;
+    let temp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(&active).map_err(std::io::Error::other)?;
+    std::fs::write(&temp, text)?;
+    std::fs::rename(&temp, &path)?;
+    prune_builds(data_dir);
+    Ok(())
+}
+
+/// Rolls back (or forward) to the installed `release` (`imperium runtime use --build`): the
+/// release must be installed with a `llama-server`.
+pub fn use_build(data_dir: &Path, release: &str) -> Result<(), String> {
+    if !valid_ref(release) {
+        return Err(format!("{release} is not a llama.cpp build such as b12180"));
+    }
+    let has_server = std::fs::read_dir(release_root(data_dir, release))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| server_in(&entry.path()).is_file());
+    if !has_server {
+        let installed = installed_refs(data_dir);
+        return Err(format!(
+            "{release} is not installed under {} (installed: {})",
+            releases_root(data_dir).display(),
+            if installed.is_empty() {
+                "none".to_string()
+            } else {
+                installed.join(", ")
+            }
+        ));
+    }
+    activate(data_dir, release).map_err(|error| error.to_string())
+}
+
+/// Deletes the installed releases other than the one in use and the one kept before it.
+pub fn prune_builds(data_dir: &Path) {
+    let Some(active) = read_active(data_dir) else {
+        return;
+    };
+    for name in installed_refs(data_dir) {
+        if name == active.release || active.previous.as_deref() == Some(name.as_str()) {
+            continue;
+        }
+        match std::fs::remove_dir_all(release_root(data_dir, &name)) {
+            Ok(()) => tracing::info!(release = %name, "removed an old llama.cpp build"),
+            Err(error) => {
+                tracing::debug!(release = %name, %error, "old llama.cpp build not removed yet");
+            }
+        }
+    }
 }
 
 /// The build number of the pinned release ([`llama_cpp_ref`]).
@@ -112,7 +227,14 @@ pub fn refs_to_remove(installed: &[String], current: &str, current_started: bool
 /// (a model still loaded from it, on Windows) is left for a later try.
 pub fn remove_earlier_releases(data_dir: &Path, current_started: bool) {
     let installed = installed_refs(data_dir);
+    let kept = read_active(data_dir);
     for old in refs_to_remove(&installed, llama_cpp_ref(), current_started) {
+        // The build in use and the one kept for rollback stay, whatever their age.
+        if kept.as_ref().is_some_and(|kept| {
+            kept.release == old || kept.previous.as_deref() == Some(old.as_str())
+        }) {
+            continue;
+        }
         let dir = releases_root(data_dir).join(&old);
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => tracing::info!(release = %old, "removed an earlier llama.cpp build"),
@@ -176,12 +298,17 @@ fn server_for(
     }
     let packs = packs_for(backend, hardware);
     let current = llama_cpp_ref();
-    // The pinned release first, then (until it is installed) the newest earlier one.
-    let releases = std::iter::once(current.to_string()).chain(
-        installed_refs(data_dir)
-            .into_iter()
-            .filter(|name| ref_build(name) < ref_build(current)),
-    );
+    // The release an install or update switched to, then the pinned release, then (until it is
+    // installed) the newest earlier one.
+    let releases = read_active(data_dir)
+        .map(|active| active.release)
+        .into_iter()
+        .chain(std::iter::once(current.to_string()))
+        .chain(
+            installed_refs(data_dir)
+                .into_iter()
+                .filter(|name| ref_build(name) < ref_build(current)),
+        );
     releases
         .flat_map(|release| {
             let root = releases_root(data_dir).join(release);
@@ -346,7 +473,8 @@ pub fn build_number(version: Option<&str>) -> Option<u64> {
     word.strip_prefix('b').unwrap_or(word).parse().ok()
 }
 
-/// Whether the daemon installs llama.cpp's build for this machine by itself.
+/// Whether llama.cpp's build for this machine should be offered for download (the daemon never
+/// downloads it without the user's approval).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoInstall {
     /// Keep the `llama-server` in use (or the lack of one).
@@ -367,7 +495,7 @@ impl AutoInstall {
     }
 }
 
-/// Whether to install llama.cpp's build without being asked, from what [`resolve`] chose
+/// Whether to offer llama.cpp's build for download, from what [`resolve`] chose
 /// (`installed_ref`: the release of the build in use when it is one installed under the data
 /// folder, [`installed_ref`]): never for a custom `llama-server`, with
 /// `runtime.llamacpp.auto_install` off, or once an installation has been tried since the
@@ -435,7 +563,7 @@ fn io(context: impl Into<String>) -> impl FnOnce(std::io::Error) -> InstallError
 }
 
 /// A GitHub release, as the REST API lists it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Release {
     #[serde(default)]
     pub tag_name: String,
@@ -443,7 +571,7 @@ pub struct Release {
 }
 
 /// A release asset.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Asset {
     pub name: String,
     /// The API URL, which serves the file to `Accept: application/octet-stream` (the
@@ -461,6 +589,8 @@ pub struct Asset {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     pub pack: String,
+    /// The release the assets belong to, such as `b12900`.
+    pub release: String,
     pub assets: Vec<Asset>,
 }
 
@@ -547,6 +677,11 @@ pub fn select(release: &Release, pack: &str) -> Option<Selection> {
     );
     Some(Selection {
         pack: pack.to_string(),
+        release: if release.tag_name.is_empty() {
+            llama_cpp_ref().to_string()
+        } else {
+            release.tag_name.clone()
+        },
         assets,
     })
 }
@@ -583,6 +718,58 @@ pub async fn fetch_release(
         .await
         .map_err(|error| fail(error.to_string()))?;
     serde_json::from_slice(&bytes).map_err(|error| fail(error.to_string()))
+}
+
+/// A release asset's name as one plain file name: letters, digits and `.`, `-`, `_`, `+`, no
+/// separators, and not `.` or `..`.
+pub fn safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 200
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+}
+
+/// The address of release asset `id` under the API at `api`: where llama.cpp's own repository
+/// serves it, and the only place an asset is downloaded from.
+pub fn official_asset_prefix(api: &str) -> String {
+    format!(
+        "{}/repos/{LLAMA_CPP_REPOSITORY}/releases/assets/",
+        api.trim_end_matches('/')
+    )
+}
+
+/// Reads llama.cpp's latest release from `api` (normally [`GITHUB_API`]). Refuses a release
+/// whose tag is not a plain `b<digits>` build.
+pub async fn fetch_latest(http: &reqwest::Client, api: &str) -> Result<Release, InstallError> {
+    let url = format!(
+        "{}/repos/{LLAMA_CPP_REPOSITORY}/releases/latest",
+        api.trim_end_matches('/')
+    );
+    let fail = |error: String| InstallError::Release("latest".to_string(), error);
+    let response = http
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| fail(error.to_string()))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| fail(error.to_string()))?;
+    let release: Release =
+        serde_json::from_slice(&bytes).map_err(|error| fail(error.to_string()))?;
+    if !valid_ref(&release.tag_name) {
+        return Err(fail(format!(
+            "the release is named {:?}, not a build such as b12180",
+            release.tag_name
+        )));
+    }
+    Ok(release)
 }
 
 /// Progress: the build being installed, bytes downloaded so far, and its assets' total size.
@@ -632,32 +819,90 @@ async fn download(
     Ok(())
 }
 
-/// Downloads and verifies `selection`'s assets and installs them as its build under
-/// `data_dir`, replacing an earlier install only once everything is in place. Returns the
-/// path of `llama-server`.
+/// Where an install puts a build.
+#[derive(Debug, Clone)]
+pub enum Place {
+    /// Under the data folder, `runtimes/llama.cpp/<release>/imperium-runtime-llama.cpp-<pack>`,
+    /// replacing an earlier install of the same build.
+    Managed(PathBuf),
+    /// In a new folder `<container>/<release>` next to the user's own llama.cpp folders (an
+    /// update of a `custom_path`): never replaces anything, and refuses when it exists.
+    Beside(PathBuf),
+}
+
+impl Place {
+    /// Where `pack` of `release` is installed.
+    pub fn target(&self, release: &str, pack: &str) -> PathBuf {
+        match self {
+            Place::Managed(data_dir) => pack_dir_in(data_dir, release, pack),
+            Place::Beside(container) => container.join(release),
+        }
+    }
+
+    /// The folder the download is unpacked in before it moves to its place: on the same volume
+    /// as the target, so the move is a rename.
+    fn staging(&self, release: &str, pack: &str) -> PathBuf {
+        match self {
+            Place::Managed(data_dir) => {
+                release_root(data_dir, release).join(format!(".staging-{pack}"))
+            }
+            Place::Beside(container) => container.join(format!(".imperium-staging-{release}")),
+        }
+    }
+
+    /// Removes the folder of `release` when nothing is left in it (a failed install).
+    fn tidy(&self, release: &str) {
+        if let Place::Managed(data_dir) = self {
+            let _ = std::fs::remove_dir(release_root(data_dir, release));
+        }
+    }
+}
+
+/// Downloads and verifies `selection`'s assets and installs them as its build at `place`,
+/// replacing an earlier install only once everything is in place (and, for [`Place::Beside`],
+/// never replacing anything). Returns the path of `llama-server`.
 pub async fn install_selection(
     http: &reqwest::Client,
-    data_dir: &Path,
+    place: &Place,
     selection: &Selection,
     progress: Progress<'_>,
 ) -> Result<PathBuf, InstallError> {
     let pack = selection.pack.as_str();
-    let root = runtimes_root(data_dir);
-    let staging = root.join(format!(".staging-{pack}"));
+    let target = place.target(&selection.release, pack);
+    let in_the_way = || {
+        InstallError::Io(
+            target.display().to_string(),
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "already exists; Imperium never replaces a folder it did not install",
+            ),
+        )
+    };
+    if matches!(place, Place::Beside(_)) && std::fs::symlink_metadata(&target).is_ok() {
+        return Err(in_the_way());
+    }
+    let staging = place.staging(&selection.release, pack);
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(io(staging.display().to_string()))?;
     let result = stage(http, selection, &staging, progress).await;
     let installed = match result {
         Ok(staged) => {
-            let target = pack_dir(data_dir, pack);
-            let _ = std::fs::remove_dir_all(&target);
-            std::fs::rename(&staged, &target)
-                .map_err(io(target.display().to_string()))
-                .map(|()| server_in(&target))
+            if matches!(place, Place::Managed(_)) {
+                let _ = std::fs::remove_dir_all(&target);
+            }
+            // Beside the user's folders, one that appeared meanwhile is not replaced.
+            if matches!(place, Place::Beside(_)) && std::fs::symlink_metadata(&target).is_ok() {
+                Err(in_the_way())
+            } else {
+                std::fs::rename(&staged, &target)
+                    .map_err(io(target.display().to_string()))
+                    .map(|()| server_in(&target))
+            }
         }
         Err(error) => Err(error),
     };
     let _ = std::fs::remove_dir_all(&staging);
+    place.tidy(&selection.release);
     installed
 }
 
@@ -675,6 +920,12 @@ async fn stage(
     let mut offset = 0;
     let mut unpacked = Vec::new();
     for (index, asset) in selection.assets.iter().enumerate() {
+        if !safe_file_name(&asset.name) {
+            return Err(InstallError::Download(
+                asset.name.clone(),
+                "the file name is not a plain file name".into(),
+            ));
+        }
         let archive = staging.join(&asset.name);
         download(http, asset, &archive, &report, offset).await?;
         offset += asset.size;
@@ -701,7 +952,7 @@ async fn stage(
         merge_into(&content_root(companion), &bin)?;
     }
     let manifest = serde_json::json!({
-        "llama_cpp_ref": llama_cpp_ref(),
+        "llama_cpp_ref": selection.release,
         "repository": LLAMA_CPP_REPOSITORY,
         "assets": selection.assets.iter().map(|asset| serde_json::json!({
             "name": asset.name,
@@ -1072,14 +1323,17 @@ pub type Verify<'a> =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
     pub pack: String,
+    /// The release it belongs to, such as `b12900`.
+    pub release: String,
     pub server: PathBuf,
     /// The builds passed over and why, in order.
     pub skipped: Vec<String>,
 }
 
-/// Installs the first of `packs` (best first) that `release` has and that `verify` accepts.
-/// A build that does not run is removed and the next one tried; one that runs without seeing
-/// the GPU is kept only when no later build does better. A failed download stops at once.
+/// Installs the first of `packs` (best first) that `release` has and that `verify` accepts, under
+/// `data_dir`. A build that does not run is removed and the next one tried; one that runs
+/// without seeing the GPU is kept only when no later build does better. A failed download stops
+/// at once.
 pub async fn install_first_working(
     http: &reqwest::Client,
     release: &Release,
@@ -1088,9 +1342,32 @@ pub async fn install_first_working(
     verify: Verify<'_>,
     progress: Progress<'_>,
 ) -> Result<Installed, InstallError> {
+    install_first_working_at(
+        http,
+        release,
+        &Place::Managed(data_dir.to_path_buf()),
+        packs,
+        verify,
+        progress,
+    )
+    .await
+}
+
+/// [`install_first_working`] at `place`. Beside the user's folders there is one folder for the
+/// release, so the build that runs without the GPU is never kept while a later one is tried
+/// (the update passes a strict [`smoke_test`], which refuses it).
+pub async fn install_first_working_at(
+    http: &reqwest::Client,
+    release: &Release,
+    place: &Place,
+    packs: &[String],
+    verify: Verify<'_>,
+    progress: Progress<'_>,
+) -> Result<Installed, InstallError> {
     let mut skipped = Vec::new();
     let mut fallback: Option<(String, PathBuf)> = None;
     let mut tried = false;
+    let shared = matches!(place, Place::Beside(_));
     for pack in packs {
         let Some(selection) = select(release, pack) else {
             skipped.push(format!(
@@ -1099,15 +1376,21 @@ pub async fn install_first_working(
             ));
             continue;
         };
+        if shared && fallback.is_some() {
+            // The folder of the earlier build that runs without the GPU is in the way.
+            break;
+        }
         tried = true;
-        let server = install_selection(http, data_dir, &selection, progress).await?;
+        let server = install_selection(http, place, &selection, progress).await?;
+        let target = place.target(&selection.release, pack);
         match verify(pack.clone(), server.clone()).await {
             Verdict::Good => {
                 if let Some((earlier, _)) = fallback.take() {
-                    let _ = std::fs::remove_dir_all(pack_dir(data_dir, &earlier));
+                    let _ = std::fs::remove_dir_all(place.target(&selection.release, &earlier));
                 }
                 return Ok(Installed {
                     pack: pack.clone(),
+                    release: selection.release,
                     server,
                     skipped,
                 });
@@ -1117,18 +1400,25 @@ pub async fn install_first_working(
                 if fallback.is_none() {
                     fallback = Some((pack.clone(), server));
                 } else {
-                    let _ = std::fs::remove_dir_all(pack_dir(data_dir, pack));
+                    let _ = std::fs::remove_dir_all(&target);
+                    place.tidy(&selection.release);
                 }
             }
             Verdict::Broken(why) => {
                 skipped.push(format!("{pack}: {why}"));
-                let _ = std::fs::remove_dir_all(pack_dir(data_dir, pack));
+                let _ = std::fs::remove_dir_all(&target);
+                place.tidy(&selection.release);
             }
         }
     }
     match fallback {
         Some((pack, server)) => Ok(Installed {
             pack,
+            release: if release.tag_name.is_empty() {
+                llama_cpp_ref().to_string()
+            } else {
+                release.tag_name.clone()
+            },
             server,
             skipped,
         }),
@@ -1140,9 +1430,37 @@ pub async fn install_first_working(
     }
 }
 
-/// Installs llama.cpp's build for this machine: reads the pinned release from `api` and
-/// installs the first of `packs` that runs here ([`install_first_working`], checked with
-/// [`runtime_check::check`]).
+/// The check of an installed build, for [`install_first_working`]: it starts and takes every
+/// flag Imperium passes, and where this machine has a GPU and the build is for one, sees it.
+/// With `strict` a build that runs without the GPU is refused (an update never switches a
+/// machine's GPU build to one that does not use the GPU).
+pub fn smoke_test(
+    hardware: &Hardware,
+    strict: bool,
+) -> impl Fn(String, PathBuf) -> Pin<Box<dyn Future<Output = Verdict> + Send>> + Send + Sync + 'static
+{
+    let hardware = hardware.clone();
+    move |pack: String, server: PathBuf| {
+        let hardware = hardware.clone();
+        Box::pin(async move {
+            let check = runtime_check::check(&server, &hardware).await;
+            let missing = if check.runs {
+                runtime_check::missing_flags(&server).await
+            } else {
+                None
+            };
+            match install_verdict(&pack, &check, missing.as_deref(), &hardware) {
+                Verdict::NoGpu(why) if strict => Verdict::Broken(why),
+                verdict => verdict,
+            }
+        }) as Pin<Box<dyn Future<Output = Verdict> + Send>>
+    }
+}
+
+/// Installs llama.cpp's build for this machine: the latest release read from `api` when it
+/// can be read and has a build that runs here, else the pinned one
+/// ([`install_first_working`], checked with [`smoke_test`]). The caller switches to it
+/// ([`activate`]).
 pub async fn install(
     http: &reqwest::Client,
     api: &str,
@@ -1151,20 +1469,18 @@ pub async fn install(
     hardware: &Hardware,
     progress: Progress<'_>,
 ) -> Result<Installed, InstallError> {
+    let verify = smoke_test(hardware, false);
+    if let Ok(latest) = fetch_latest(http, api).await
+        && latest.tag_name != llama_cpp_ref()
+    {
+        match install_first_working(http, &latest, data_dir, packs, &verify, progress).await {
+            Ok(installed) => return Ok(installed),
+            Err(error) => {
+                tracing::warn!(release = %latest.tag_name, %error, "the latest llama.cpp is not usable here; installing the pinned release");
+            }
+        }
+    }
     let release = fetch_release(http, api, llama_cpp_ref()).await?;
-    let checking = hardware.clone();
-    let verify = move |pack: String, server: PathBuf| {
-        let hardware = checking.clone();
-        Box::pin(async move {
-            let check = runtime_check::check(&server, &hardware).await;
-            let missing = if check.runs {
-                runtime_check::missing_flags(&server).await
-            } else {
-                None
-            };
-            install_verdict(&pack, &check, missing.as_deref(), &hardware)
-        }) as Pin<Box<dyn Future<Output = Verdict> + Send>>
-    };
     install_first_working(http, &release, data_dir, packs, &verify, progress).await
 }
 

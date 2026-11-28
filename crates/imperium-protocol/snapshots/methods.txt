@@ -94,9 +94,11 @@ method pull_requests.set_auto_merge
 method pull_requests.set_monitor
 method pull_requests.status
 method pull_requests.unbind
+method runtime.check_update
 method runtime.install
 method runtime.set_server
 method runtime.status
+method runtime.update
 method runtime.update_external
 method schedules.list
 method schedules.run

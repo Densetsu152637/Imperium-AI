@@ -7,13 +7,17 @@ import { test } from "node:test";
 
 import {
   LOCAL_OFF_NOTE,
+  downloadSummary,
   localEnabled,
+  offersOf,
   offReason,
   rescanMessage,
   rowIsOff,
   runRescan,
   setLocalEnabled,
   setModelEnabled,
+  sizeText,
+  updateAvailable,
   type RescanState,
 } from "../src/models/localModels.ts";
 import { HOUSE_MODELS, houseModelSuggestion } from "../src/models/houseModels.ts";
@@ -115,4 +119,52 @@ test("the panel lists models with a switch and a rescan button wired to the daem
   assert.match(panel, /<Switch\s+checked=\{row\.own_enabled\}/, "each model has an Enabled switch");
   assert.match(panel, /LOCAL_OFF_NOTE/, "the note says local models are off by default");
   assert.match(panel, /Spinner/, "a spinner shows while it scans");
+});
+
+const check = (over: Record<string, unknown>) =>
+  ({
+    enabled: true,
+    checked_at: 1,
+    latest: "b12900",
+    current: "b12823",
+    available: true,
+    target: "managed",
+    target_dir: "/data/runtimes/llama.cpp/b12900",
+    pack: "linux-x64-cuda13",
+    bytes: 190 * 1024 * 1024,
+    source: "github.com/ggml-org/llama.cpp",
+    message: null,
+    ...over,
+  }) as never;
+
+test("an update is announced only when the last check found a newer build", () => {
+  assert.equal(updateAvailable(check({})), "Update available: b12900 (you have b12823)");
+  assert.equal(updateAvailable(check({ current: null })), "Update available: b12900");
+  assert.equal(updateAvailable(check({ available: false })), null);
+  assert.equal(updateAvailable(null), null);
+  assert.equal(updateAvailable(undefined), null);
+});
+
+test("a download shows its source and size before it asks, and where it goes", () => {
+  const managed = downloadSummary(check({}));
+  assert.match(managed, /github\.com\/ggml-org\/llama\.cpp/);
+  assert.match(managed, /190 MiB to download/);
+  assert.match(managed, /SHA-256/);
+  assert.match(managed, /kept for rollback/);
+  const beside = downloadSummary(check({ target: "beside", target_dir: "D:/AI-Models/llama.cpp/b12900" }));
+  assert.match(beside, /new folder beside yours \(D:\/AI-Models\/llama\.cpp\/b12900\)/);
+  assert.match(beside, /your folder is left as it is/);
+  // Before the release has been read the size is not made up.
+  const unknown = downloadSummary(check({ bytes: null, target_dir: null }));
+  assert.match(unknown, /size shown once the release has been read/);
+  assert.match(downloadSummary(null), /github\.com\/ggml-org\/llama\.cpp/);
+});
+
+test("sizes and offers read from an older daemon that sends neither", () => {
+  assert.equal(sizeText(null), null);
+  assert.equal(sizeText(undefined), null);
+  assert.equal(sizeText(1024 * 1024 * 3), "3 MiB");
+  assert.deepEqual(offersOf(undefined), []);
+  assert.deepEqual(offersOf({} as never), []);
+  assert.equal(offersOf({ offers: [{ runtime: "llamacpp" }] } as never).length, 1);
 });

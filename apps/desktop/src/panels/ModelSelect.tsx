@@ -180,17 +180,17 @@ export function SessionModelSelect({
 
 /** What the session selector says before a llama.cpp model is chosen without a runtime. */
 export const NO_RUNTIME =
-  "No llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing llama-server.";
+  "No llama.cpp runtime yet — nothing is downloaded without your approval; open Local models → Runtime to install one or choose an existing llama-server.";
 
-/** What the session selector says when a llama.cpp model is chosen and the runtime is fetched on first use. */
+/** What the session selector says when a llama.cpp model is chosen and a runtime would be fetched on first use (it asks first). */
 export const INSTALL_ON_FIRST_USE = "llama.cpp will be installed on first use.";
 
 /**
- * Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it
- * and none will be installed by itself (`auto_install` off).
+ * Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it:
+ * nothing is installed by itself, the user approves the download first.
  */
 export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefined): boolean {
-  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed && !runtime.auto_install;
+  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed;
 }
 
 /** A permission mode, as `session.control` `set_permission_mode` takes it. */

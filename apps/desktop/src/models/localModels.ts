@@ -4,7 +4,14 @@
 // button's flow, as pure functions over an injected `call`, so tests drive them without a window
 // (test/localModels.test.ts).
 
-import type { LocalModelListResult, LocalModelRow, ModelConfigResult, ModelRescanResult } from "@imperium/protocol";
+import type {
+  LocalModelListResult,
+  LocalModelRow,
+  ModelConfigResult,
+  ModelRescanResult,
+  RuntimeStatusResult,
+  RuntimeUpdateCheck,
+} from "@imperium/protocol";
 
 /** Calls a daemon method; the app's `DaemonClient.call` fits. */
 export type Call = <T>(method: string, params?: unknown) => Promise<T>;
@@ -81,4 +88,38 @@ export async function runRescan(
   } catch (error) {
     show({ kind: "failed", message: `The rescan failed: ${failure(error)}` });
   }
+}
+
+const MIB = 1024 ** 2;
+
+/** "190 MiB", or null when the size is not known yet. */
+export const sizeText = (bytes: number | null | undefined): string | null => (bytes == null ? null : `${Math.round(bytes / MIB)} MiB`);
+
+/** The downloads the daemon offers; an older daemon sends none. */
+export const offersOf = (status: Pick<RuntimeStatusResult, "offers"> | null | undefined) => status?.offers ?? [];
+
+/** "Update available: b12900 (you have b12823)", or null when the last check found nothing newer. */
+export function updateAvailable(check: RuntimeUpdateCheck | null | undefined): string | null {
+  if (!check?.available || !check.latest) return null;
+  return check.current ? `Update available: ${check.latest} (you have ${check.current})` : `Update available: ${check.latest}`;
+}
+
+/**
+ * What a llama.cpp download shows before it asks: the release, where it comes from, how big it is and
+ * where it goes. Nothing is downloaded until the user says yes to this text.
+ */
+export function downloadSummary(check: RuntimeUpdateCheck | null | undefined): string {
+  const size = sizeText(check?.bytes);
+  const parts = [
+    `llama.cpp ${check?.latest ?? "(the latest release)"} from ${check?.source ?? "github.com/ggml-org/llama.cpp"}`,
+    size ? `${size} to download` : "size shown once the release has been read",
+    "verified against the release's SHA-256 digests",
+  ];
+  let text = `${parts.join(", ")}.`;
+  if (check?.target === "beside" && check.target_dir) {
+    text += ` It goes in a new folder beside yours (${check.target_dir}); your folder is left as it is.`;
+  } else if (check?.target_dir) {
+    text += ` It goes in ${check.target_dir}; the build in use is kept for rollback.`;
+  }
+  return text;
 }

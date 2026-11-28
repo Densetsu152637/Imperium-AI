@@ -22,6 +22,7 @@ pub mod residency;
 pub mod runtime;
 pub mod runtime_check;
 pub mod runtime_locations;
+pub mod runtime_release;
 pub mod runtime_update;
 pub mod scan;
 pub(crate) mod slot_files;

@@ -158,6 +158,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("runtime.llamacpp.context", "Max context per agent", STRING, "Most tokens one agent may use on a local model: auto (what the model was trained for, capped to what fits in memory) or a number of tokens. The KV cache starts small and grows on demand up to it."),
     def("runtime.llamacpp.auto_install", "Install llama.cpp automatically", Bool, "With no usable llama-server (or only a CPU build on a machine with a GPU), download and verify llama.cpp's official build for this computer the first time a local model is needed."),
     choice("runtime.llamacpp.update_external", "Update a package-manager llama.cpp", &["off", "ask", "auto"], "When a llama-server installed with winget, scoop, Chocolatey, or Homebrew is older than the llama.cpp release Imperium pins: off, ask (offer Update in Local models), or auto (upgrade it while no model is loaded from it)."),
+    def("runtime.llamacpp.check_updates", "Check for llama.cpp updates", Bool, "Look for a newer llama.cpp release at most once a day (a small request to GitHub, only while local models are on) and show it as an available update. A check downloads nothing; updating always asks first."),
     def("runtime.llamacpp.parallel", "Parallel slots", Integer, "Slots per loaded model (agents served at once)."),
     choice("runtime.llamacpp.cache_type", "KV cache type", &["f16", "q8_0", "q4_0"], "Precision of the KV cache."),
     def("runtime.llamacpp.idle_unload_s", "Idle unload (seconds)", Integer, "Seconds an unused model stays loaded."),

@@ -92,8 +92,8 @@ use imperium_protocol::methods::{
 };
 use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelRescan,
-    ModelTest, ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
-    RuntimeUpdateExternal,
+    ModelTest, ModelUse, ModelUseParams, RuntimeCheckUpdate, RuntimeCheckUpdateParams,
+    RuntimeInstall, RuntimeSetServer, RuntimeStatus, RuntimeUpdate, RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
     ModelBench, ModelBenchCancel, ModelBenchCancelParams, ModelBenchCancelResult,
