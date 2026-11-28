@@ -10,7 +10,6 @@ use std::sync::atomic::Ordering;
 use imperium_ratio_host::tape::{TAPE_EXTENSION, read_tape, record_turn, replay_turn, write_tape};
 use imperium_ratio_host::{HostConfig, RatioHost};
 use ratio::frame::{Scope, Session};
-use ratio::host::Host;
 use ratio::names::{
     Loader, MemoryRegistry, PackageId, PackageName, QualifiedName, RelPath, Source,
 };
@@ -18,8 +17,11 @@ use ratio::{Finished, Outcome, Prepared};
 
 const PROGRAM: &str = r#"
 fn main() -> Str {
-  tools.read_file("notes.txt");
-  "done"
+  with { budget: { tool_calls: 2 } } {
+    tools.read_file("notes.txt")
+  }
+  let failed = try { tools.read_file("big-error.txt"); false } catch e { true }
+  if failed { "done" } else { "no error" }
 }
 "#;
 
@@ -56,7 +58,9 @@ fn shown(p: &Prepared, f: &Finished) -> String {
     }
 }
 
-fn host(runtime: &tokio::runtime::Runtime, tools: Arc<support::TestTools>) -> Arc<dyn Host> {
+/// A session's host; `record_turn` and `replay_turn` pin the program (its packages, harnesses
+/// and `with` sites) on it before the turn.
+fn host(runtime: &tokio::runtime::Runtime, tools: Arc<support::TestTools>) -> Arc<RatioHost> {
     let mut config = HostConfig::new(runtime.handle().clone(), "turn", Scope::session());
     config.providers = vec![tools as Arc<dyn imperium_api::ToolProvider>];
     RatioHost::new(config)
@@ -75,10 +79,9 @@ fn a_turn_is_recorded_to_a_zstd_tape_and_replayed_without_live_calls() {
     let p = prepared(PROGRAM);
 
     let live = Arc::new(support::TestTools::default());
-    let entry = p.find("main.ratio", "main").expect("a main");
     let (finished, text) = record_turn(
         Arc::clone(&p),
-        entry,
+        ("main.ratio", "main"),
         Vec::new(),
         &session(),
         host(&runtime, Arc::clone(&live)),
@@ -92,7 +95,11 @@ fn a_turn_is_recorded_to_a_zstd_tape_and_replayed_without_live_calls() {
     );
     eprintln!("tape ({} lines):\n{text}", text.lines().count());
     assert_eq!(recorded, "\"done\"");
-    assert_eq!(live.calls.load(Ordering::SeqCst), 1, "the read ran live");
+    assert_eq!(live.calls.load(Ordering::SeqCst), 2, "both reads ran live");
+    assert!(
+        text.contains("\"xb\""),
+        "the error answer over 1 KiB is an `xb` blob"
+    );
 
     let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("ratio-turn.{TAPE_EXTENSION}"));
@@ -101,10 +108,9 @@ fn a_turn_is_recorded_to_a_zstd_tape_and_replayed_without_live_calls() {
     assert_eq!(stored, text);
 
     let replayed_tools = Arc::new(support::TestTools::default());
-    let entry = p.find("main.ratio", "main").expect("a main");
     let replayed = replay_turn(
         Arc::clone(&p),
-        entry,
+        ("main.ratio", "main"),
         Vec::new(),
         &session(),
         host(&runtime, Arc::clone(&replayed_tools)),

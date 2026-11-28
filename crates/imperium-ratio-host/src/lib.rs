@@ -1,5 +1,5 @@
 //! THROWAWAY SPIKE, never merged: Imperium's `RatioHost` against Ratio's stage 11a `Host`
-//! trait (`feat/wt-s11a-host` at `7e73f9d`, `HOST_API_VERSION` 1), to validate the trait before
+//! trait (`feat/wt-s11a-host` at `d93fe14`, `HOST_API_VERSION` 1), to validate the trait before
 //! Ratio fixes it in a release.
 //!
 //! What it wires to Imperium's seams:
@@ -12,7 +12,8 @@
 //!   (that type needs the daemon's state), with withdrawal atomic with the answer;
 //! - models: Imperium's [`ChatClient`]s (`imperium_models`) and the memory [`Embedder`]
 //!   (`imperium_memory`);
-//! - token counting: Imperium's estimate (the exact tokenizer is asynchronous; the trait is not);
+//! - token counting: the model server's exact tokenizer (`imperium_models::Tokenizer`), an
+//!   estimate where there is none or the text is secret and the model hosted;
 //! - secret paths: the secret-holding patterns of Imperium's safety floor.
 //!
 //! Every asynchronous call runs as a task on Imperium's tokio runtime, and the returned future
@@ -41,14 +42,14 @@ use imperium_api::ChatMessage;
 use imperium_api::{PermissionMode, ToolContext, ToolEvent, ToolGroup, ToolProvider};
 use imperium_models::ChatRequest;
 use imperium_policy::permissions::{Decision, Refusal};
-use ratio::frame::{FrameCtx, Location, Scope};
+use ratio::frame::{FrameCtx, FrameOrigin, Location, Scope};
 use ratio::host::{
     ApprovalKind, ApprovalRequest, CancelClass, CancelOutcome, ChatRequest as RatioChatRequest,
     ConvId, ConvSelector, Countable, DeniedBy, Digest, EffectCtx, FrameOutcome, Host, HostError,
     HostFuture, Labelled, MAX_DRAIN, ModelCard, ModelRef, ModelRequest, ModelResponse, Operation,
     RatioEvent, SinkRule, ToolClass, ToolInvocation, ToolOutcome, Usage, operation_rule, sink_rule,
 };
-use ratio::{Labels, Value};
+use ratio::{Labels, Prepared, Value};
 
 pub use approvals::{Answer, ApprovalDesk, ApprovalInfo};
 pub use imperium_memory::retrieval::Embedder;
@@ -257,9 +258,55 @@ impl RatioHost {
         self.stopping.store(true, Ordering::SeqCst);
     }
 
-    /// Imperium starts a harness at `path` (a harness load or `run_harness`).
-    pub fn harness_started(&self, path: &str) {
-        self.frames.harness_started(path);
+    /// Imperium pins what it loaded: packages by name and IR hash (imports included), the
+    /// harnesses their frames may enter and their `with` block sites. Only these open harness
+    /// and block frames.
+    pub fn load_packages(
+        &self,
+        packages: impl IntoIterator<Item = (Arc<str>, [u8; 32])>,
+        harnesses: impl IntoIterator<Item = FrameOrigin>,
+        blocks: impl IntoIterator<Item = ([u8; 32], u32)>,
+    ) {
+        self.frames.load(packages, harnesses, blocks);
+    }
+
+    /// Pins everything a prepared program loads (`Prepared::loaded`).
+    pub fn load(&self, prepared: &Prepared) {
+        let loaded = prepared.loaded();
+        self.load_packages(loaded.packages, loaded.harnesses, loaded.blocks);
+    }
+
+    /// Imperium starts a harness entry (from the turn or `run_harness`): its frame, which
+    /// opens on the evaluation's first `run()`, is accepted once, at the session's path.
+    pub fn start_entry(&self, origin: FrameOrigin) {
+        self.frames.start_entry(origin);
+    }
+
+    /// Starts the turn's entry `name` of the module at `path`, when it is a harness: its
+    /// origin is the loaded harness of that key, as an entry. Returns whether it was one.
+    pub fn start_turn_entry(&self, prepared: &Prepared, path: &str, name: &str) -> bool {
+        let key = format!("{path}::{name}");
+        let origin = prepared
+            .loaded()
+            .harnesses
+            .into_iter()
+            .find_map(|h| match h {
+                FrameOrigin::Harness {
+                    package,
+                    entry_hash,
+                    key: k,
+                } if *k == *key => Some(FrameOrigin::Entry {
+                    package,
+                    entry_hash,
+                    key: k,
+                }),
+                _ => None,
+            });
+        let started = origin.is_some();
+        if let Some(origin) = origin {
+            self.start_entry(origin);
+        }
+        started
     }
 
     /// The tools in Imperium's class table.
@@ -663,13 +710,54 @@ impl Host for RatioHost {
         })
     }
 
-    fn count_tokens(&self, _frame: &FrameCtx, what: &Countable) -> u64 {
-        match what {
-            Countable::Text(t) => models::estimate_tokens(&t.value),
-            Countable::Prompt(v) => v
-                .as_text()
-                .map_or_else(|| v.weight().div_ceil(4), models::estimate_tokens),
+    fn count_tokens(
+        self: Arc<Self>,
+        frame: FrameCtx,
+        what: Countable,
+    ) -> HostFuture<Result<u64, HostError>> {
+        let (text, labelled) = match what {
+            Countable::Text(t) => {
+                let labelled = t.is_labelled();
+                (t.value, labelled)
+            }
+            Countable::Prompt(v) => match v.as_text() {
+                Some(t) => (t.to_owned(), !v.scan().is_empty()),
+                // Rendering a `Prompt` is stage 12's: until then, its weight.
+                None => return ready(Ok(v.weight().div_ceil(4))),
+            },
+        };
+        // The frame's model (its `model` setting), else the session's first.
+        let named = frame
+            .settings
+            .model
+            .as_ref()
+            .and_then(Value::as_text)
+            .map(str::to_owned);
+        let entry = named
+            .and_then(|n| self.models.iter().find(|m| m.name == n))
+            .or_else(|| self.models.first());
+        let Some(entry) = entry else {
+            return ready(Ok(models::estimate_tokens(&text)));
+        };
+        // A secret is never sent to a hosted model's tokenizer: it is estimated instead.
+        if labelled && entry.location != Location::Local {
+            return ready(Ok(models::estimate_tokens(&text)));
         }
+        let client = Arc::clone(&entry.client);
+        self.spawn(true, async move {
+            // Imperium's exact count: the model server's own tokenizer, where it has one.
+            match client.tokenizer() {
+                Some(tokenizer) => {
+                    tokenizer
+                        .count_tokens(&text)
+                        .await
+                        .map_err(|e| HostError::ModelFailed {
+                            message: Labelled::plain(e.to_string()),
+                        })
+                }
+                None => Ok(models::estimate_tokens(&text)),
+            }
+        })
     }
 
     fn resolve_model(&self, _frame: &FrameCtx, model: &ModelRef) -> Result<ModelCard, HostError> {

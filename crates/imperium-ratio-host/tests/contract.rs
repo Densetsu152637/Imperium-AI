@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use imperium_api::ToolProvider;
 use imperium_ratio_host::{Answer, HostConfig, ModelEntry, RatioHost};
-use ratio::frame::{Card, Location, Scope};
+use ratio::frame::{Card, FrameOrigin, Location, Scope};
 use ratio::host::{Host, ModelRef, ToolClass};
 use ratio::host_tests::{Calls, Fixture};
 use ratio::{Labels, Value};
@@ -64,13 +64,22 @@ impl Fixture for ImperiumFixture {
         config
             .classes
             .set("needs_approval", ToolClass::drain(Duration::from_secs(60)));
-        config.models = vec![ModelEntry {
-            name: "hosted".to_owned(),
-            model_id: "hosted-model".to_owned(),
-            client: Arc::new(support::Echo),
-            location: Location::Cloud,
-            card: Card::default(),
-        }];
+        config.models = vec![
+            ModelEntry {
+                name: "hosted".to_owned(),
+                model_id: "hosted-model".to_owned(),
+                client: Arc::new(support::Echo),
+                location: Location::Cloud,
+                card: Card::default(),
+            },
+            ModelEntry {
+                name: "local".to_owned(),
+                model_id: "local-model".to_owned(),
+                client: Arc::new(support::Counted),
+                location: Location::Local,
+                card: Card::default(),
+            },
+        ];
         let concrete = RatioHost::new(config);
         let host: Arc<dyn Host> = concrete.clone();
         self.made
@@ -164,8 +173,31 @@ impl Fixture for ImperiumFixture {
         ModelRef(Arc::from("hosted"))
     }
 
-    fn harness_started(&self, host: &Arc<dyn Host>, path: &str) {
-        self.concrete(host).harness_started(path);
+    fn loaded_harness(&self, host: &Arc<dyn Host>) -> FrameOrigin {
+        let origin = FrameOrigin::Harness {
+            package: Arc::from("app"),
+            entry_hash: [0x11; 32],
+            key: Arc::from("main.ratio::h"),
+        };
+        self.concrete(host)
+            .load_packages([(Arc::from("app"), [0x11; 32])], [origin.clone()], []);
+        origin
+    }
+
+    fn loaded_block(&self, host: &Arc<dyn Host>) -> ([u8; 32], u32) {
+        let site = ([0x11; 32], 7);
+        self.concrete(host).load_packages([], [], [site]);
+        site
+    }
+
+    fn started_entry(&self, host: &Arc<dyn Host>) -> FrameOrigin {
+        let origin = FrameOrigin::Entry {
+            package: Arc::from("app"),
+            entry_hash: [0x11; 32],
+            key: Arc::from("main.ratio::turn_entry"),
+        };
+        self.concrete(host).start_entry(origin.clone());
+        origin
     }
 }
 
@@ -240,6 +272,7 @@ fn root_frame(scope: &Scope) -> ratio::frame::FrameCtx {
         ledgers,
         node,
         settings: Arc::new(ratio::frame::Settings::default()),
+        origin: FrameOrigin::Session,
     }
 }
 
@@ -254,4 +287,34 @@ fn effect() -> ratio::host::EffectCtx {
         cancel: ratio::CancelToken::new(),
         deadline: None,
     }
+}
+
+/// Not in the suite: `count_tokens` asks the model server's own tokenizer (asynchronously), and
+/// never sends a secret to a hosted model's.
+#[test]
+fn tokens_are_counted_by_the_model_servers_tokenizer() {
+    use ratio::host::{Countable, Labelled};
+    let f = ImperiumFixture::new();
+    let scope = ratio::host_tests::narrow_scope();
+    let host = f.host(&scope);
+    let mut frame = root_frame(&scope);
+    frame.settings = Arc::new(ratio::frame::Settings {
+        model: Some(Value::text("local")),
+        ..ratio::frame::Settings::default()
+    });
+    let exact = ratio::block_on(Arc::clone(&host).count_tokens(
+        frame,
+        Countable::Text(Labelled::plain("twelve chars".to_owned())),
+    ));
+    assert_eq!(exact.expect("a count"), support::COUNTED);
+    let mut hosted = root_frame(&scope);
+    hosted.settings = Arc::new(ratio::frame::Settings {
+        model: Some(Value::text("hosted")),
+        ..ratio::frame::Settings::default()
+    });
+    let estimated = ratio::block_on(Arc::clone(&host).count_tokens(
+        hosted,
+        Countable::Text(Labelled::new("twelve chars".to_owned(), Labels::source(0))),
+    ));
+    assert_eq!(estimated.expect("a count"), 3);
 }

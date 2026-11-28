@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use imperium_api::{ToolCheck, ToolContext, ToolFuture, ToolGroup, ToolProvider, ToolSpec};
-use imperium_models::{ChatClient, ChatFuture, ChatRequest, Completion};
+use imperium_models::{ChatClient, ChatFuture, ChatRequest, Completion, TokenFuture, Tokenizer};
+
+/// The size of the big error answer, over Ratio's 1 KiB blob threshold.
+pub const BIG_ERROR: usize = 2048;
 
 const TOOLS: &[&str] = &[
     "read_file",
@@ -56,11 +59,13 @@ impl ToolProvider for TestTools {
         &'a self,
         _context: &'a ToolContext<'a>,
         name: &'a str,
-        _arguments: &'a str,
+        arguments: &'a str,
     ) -> ToolFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             match name {
+                // An error answer over 1 KiB: Ratio's tape stores it as an `xb` blob.
+                "read_file" if arguments.contains("big-error") => Err("e".repeat(BIG_ERROR)),
                 "slow_read" | "slow_remote" => {
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     Ok("done".to_owned())
@@ -134,6 +139,53 @@ impl ChatClient for Echo {
                 ..Completion::default()
             })
         })
+    }
+}
+
+/// What [`Counted`]'s tokenizer answers for any text.
+pub const COUNTED: u64 = 42;
+
+/// A local model server with its own tokenizer (as llama.cpp's `/tokenize`).
+#[derive(Debug, Default)]
+pub struct Counted;
+
+impl ChatClient for Counted {
+    fn stream<'a>(
+        &'a self,
+        _request: ChatRequest<'a>,
+        _on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> ChatFuture<'a> {
+        Box::pin(async { Ok(Completion::default()) })
+    }
+
+    fn tokenizer(&self) -> Option<&dyn Tokenizer> {
+        Some(self)
+    }
+}
+
+impl Tokenizer for Counted {
+    fn server(&self) -> &str {
+        "counted"
+    }
+
+    fn count_tokens<'a>(&'a self, _text: &'a str) -> TokenFuture<'a, u64> {
+        Box::pin(async {
+            // Asynchronous, as a real server's answer is.
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok(COUNTED)
+        })
+    }
+
+    fn template_tokens<'a>(
+        &'a self,
+        _messages: &'a serde_json::Value,
+        _tools: &'a [serde_json::Value],
+    ) -> TokenFuture<'a, u64> {
+        Box::pin(async { Ok(0) })
+    }
+
+    fn context_window(&self) -> TokenFuture<'_, Option<u64>> {
+        Box::pin(async { Ok(None) })
     }
 }
 

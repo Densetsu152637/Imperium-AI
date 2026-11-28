@@ -37,8 +37,7 @@ pub struct EmbedderEntry {
 }
 
 /// Imperium's estimate where it has no tokenizer answer (four characters a token, as the
-/// engine's context breakdowns estimate). The exact count needs the model server's
-/// `/tokenize`, which is asynchronous; `Host::count_tokens` is synchronous.
+/// engine's context breakdowns estimate), for a model server with no tokenizer.
 pub fn estimate_tokens(text: &str) -> u64 {
     u64::try_from(text.chars().count())
         .unwrap_or(u64::MAX)
