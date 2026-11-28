@@ -211,7 +211,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("isolation.container_image", "Container image", STRING, "Image commands run in for the container tier."),
     def("isolation.network", "Network in sandbox", Bool, "Whether sandboxed and container commands may use the network."),
     def("web.enabled", "Web tools", Bool, "Offer web_fetch (and web_search with a provider) to agents."),
-    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search."),
+    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search. With none, web_search tells the agent to ask you to set one up: give a SearXNG URL below, or a Brave, Tavily, Kagi or Exa key (the key settings below hold keychain secret names; store the key itself with `imperium secret set <name>`)."),
     def("web.searxng_url", "SearXNG URL", STRING, "A SearXNG instance with the JSON format enabled."),
     def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key; a provider's own key below wins over it."),
     def("web.search_fallback", "Search fallback providers", StringList, "Providers tried in this order after the one above when it is blocked, fails or finds nothing: searxng, brave, tavily, kagi, or exa. The result says which one answered. Empty: no fallback."),
@@ -219,7 +219,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("web.tavily_key", "Tavily API key", SecretRef, "Keychain secret holding your Tavily key."),
     def("web.kagi_key", "Kagi API token", SecretRef, "Keychain secret holding your Kagi Search API token."),
     def("web.exa_key", "Exa API key", SecretRef, "Keychain secret holding your Exa key."),
-    def("web.archive_fallback", "Archived copies of blocked pages", Bool, "When web_fetch is blocked by bot protection and the browser cannot read the page either, ask the Wayback Machine (web.archive.org) for a copy; the result says it is archived and when. Only the page's URL is sent, never for URLs that carry credentials."),
+    def("web.archive_fallback", "Archived copies of blocked pages", Bool, "Off by default. When web_fetch meets a CAPTCHA or bot-protection challenge, ask the Wayback Machine (web.archive.org) for a copy; the result says it is archived and when. Sends only the page's URL, and only for public pages: never for URLs with credentials, single-label or private-network names (.local, .internal, .corp, .lan, .home.arpa), private or loopback addresses, or names that resolve to them."),
     def("web.allow_domains", "Allowed domains", StringList, "Domains web_fetch reads without asking (subdomains included)."),
     def("web.cache_ttl_s", "Fetch cache lifetime (seconds)", Integer, "How long web_fetch reuses a page it has read; 0 turns the cache off. Pages with Cache-Control no-store, private or no-cache, cookies, or authentication are never cached."),
     def("web.cache_max_mb", "Fetch cache size (MB)", Integer, "The most disk the web_fetch cache may use; the oldest pages go first. 0 turns the cache off."),
@@ -884,7 +884,7 @@ default_method = \"rebase\"
                 .web
         };
         let fresh = web(&paths);
-        assert!(fresh.search_fallback.is_empty() && fresh.archive_fallback);
+        assert!(fresh.search_fallback.is_empty() && !fresh.archive_fallback);
         assert!(fresh.brave_key.is_none() && fresh.exa_key.is_none());
 
         set_user_setting(
@@ -895,7 +895,7 @@ default_method = \"rebase\"
         )
         .unwrap();
         set_user_setting(&paths, "web.brave_key", &Json::from("brave-main"), []).unwrap();
-        set_user_setting(&paths, "web.archive_fallback", &Json::from(false), []).unwrap();
+        set_user_setting(&paths, "web.archive_fallback", &Json::from(true), []).unwrap();
         let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
         assert!(
             text.contains("brave_key = { secret = \"brave-main\" }"),
@@ -904,7 +904,7 @@ default_method = \"rebase\"
         let saved = web(&paths);
         assert_eq!(saved.search_fallback, ["brave", "searxng"]);
         assert_eq!(saved.brave_key.unwrap().secret.as_str(), "brave-main");
-        assert!(!saved.archive_fallback);
+        assert!(saved.archive_fallback);
         // A key is only ever a name; a value that is not a valid secret name is refused.
         let error =
             set_user_setting(&paths, "web.tavily_key", &Json::from("Bad Name"), []).unwrap_err();

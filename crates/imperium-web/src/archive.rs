@@ -1,16 +1,95 @@
 //! Archived copies of pages that block plain HTTP, from the Wayback Machine's availability API.
 //! The copy is always labelled as archived, with its date, by the caller.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
+
 use reqwest::header::LOCATION;
 use serde_json::Value;
 use url::Url;
 
-use crate::cache::Page;
+use crate::cache::{FetchCache, Page};
 use crate::retry::send_retrying;
 use crate::{ARCHIVE_PAGE_BYTES, MAX_PAGE_CHARS, Web, block, html, read_capped};
 
 /// Redirects followed inside the archive.
 const ARCHIVE_REDIRECTS: usize = 5;
+
+/// Name endings that mean a private network, never the public web.
+const PRIVATE_SUFFIXES: [&str; 6] = [
+    ".local",
+    ".internal",
+    ".corp",
+    ".lan",
+    ".home.arpa",
+    ".localhost",
+];
+
+/// Why `url` must not be sent to a third-party archive, or `None` when it may be: the archive
+/// is only asked about public pages, so a URL with credentials, a single-label or private-network
+/// name (`.local`, `.internal`, `.corp`, `.lan`, `.home.arpa`), a private, loopback or
+/// link-local address, and a name that resolves to one, are all refused.
+pub(crate) async fn refusal(url: &Url) -> Option<String> {
+    if FetchCache::key(url).is_none() {
+        return Some("the URL carries credentials".into());
+    }
+    let private = "it is a private or local address, not a public page";
+    match url.host()? {
+        url::Host::Ipv4(ip) => non_public(IpAddr::V4(ip)).then(|| private.to_string()),
+        url::Host::Ipv6(ip) => non_public(IpAddr::V6(ip)).then(|| private.to_string()),
+        url::Host::Domain(name) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            if !name.contains('.') || PRIVATE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+                return Some(private.into());
+            }
+            let port = url.port_or_known_default().unwrap_or(443);
+            let lookup = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::net::lookup_host((name.as_str(), port)),
+            )
+            .await;
+            match lookup {
+                Ok(Ok(mut addresses)) => addresses
+                    .any(|address| non_public(address.ip()))
+                    .then(|| "its name resolves to a private or local address".to_string()),
+                _ => Some("its name could not be resolved".into()),
+            }
+        }
+    }
+}
+
+/// Whether `ip` is loopback, private, link-local, unspecified, shared or otherwise not on the
+/// public internet.
+fn non_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => non_public_v4(ip),
+        IpAddr::V6(ip) => non_public_v6(ip),
+    }
+}
+
+fn non_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || a == 0
+        || (a == 100 && (64..128).contains(&b))
+        || a >= 240
+}
+
+fn non_public_v6(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return non_public_v4(mapped);
+    }
+    let first = ip.segments()[0];
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || (first & 0xfe00) == 0xfc00
+        || (first & 0xffc0) == 0xfe80
+}
 
 /// An archived page.
 pub(crate) struct Archived {

@@ -22,9 +22,7 @@ pub mod search;
 mod tabs;
 mod tools;
 
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -128,22 +126,8 @@ pub struct Web {
     respect_robots: bool,
     retry: RetryPolicy,
     archive_base: Option<String>,
-}
-
-/// A page read by something other than plain HTTP (the browser), as text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderedPage {
-    pub title: Option<String>,
-    pub final_url: String,
-    pub text: String,
-}
-
-pub type RenderFuture<'a> = Pin<Box<dyn Future<Output = Result<RenderedPage, String>> + Send + 'a>>;
-
-/// Reads a page plain HTTP could not, such as through a real browser. `web_fetch` asks it once
-/// a page has answered with a block.
-pub trait PageRenderer: Send + Sync {
-    fn render<'a>(&'a self, url: &'a str) -> RenderFuture<'a>;
+    /// Tests only: ask the archive about private and loopback hosts too.
+    archive_private_hosts: bool,
 }
 
 /// What a search found, who found it, and why the providers before it did not.
@@ -160,7 +144,9 @@ pub struct SearchOutcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WebError {
-    #[error("no search provider is configured (set web.search)")]
+    #[error(
+        "no search provider is configured; ask the user to set one up in Settings, Web (a SearXNG URL, or a Brave, Tavily, Kagi or Exa key)"
+    )]
     NoProvider,
     #[error("{0} is not an http or https URL")]
     BadUrl(String),
@@ -266,6 +252,15 @@ impl Web {
         web
     }
 
+    /// Tests only: the archive is also asked about hosts on a private network (the test
+    /// servers are on loopback).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn archiving_private_hosts(mut self) -> Self {
+        self.archive_private_hosts = true;
+        self
+    }
+
     /// The same web with another retry policy.
     #[must_use]
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
@@ -300,6 +295,7 @@ impl Web {
                 .unwrap_or_default(),
             retry: RetryPolicy::default(),
             archive_base: options.archive_base,
+            archive_private_hosts: false,
         }
     }
 
@@ -307,13 +303,13 @@ impl Web {
         !self.search.is_empty()
     }
 
-    /// Tool definitions: `web_fetch` always, `web_search` when a provider is configured.
+    /// Tool definitions: `web_fetch` and `web_search`.
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        let mut specs = vec![tool_spec(contract::web_fetch())];
-        if self.can_search() {
-            specs.push(tool_spec(contract::web_search()));
-        }
-        specs
+        // `web_search` is always offered: with no provider it says how to set one up.
+        vec![
+            tool_spec(contract::web_fetch()),
+            tool_spec(contract::web_search()),
+        ]
     }
 
     /// Fetches `url` and returns `limit` characters of its text from `offset`, headed by the
@@ -333,22 +329,6 @@ impl Web {
         limit: usize,
         follow: &(dyn Fn(&Url) -> bool + Sync),
     ) -> Result<String, WebError> {
-        self.fetch_resilient(url, offset, limit, follow, None).await
-    }
-
-    /// [`fetch_with`](Self::fetch_with) that does not give up when plain HTTP is blocked (a
-    /// CAPTCHA or challenge page, a 403 or 429): the page is then read through `renderer` (the
-    /// browser) when there is one, and failing that as the archive's copy, which the result
-    /// says is archived and dates. When nothing works the error is [`WebError::Blocked`]: the
-    /// block page's own text is never returned as the page.
-    pub async fn fetch_resilient(
-        &self,
-        url: &str,
-        offset: usize,
-        limit: usize,
-        follow: &(dyn Fn(&Url) -> bool + Sync),
-        renderer: Option<&dyn PageRenderer>,
-    ) -> Result<String, WebError> {
         let (shown, reason) = match self.fetch_plain(url, offset, limit, follow).await {
             Err(WebError::Blocked { url, reason, .. }) => (url, reason),
             other => return other,
@@ -357,48 +337,25 @@ impl Web {
             return Err(WebError::BadUrl(url.into()));
         };
         let mut tried = Vec::new();
-        if let Some(renderer) = renderer {
-            match renderer.render(parsed.as_str()).await {
-                Ok(rendered) => {
-                    let still =
-                        block::detect(200, false, "", rendered.title.as_deref(), &rendered.text);
-                    match still {
-                        Some(still) => tried.push(format!("the browser was blocked too ({still})")),
-                        None => {
-                            let page = Page {
-                                title: rendered.title,
-                                final_url: rendered.final_url,
-                                text: rendered.text.chars().take(MAX_PAGE_CHARS).collect(),
-                            };
-                            return Ok(format!(
-                                "Read through the browser because plain HTTP was blocked ({reason}).\n{}",
-                                render_page(&page, offset, limit)
-                            ));
-                        }
-                    }
-                }
-                Err(error) => tried.push(format!("the browser could not read it ({error})")),
-            }
-        }
         if let Some(base) = &self.archive_base {
-            if cache::FetchCache::key(&parsed).is_none() {
-                tried.push(
-                    "no archived copy was asked for because the URL carries credentials".into(),
-                );
+            let refused = if self.archive_private_hosts {
+                None
             } else {
-                match self.archived_copy(base, &parsed).await {
+                archive::refusal(&parsed).await
+            };
+            match refused {
+                Some(why) => tried.push(format!("no archived copy was asked for because {why}")),
+                None => match self.archived_copy(base, &parsed).await {
                     Ok(copy) => {
                         return Ok(format!(
-                            "ARCHIVED COPY, not the live page: the Wayback Machine captured it on {} ({}). \
-                             The live page blocked Imperium ({reason}), so this may be out of date; say it \
-                             is archived when you cite it.\n{}",
+                            "ARCHIVED COPY, not the live page: the Wayback Machine captured it on {} ({}). The live page blocked Imperium ({reason}), so this may be out of date; say it is archived when you cite it.\n{}",
                             copy.date,
                             copy.url,
                             render_page(&copy.page, offset, limit)
                         ));
                     }
                     Err(error) => tried.push(format!("the Wayback Machine: {error}")),
-                }
+                },
             }
         }
         Err(WebError::Blocked {
@@ -757,7 +714,8 @@ mod tests {
             Web::new(None)
                 .tool_specs()
                 .iter()
-                .all(|spec| spec.name != "web_search")
+                .any(|spec| spec.name == "web_search"),
+            "web_search is always offered"
         );
     }
 

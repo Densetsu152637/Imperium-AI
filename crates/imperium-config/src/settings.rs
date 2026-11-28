@@ -1089,7 +1089,7 @@ impl Default for PetSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WebSettings {
-    /// Offer `web_fetch` (and `web_search` with a provider) to agents.
+    /// Offer `web_fetch` and `web_search` to agents.
     pub enabled: bool,
     /// `none`, `searxng`, `brave`, `tavily`, `kagi`, or `exa`.
     pub search: String,
@@ -1109,8 +1109,8 @@ pub struct WebSettings {
     pub kagi_key: Option<SecretRef>,
     /// Exa key, from the keychain.
     pub exa_key: Option<SecretRef>,
-    /// When `web_fetch` is blocked by bot protection and the browser cannot read the page
-    /// either, ask the Wayback Machine for an archived copy (and say it is archived).
+    /// When `web_fetch` meets a CAPTCHA or bot-protection challenge, ask the Wayback Machine
+    /// for an archived copy of a public page (and say it is archived). Off by default.
     pub archive_fallback: bool,
     /// Domains `web_fetch` may read without asking (subdomains included).
     pub allow_domains: Vec<String>,
@@ -1148,7 +1148,7 @@ impl Default for WebSettings {
             tavily_key: None,
             kagi_key: None,
             exa_key: None,
-            archive_fallback: true,
+            archive_fallback: false,
             allow_domains: Vec::new(),
             cache_ttl_s: 900,
             cache_max_mb: 50,

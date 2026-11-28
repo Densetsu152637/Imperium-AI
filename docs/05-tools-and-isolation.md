@@ -42,35 +42,44 @@ the page. Imperium reads that as a result to report, never as content, and never
 past it: it does not solve CAPTCHAs, spoof another browser or identity, or rotate proxies. Every
 request carries the same honest `User-Agent` (`Imperium/<version> (AI agent web tools)`).
 
-- *Recognising a block.* A 403, a 429, a `cf-mitigated: challenge` header, or a page that is a
-  Cloudflare, Akamai or similar challenge, a CAPTCHA, an "unusual traffic" wall or a titled
-  "Access denied" page is a block. Pages are judged by their title, well-known markers and how
-  little text they have, so a long article that merely talks about CAPTCHAs is not a block. A
-  block is returned to the agent as `<url> is blocked by bot protection or an access rule (<why>)`
-  with what else was tried; none of the block page's text is passed on, and a block page is never
-  cached. An ordinary 404 or 5xx stays an ordinary HTTP error.
+- *Recognising a block.* Only a challenge signal is a block: a 429, the `cf-mitigated: challenge`
+  header, or a page that is a Cloudflare, Akamai or similar challenge, a CAPTCHA, an "unusual
+  traffic" wall or a titled "Access denied" page. Pages are judged by their title, well-known
+  markers and how little text they have, so a long article that merely talks about CAPTCHAs is
+  not a block. A bare 403 (a login wall, a permission) is an ordinary HTTP error and triggers no
+  fallback. A block is returned to the agent as `<url> is blocked by bot protection or an access
+  rule (<why>)` with what else was tried; none of the block page's text is passed on, and a block
+  page is never cached. An ordinary 404 or 5xx stays an ordinary HTTP error.
 - *Polite retries.* A 429 or a 500, 502, 503 or 504 is tried again at most twice. The pause is
   the server's `Retry-After` in seconds when it gave one, otherwise 0.5 s doubling up to 8 s. A
   `Retry-After` longer than 8 s is not waited for: the block is reported with the wait the server
   asked for. This covers pages, search providers and archive requests.
-- *Fetch fallbacks.* When plain HTTP is blocked, `web_fetch` reads the page in the session's
-  browser (a tab of its own that is closed again, only while the user is not driving the browser,
-  and only where the browser ends up on the page's own origin or an allowed domain). If the
-  browser is blocked too, or is not set up, it asks the Wayback Machine's availability API
-  (`web.archive_fallback`, default on) and returns the closest capture, headed `ARCHIVED COPY,
-  not the live page` with the capture date, which the agent must say when it cites it. Only the
-  page's URL is sent to the archive, never a URL that carries a user name, password or a
-  credential-like query parameter, and an archived page that is itself a block is refused.
-- *Search fallbacks.* `web.search` is the first provider and `web.search_fallback` lists the
-  others. When one is blocked, fails (a bad key, a rate limit, no connection) or finds nothing,
-  the next is tried; the result ends with `Answered by search provider: <name>` and one
-  `Skipped <name>: <why>` line for each provider passed over. When every provider fails the error
-  lists each reason. A provider's key is the keychain secret named by its own setting
+- *Fetch fallback.* When plain HTTP meets a block, and only if the user turned on
+  `web.archive_fallback` (off by default), `web_fetch` asks the Wayback Machine's availability
+  API and returns the closest capture, headed `ARCHIVED COPY, not the live page` with the capture
+  date, which the agent must say when it cites it. Only the page's URL is sent, and only for
+  public pages: never a URL with a user name, password or credential-like query parameter, a
+  single-label name, a `.local`, `.internal`, `.corp`, `.lan`, `.home.arpa` or `.localhost` name, a
+  private, loopback or link-local address, or a name that resolves to one. An archived page that
+  is itself a block is refused. The headless browser is not a fallback here: it has its own
+  permission decision, so a browser fallback waits for the browser rework.
+- *Search fallbacks.* The chain is `web.search` first, then each `web.search_fallback` provider
+  in order, each name once; `none` is skipped, so with `web.search = "none"` the fallbacks alone
+  form the chain, and with both empty there is no provider. A provider whose URL or key is
+  missing is left out with a warning. When one is blocked, fails (a bad key, a rate limit, no
+  connection) or finds nothing, the next is tried; the result ends with `Answered by search
+  provider: <name>` and one `Skipped <name>: <why>` line for each provider passed over. When
+  every provider fails the error lists each reason. `web_search` is always offered; with no
+  provider it answers that none is configured and tells the agent to ask the user to set one up
+  in Settings, Web. A provider's key is the keychain secret named by its own setting
   (`web.brave_key`, `web.tavily_key`, `web.kagi_key`, `web.exa_key`), else the shared
   `web.api_key`; keys go out only as request headers, are redacted from `Debug` output and never
-  appear in errors or logs. Agents cannot add a provider or a key: `config.toml` is a protected
-  write path (file tools never write it) and no app-config tool changes `[web]`, so turning a
-  provider on is the user's decision.
+  appear in errors or logs.
+- *Who can change this.* The file tools never write `config.toml` and no app-config tool changes
+  `[web]`. A command an agent runs under the policy tier is floored for these changes:
+  `imperium config set|unset web.*` and `imperium secret set|delete` (also quoted, wrapped in a
+  shell, or with `--remote`) always ask the user, so under the policy tier an agent cannot change
+  these keys or their secrets unasked; turning a provider on stays the user's decision.
 
 ### Fetch cache and robots.txt (implemented)
 

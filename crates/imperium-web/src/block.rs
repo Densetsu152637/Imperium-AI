@@ -100,7 +100,8 @@ pub fn detect(
             what
         });
     }
-    (status == 403).then(|| "access denied (HTTP 403 Forbidden)".into())
+    // A bare 403 is an ordinary refusal (a login wall, a permission), not a challenge.
+    None
 }
 
 fn body_signal(raw: &str, title: Option<&str>, text: &str) -> Option<String> {
@@ -218,10 +219,17 @@ You don't have permission to access "http://example.com/" on this server.<p>Refe
                 .unwrap()
                 .contains("Cloudflare")
         );
-        assert!(
-            detect(403, false, "", None, "nope")
-                .unwrap()
-                .contains("access denied")
+        // A bare 403 is not a block: only a challenge signal is.
+        assert_eq!(detect(403, false, "", None, "nope"), None);
+        assert_eq!(
+            detect(
+                403,
+                false,
+                "<p>Forbidden</p>",
+                Some("403 Forbidden"),
+                "Forbidden"
+            ),
+            None
         );
         // A plain server error is not a block.
         assert_eq!(

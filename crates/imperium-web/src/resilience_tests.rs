@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 
 use crate::retry::RetryPolicy;
 use crate::{
-    FetchOptions, Hit, PageRenderer, RenderFuture, RenderedPage, SearchFuture, SearchProvider,
-    Searxng, Web, WebError, render_outcome,
+    FetchOptions, Hit, SearchFuture, SearchProvider, Searxng, Web, WebError, render_outcome,
 };
 
 const CLOUDFLARE: &str = r#"<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title>
@@ -117,49 +116,23 @@ fn web_with_archive(base: &str) -> Web {
         },
     )
     .with_retry(quick())
-}
-
-/// A browser stand-in that records how often it was asked.
-struct FakeBrowser {
-    calls: Arc<AtomicUsize>,
-    answer: Result<RenderedPage, String>,
-}
-
-impl PageRenderer for FakeBrowser {
-    fn render<'a>(&'a self, _url: &'a str) -> RenderFuture<'a> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let answer = self.answer.clone();
-        Box::pin(async move { answer })
-    }
-}
-
-fn browser(calls: &Arc<AtomicUsize>, answer: Result<RenderedPage, String>) -> FakeBrowser {
-    FakeBrowser {
-        calls: calls.clone(),
-        answer,
-    }
-}
-
-fn rendered(title: &str, text: &str) -> Result<RenderedPage, String> {
-    Ok(RenderedPage {
-        title: Some(title.to_string()),
-        final_url: "https://example.com/".into(),
-        text: text.to_string(),
-    })
+    .archiving_private_hosts()
 }
 
 #[tokio::test]
 async fn block_pages_are_reported_and_never_returned_or_cached() {
     let challenged = Arc::new(AtomicUsize::new(0));
     let forbidden = Arc::new(AtomicUsize::new(0));
+    let bare = Arc::new(AtomicUsize::new(0));
     let missing = Arc::new(AtomicUsize::new(0));
     let base = serve(
         Router::new()
             .route("/challenge", page(&challenged, StatusCode::OK, CLOUDFLARE))
             .route(
                 "/forbidden",
-                page(&forbidden, StatusCode::FORBIDDEN, FORBIDDEN),
+                page(&forbidden, StatusCode::FORBIDDEN, CLOUDFLARE),
             )
+            .route("/bare", page(&bare, StatusCode::FORBIDDEN, FORBIDDEN))
             .route(
                 "/missing",
                 page(&missing, StatusCode::NOT_FOUND, "<p>gone</p>"),
@@ -187,6 +160,10 @@ async fn block_pages_are_reported_and_never_returned_or_cached() {
         assert!(!message.contains("Checking if the site"), "{message}");
         assert!(!message.contains("blocked-body-text"), "{message}");
     }
+    // A bare 403 is an ordinary refusal, not a block: no fallback is tried for it.
+    let error = web.fetch(&format!("{base}/bare"), 0, 0).await.unwrap_err();
+    assert!(matches!(error, WebError::Http(_)), "{error}");
+    assert!(error.to_string().contains("403"), "{error}");
     // A block is not cached: the page is asked for again.
     let _ = web.fetch(&format!("{base}/challenge"), 0, 0).await;
     assert_eq!(count(&challenged), 2);
@@ -269,54 +246,31 @@ async fn requests_carry_an_honest_stable_user_agent() {
 }
 
 #[tokio::test]
-async fn blocked_pages_are_tried_in_the_browser_then_in_the_archive() {
-    let blocked = Arc::new(AtomicUsize::new(0));
+async fn a_blocked_page_is_tried_as_an_archived_copy_only() {
+    let hits = Arc::new(AtomicUsize::new(0));
     let asked = Arc::new(AtomicUsize::new(0));
     let base = serve(archive_routes(
         Router::new()
-            .route("/open", page(&blocked, StatusCode::OK, REAL))
-            .route("/walled", page(&blocked, StatusCode::FORBIDDEN, FORBIDDEN)),
+            .route("/open", page(&hits, StatusCode::OK, REAL))
+            .route("/walled", page(&hits, StatusCode::FORBIDDEN, CLOUDFLARE))
+            .route("/bare", page(&hits, StatusCode::FORBIDDEN, FORBIDDEN)),
         closest("20230405060708"),
         ARCHIVED,
         &asked,
     ))
     .await;
     let web = web_with_archive(&base);
-    let opened = Arc::new(AtomicUsize::new(0));
 
-    // A page that loads is read directly: neither fallback is asked.
-    let fine = browser(&opened, rendered("Unused", "unused"));
-    let text = web
-        .fetch_resilient(&format!("{base}/open"), 0, 0, &|_| true, Some(&fine))
-        .await
-        .unwrap();
+    // A page that loads is read directly, and so is a bare 403 error: no archive.
+    let text = web.fetch(&format!("{base}/open"), 0, 0).await.unwrap();
     assert!(text.contains("Real page text."), "{text}");
-    assert_eq!((count(&opened), count(&asked)), (0, 0));
+    let error = web.fetch(&format!("{base}/bare"), 0, 0).await.unwrap_err();
+    assert!(matches!(error, WebError::Http(_)), "{error}");
+    assert_eq!(count(&asked), 0);
 
-    // Blocked: the browser comes first, and the archive is not asked when it works.
-    let works = browser(&opened, rendered("Rendered", "Rendered body"));
-    let text = web
-        .fetch_resilient(&format!("{base}/walled"), 0, 0, &|_| true, Some(&works))
-        .await
-        .unwrap();
-    assert!(text.starts_with("Read through the browser"), "{text}");
-    assert!(text.contains("Rendered body"), "{text}");
-    assert_eq!((count(&opened), count(&asked)), (1, 0));
-
-    // The browser is blocked too: the archived copy, labelled and dated.
-    let walled = browser(
-        &opened,
-        rendered("Just a moment...", "Verify you are human"),
-    );
-    let text = web
-        .fetch_resilient(&format!("{base}/walled"), 0, 0, &|_| true, Some(&walled))
-        .await
-        .unwrap();
-    assert_eq!(
-        (count(&opened), count(&asked)),
-        (2, 1),
-        "browser, then archive"
-    );
+    // A challenge: the archived copy, labelled and dated, never the challenge's text.
+    let text = web.fetch(&format!("{base}/walled"), 0, 0).await.unwrap();
+    assert_eq!(count(&asked), 1);
     assert!(
         text.starts_with("ARCHIVED COPY, not the live page"),
         "{text}"
@@ -324,19 +278,7 @@ async fn blocked_pages_are_tried_in_the_browser_then_in_the_archive() {
     assert!(text.contains("captured it on 2023-04-05"), "{text}");
     assert!(text.contains("/web/20230405060708id_/"), "{text}");
     assert!(text.contains("Archived body text."), "{text}");
-    assert!(!text.contains("Verify you are human"), "{text}");
-
-    // The browser could not run at all: straight to the archive.
-    let broken = browser(&opened, Err("no browser is installed".into()));
-    let text = web
-        .fetch_resilient(&format!("{base}/walled"), 0, 0, &|_| true, Some(&broken))
-        .await
-        .unwrap();
-    assert!(text.contains("ARCHIVED COPY"), "{text}");
-
-    // With no browser at all the archive still answers.
-    let text = web.fetch(&format!("{base}/walled"), 0, 0).await.unwrap();
-    assert!(text.contains("ARCHIVED COPY"), "{text}");
+    assert!(!text.contains("Checking if the site"), "{text}");
 }
 
 #[tokio::test]
@@ -345,30 +287,27 @@ async fn when_nothing_works_the_result_is_blocked_with_what_was_tried() {
     let asked = Arc::new(AtomicUsize::new(0));
     // The archive has no copy.
     let base = serve(archive_routes(
-        Router::new().route("/walled", page(&hits, StatusCode::FORBIDDEN, FORBIDDEN)),
+        Router::new().route("/walled", page(&hits, StatusCode::FORBIDDEN, CLOUDFLARE)),
         json!({"archived_snapshots": {}}),
         ARCHIVED,
         &asked,
     ))
     .await;
-    let opened = Arc::new(AtomicUsize::new(0));
-    let broken = browser(&opened, Err("no browser is installed".into()));
     let error = web_with_archive(&base)
-        .fetch_resilient(&format!("{base}/walled"), 0, 0, &|_| true, Some(&broken))
+        .fetch(&format!("{base}/walled"), 0, 0)
         .await
         .unwrap_err();
     assert!(matches!(error, WebError::Blocked { .. }), "{error}");
     let message = error.to_string();
-    assert!(message.contains("no browser is installed"), "{message}");
     assert!(message.contains("no copy of this page"), "{message}");
     assert!(message.contains("blocked by bot protection"), "{message}");
-    assert!(!message.contains("blocked-body-text"), "{message}");
+    assert!(!message.contains("Checking if the site"), "{message}");
 
     // The archive's copy is itself a challenge page.
     let walled = Arc::new(AtomicUsize::new(0));
     let again = Arc::new(AtomicUsize::new(0));
     let base = serve(archive_routes(
-        Router::new().route("/walled", page(&walled, StatusCode::FORBIDDEN, FORBIDDEN)),
+        Router::new().route("/walled", page(&walled, StatusCode::FORBIDDEN, CLOUDFLARE)),
         closest("20200101000000"),
         CLOUDFLARE,
         &again,
@@ -382,11 +321,11 @@ async fn when_nothing_works_the_result_is_blocked_with_what_was_tried() {
 }
 
 #[tokio::test]
-async fn archives_are_not_asked_when_off_or_for_urls_with_credentials() {
+async fn archives_are_off_by_default_and_never_asked_about_private_or_credentialed_urls() {
     let hits = Arc::new(AtomicUsize::new(0));
     let asked = Arc::new(AtomicUsize::new(0));
     let base = serve(archive_routes(
-        Router::new().route("/walled", page(&hits, StatusCode::FORBIDDEN, FORBIDDEN)),
+        Router::new().route("/walled", page(&hits, StatusCode::FORBIDDEN, CLOUDFLARE)),
         closest("20230405060708"),
         ARCHIVED,
         &asked,
@@ -399,6 +338,21 @@ async fn archives_are_not_asked_when_off_or_for_urls_with_credentials() {
         .unwrap_err();
     assert!(matches!(error, WebError::Blocked { .. }), "{error}");
     assert_eq!(count(&asked), 0);
+    // On, but the page is on loopback (the test servers' address): not a public page.
+    let on = Web::with_options(
+        None,
+        FetchOptions {
+            archive_base: Some(base.clone()),
+            ..FetchOptions::default()
+        },
+    )
+    .with_retry(quick());
+    let error = on.fetch(&format!("{base}/walled"), 0, 0).await.unwrap_err();
+    assert!(
+        error.to_string().contains("private or local address"),
+        "{error}"
+    );
+    assert_eq!(count(&asked), 0);
     // A URL carrying credentials never leaves for a third party.
     let with_login = base.replace("http://", "http://user:pw@");
     let error = web_with_archive(&base)
@@ -407,6 +361,58 @@ async fn archives_are_not_asked_when_off_or_for_urls_with_credentials() {
         .unwrap_err();
     assert!(error.to_string().contains("carries credentials"), "{error}");
     assert_eq!(count(&asked), 0);
+}
+
+#[tokio::test]
+async fn non_public_hosts_are_refused_by_the_archive_guard() {
+    use crate::archive::refusal;
+    for url in [
+        "http://intranet/page",
+        "https://printer.local/",
+        "https://wiki.internal/a",
+        "https://git.corp/a",
+        "https://nas.lan/",
+        "https://router.home.arpa/",
+        "https://localhost/",
+        "http://127.0.0.1:8080/",
+        "http://10.1.2.3/",
+        "http://172.16.0.9/",
+        "http://192.168.1.1/",
+        "http://169.254.1.1/",
+        "http://100.64.0.1/",
+        "http://0.0.0.0/",
+        "http://[::1]/",
+        "http://[fd00::1]/",
+        "http://[fe80::1]/",
+        "http://[::ffff:10.0.0.1]/",
+    ] {
+        let why = refusal(&url::Url::parse(url).unwrap()).await;
+        assert!(why.is_some(), "{url} must be refused");
+    }
+    // Public address literals pass without any lookup.
+    for url in ["http://93.184.216.34/", "http://[2606:2800:220:1::1]/"] {
+        assert_eq!(refusal(&url::Url::parse(url).unwrap()).await, None, "{url}");
+    }
+}
+
+#[tokio::test]
+async fn web_search_without_a_provider_says_how_to_set_one_up() {
+    let web = Web::new(None);
+    assert!(
+        web.tool_specs()
+            .iter()
+            .any(|spec| spec.name == "web_search")
+    );
+    let message = web.search_chain("rust", 5).await.unwrap_err().to_string();
+    assert!(
+        message.contains("no search provider is configured"),
+        "{message}"
+    );
+    assert!(
+        message.contains("ask the user to set one up in Settings, Web"),
+        "{message}"
+    );
+    assert!(message.contains("SearXNG"), "{message}");
 }
 
 /// What a scripted search provider answers.
