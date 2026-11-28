@@ -1071,7 +1071,7 @@ mod tests {
             event
         );
 
-        // An event journaled by a daemon before 0.71 has none of the three.
+        // An event journaled by a daemon before 0.69 has none of the three.
         let old = serde_json::json!({
             "type": "context_breakdown",
             "model": "m",

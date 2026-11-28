@@ -2012,7 +2012,7 @@ is unallocated. Allocation never exceeds the maximum, and a request over it fill
 reported as over. The heading reads `used / allocated / max tokens`; a table lists every
 category by name with its tokens and share of the maximum, then the used total, the buffer, the
 allocated total, the unallocated space and the maximum (the pure computation is
-`sessions/contextRegions.ts`). A daemon before protocol 0.71 sends none of the new fields, so
+`sessions/contextRegions.ts`). A daemon before protocol 0.69 sends none of the new fields, so
 the buffer is empty and the maximum falls back to the reported window.
 Colour only repeats what the table says in words: the bar has a text label, and each
 segment and swatch is named; the buffer is hatched, not only tinted, and keeps a visible hatch
