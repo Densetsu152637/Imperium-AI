@@ -1720,7 +1720,7 @@ mod tests {
             for line in [
                 format!("{name} script"),
                 format!("{name} -c anything"),
-                format!("{name}"),
+                name.to_string(),
                 format!("/usr/bin/{name} x"),
                 format!("{}.exe x", name.to_uppercase()),
                 format!("env {name} x"),
