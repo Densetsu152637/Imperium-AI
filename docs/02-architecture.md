@@ -333,7 +333,7 @@ one is added without editing its callers:
 | ---- | ----- | --------- | --------- |
 | Secrets | `SecretStore` (`imperium-config`) | `AutoSecrets` (`KeychainSecrets`, `FileSecrets`), `MemorySecrets` | The daemon at start |
 | Local runtimes | `RuntimeBackend` (`imperium-local`) | `LlamaCpp`, `Vllm` | First backend that accepts the model format and is available; `Supervisor::with_backends` sets the list |
-| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily`, `Kagi`, `Exa` | `web.search` through `SearchProviders::register` / `build` |
+| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily`, `Kagi`, `Exa` | `web.search` and `web.search_fallback` (tried in order) through `SearchProviders::register` / `build` |
 | Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
 | Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
 | Local memory residency | `ResidencyPolicy` (`imperium-local::residency`) | `Standard` (the arbiter's rules), `CorePolicy` (`imperium-core::residency`) | The daemon's residency controller installs `CorePolicy` with `Supervisor::set_policy` |

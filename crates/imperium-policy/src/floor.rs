@@ -487,6 +487,8 @@ fn changes_agents(args: &[String]) -> bool {
         || after("models", &["pull"])
         || after("runtime", &["install", "update"])
         || after("config", &["undo"])
+        || changes_web_setting(args)
+        || changes_secret(args)
     {
         return true;
     }
@@ -576,6 +578,42 @@ fn turns_local_models_on(args: &[String]) -> bool {
         };
         !value.as_deref().is_some_and(off)
     })
+}
+
+/// `secret [--remote x] set|delete …`: keychain secrets hold the provider keys the web tools
+/// use, so a person decides each change. `secret` must be the command itself (after any global
+/// options), so `plugin secret delete` is not caught here.
+fn changes_secret(args: &[String]) -> bool {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--remote" => {
+                words.next();
+            }
+            word if word.starts_with('-') => {}
+            "secret" => {
+                return words.any(|word| matches!(word.as_str(), "set" | "delete"));
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// `config [--remote x] set|unset web.…`: the web settings choose the search providers (and the
+/// keychain secret naming each key) and whether blocked pages go to a third-party archive, so
+/// a person decides each change. A false alarm only asks.
+fn changes_web_setting(args: &[String]) -> bool {
+    args.iter()
+        .position(|word| word == "config")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .any(|word| matches!(word.as_str(), "set" | "unset"))
+                && rest
+                    .iter()
+                    .any(|word| word.to_ascii_lowercase().starts_with("web."))
+        })
 }
 
 /// `git` with its global options (`-C dir`, `-c k=v`, `--git-dir=…`) skipped.
@@ -735,6 +773,21 @@ mod tests {
             "imperium runtime install",
             "imperium runtime install cuda12",
             "imperium config undo 12",
+            "imperium config set web.search brave",
+            "imperium config set web.search_fallback '[\"tavily\"]'",
+            "imperium config unset web.brave_key",
+            "imperium config set web.archive_fallback true",
+            "imperium --remote box config set web.searxng_url http://x",
+            "imperium.exe config --remote box unset web.api_key",
+            "imperium config set Web.Exa_Key exa",
+            "imperium secret set brave-main",
+            "imperium secret delete brave-main",
+            "imperium --remote box secret set brave-main",
+            "imperium secret --remote box delete brave-main",
+            "/usr/bin/imperium.exe secret set k",
+            "sh -c 'imperium secret set k'",
+            "bash -lc \"imperium config set web.search brave\"",
+            "env X=1 imperium config unset web.kagi_key",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -773,6 +826,9 @@ mod tests {
             "imperium models folders",
             "imperium models local",
             "imperium config get models.local.enabled",
+            "imperium config explain web.search",
+            "imperium secret",
+            "imperium secret list",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }
