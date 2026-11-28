@@ -35,16 +35,9 @@ forks, which may use the web by the user's decision. Mitigations available today
 off (`web.search` unset), a [permission profile](#agent-permission-profiles-implemented) with
 local files only, or an ask rule on `web_search`; query screening is not built.
 
-### Fetch cache and robots.txt (implemented)
+### Blocked pages and search fallbacks (implemented)
 
-**Search providers.** `kagi` (the Kagi Search API, `Authorization: Bot <token>`; its related-search
-entries are not results) and `exa` (`x-api-key`, with a short text excerpt per result) join
-`searxng`, `brave` and `tavily`. A key provider is built only when its own key setting or `web.api_key` names a keychain
-secret that exists; otherwise it is left out of the chain with a warning (and search stays off when none is left). Keys are sent only as request
-headers, are redacted from `Debug` output, and never appear in error messages.
-
-<a id="blocked-pages-and-search-fallbacks-implemented"></a>**Blocked pages and search fallbacks
-(implemented).** Many sites and search engines answer a program with bot protection instead of
+Many sites and search engines answer a program with bot protection instead of
 the page. Imperium reads that as a result to report, never as content, and never tries to get
 past it: it does not solve CAPTCHAs, spoof another browser or identity, or rotate proxies. Every
 request carries the same honest `User-Agent` (`Imperium/<version> (AI agent web tools)`).
@@ -78,6 +71,14 @@ request carries the same honest `User-Agent` (`Imperium/<version> (AI agent web 
   appear in errors or logs. Agents cannot add a provider or a key: `config.toml` is a protected
   write path (file tools never write it) and no app-config tool changes `[web]`, so turning a
   provider on is the user's decision.
+
+### Fetch cache and robots.txt (implemented)
+
+**Search providers.** `kagi` (the Kagi Search API, `Authorization: Bot <token>`; its related-search
+entries are not results) and `exa` (`x-api-key`, with a short text excerpt per result) join
+`searxng`, `brave` and `tavily`. A key provider is built only when its own key setting or `web.api_key` names a keychain
+secret that exists; otherwise it is left out of the chain with a warning (and search stays off when none is left). Keys are sent only as request
+headers, are redacted from `Debug` output, and never appear in error messages.
 
 **Cache.** `web_fetch` keeps the text of pages it reads in `<cache>/web`, one file per URL
 (fragment removed; readable by the owner only on Unix), so a page read again, or read in later
