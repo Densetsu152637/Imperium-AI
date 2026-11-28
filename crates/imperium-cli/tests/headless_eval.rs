@@ -240,6 +240,42 @@ async fn print_prompt_hash_is_stable_and_names_the_real_prompt_and_tools() {
     assert_eq!(first.json["variant"]["id"], "baseline");
 }
 
+/// The build `--version` prints (`0.2.281-experimental (223a0d02)`), recorded as
+/// `engine.imperium_version` so a result says which build produced it.
+fn assert_names_the_build(json: &Value) {
+    let version = json["engine"]["imperium_version"].as_str().unwrap();
+    assert_eq!(version, env!("IMPERIUM_BUILD_VERSION_STRING"), "{json:#}");
+    assert!(
+        version.ends_with(')') && version.contains(" ("),
+        "{version}"
+    );
+}
+
+#[tokio::test]
+async fn print_prompt_names_the_build() {
+    let daemon = Daemon::start("").await;
+    let outcome = daemon.print_prompt(&[]).await;
+    assert_eq!(outcome.code, 0);
+    assert_names_the_build(&outcome.json);
+}
+
+#[tokio::test]
+async fn a_headless_result_names_the_build() {
+    let daemon = Daemon::start("").await;
+    let workspace = tempfile::tempdir().unwrap();
+    let (url, _seen) = endpoint(vec![text_body("Done.")]).await;
+    let outcome = daemon
+        .run(&run_args(
+            "The parser tests fail. Find out why.",
+            workspace.path(),
+            &url,
+            &["--json", "--context-tokens", "32768"],
+        ))
+        .await;
+    assert_eq!(outcome.code, 0, "{:#}", outcome.json);
+    assert_names_the_build(&outcome.json);
+}
+
 #[tokio::test]
 async fn a_variant_overlay_changes_the_prompt_and_the_hash() {
     let daemon = Daemon::start("").await;

@@ -490,7 +490,7 @@ impl Connection {
         Ok(HandshakeResult {
             daemon: Peer {
                 name: "imperium-core".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: crate::BUILD_VERSION.into(),
             },
             protocol: PROTOCOL_VERSION,
             server: self.on_server(),

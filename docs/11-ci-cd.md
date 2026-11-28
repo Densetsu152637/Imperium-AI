@@ -211,6 +211,18 @@ versions), `apps/desktop/package.json` and `apps/desktop/src-tauri/tauri.conf.js
 desktop and phone clients send it in their handshake. `PROTOCOL_VERSION` is separate and moves
 with the protocol ([02](02-architecture.md)); the mods, `packages/protocol` and `packages/mod-sdk` keep their own versions.
 
+**Build version.** `imperium --version` and `imperium-core --version` print the release tag and
+the short commit, for example `imperium 0.2.281-experimental (223a0d02)`, so an eval run can
+record which build it ran on; the daemon reports the same string as its version in the
+handshake (Settings → About shows it), and headless output records it as `imperium_version`.
+`build.yml` sets `IMPERIUM_BUILD_VERSION` (the version without its `v`) and
+`IMPERIUM_BUILD_COMMIT` for the build jobs from its `version` and `commit` inputs, which
+`experimental.yml` fills from the computed version and the built commit and `release.yml` from
+the tag and `github.sha`. `build-support/build_version.rs`, included by the `build.rs` of
+`imperium-cli` and `imperium-core`, turns them into the string. A build without them (a local or
+pull-request build) is `0.2.0-dev (<commit>)`, the commit from `git rev-parse` or `unknown`
+when the sources are not a checkout.
+
 ### Desktop updates
 
 The desktop app updates itself. It checks on a schedule, downloads a newer build in the

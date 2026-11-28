@@ -41,9 +41,13 @@ use imperium_protocol::methods::{
     LeaseKind, ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
 };
 
+/// The release tag and short commit this build came from, as `--version` prints them
+/// (`0.2.281-experimental (223a0d02)`; `0.2.0-dev (<commit or unknown>)` for a local build).
+const BUILD_VERSION: &str = env!("IMPERIUM_BUILD_VERSION_STRING");
+
 /// Command-line client for the Imperium daemon.
 #[derive(Debug, Parser)]
-#[command(name = "imperium", version)]
+#[command(name = "imperium", version = BUILD_VERSION)]
 struct Cli {
     /// Talk to a remote daemon connected with `imperium remote connect`.
     #[arg(long, global = true)]

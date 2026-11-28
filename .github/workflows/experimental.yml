@@ -32,6 +32,7 @@ jobs:
     with:
       channel: experimental
       version: ${{ needs.prepare.outputs.version }}
+      commit: ${{ needs.prepare.outputs.sha }}
     secrets: inherit
 
   publish:
