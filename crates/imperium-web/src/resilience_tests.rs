@@ -420,7 +420,7 @@ enum Mode {
 
 #[derive(Debug)]
 struct Scripted {
-    name: &'static str,
+    name: String,
     mode: Mode,
     calls: Arc<Mutex<Vec<String>>>,
 }
@@ -432,7 +432,7 @@ impl SearchProvider for Scripted {
         _query: &'a str,
         _count: usize,
     ) -> SearchFuture<'a> {
-        self.calls.lock().unwrap().push(self.name.to_string());
+        self.calls.lock().unwrap().push(self.name.clone());
         let answer = match self.mode {
             Mode::Hits => Ok(vec![Hit {
                 title: format!("hit from {}", self.name),
@@ -456,7 +456,7 @@ fn chain(steps: &[(&'static str, Mode)], calls: &Arc<Mutex<Vec<String>>>) -> Web
         .iter()
         .map(|(name, mode)| {
             let provider = Scripted {
-                name,
+                name: name.to_string(),
                 mode: *mode,
                 calls: calls.clone(),
             };
