@@ -1589,7 +1589,7 @@ change that turned it off), `imperium models pull` and `imperium runtime install
 only makes sense once local models are on); turning it off, `unset` and reading stay open to
 agents.
 
-`models.rescan` (protocol 0.71; `imperium models folders rescan`; the Local models panel's
+`models.rescan` (protocol 0.70; `imperium models folders rescan`; the Local models panel's
 Rescan button) scans `models.folders` and the download folder again and returns the listing with
 `found` (how many models), `added` and `removed` (ids that appeared or went since the last scan).
 A plain `models.local` only reads the last scan, so a file dropped into a folder is not found by
