@@ -386,12 +386,16 @@ async fn non_public_hosts_are_refused_by_the_archive_guard() {
         "http://[fe80::1]/",
         "http://[::ffff:10.0.0.1]/",
     ] {
-        let why = refusal(&url::Url::parse(url).unwrap()).await;
+        let why = refusal(&url::Url::parse(url).unwrap(), false).await;
         assert!(why.is_some(), "{url} must be refused");
     }
     // Public address literals pass without any lookup.
     for url in ["http://93.184.216.34/", "http://[2606:2800:220:1::1]/"] {
-        assert_eq!(refusal(&url::Url::parse(url).unwrap()).await, None, "{url}");
+        assert_eq!(
+            refusal(&url::Url::parse(url).unwrap(), false).await,
+            None,
+            "{url}"
+        );
     }
 }
 

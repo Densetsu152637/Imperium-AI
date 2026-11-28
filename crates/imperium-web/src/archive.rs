@@ -29,9 +29,12 @@ const PRIVATE_SUFFIXES: [&str; 6] = [
 /// is only asked about public pages, so a URL with credentials, a single-label or private-network
 /// name (`.local`, `.internal`, `.corp`, `.lan`, `.home.arpa`), a private, loopback or
 /// link-local address, and a name that resolves to one, are all refused.
-pub(crate) async fn refusal(url: &Url) -> Option<String> {
+pub(crate) async fn refusal(url: &Url, allow_private: bool) -> Option<String> {
     if FetchCache::key(url).is_none() {
         return Some("the URL carries credentials".into());
+    }
+    if allow_private {
+        return None;
     }
     let private = "it is a private or local address, not a public page";
     match url.host()? {

@@ -338,12 +338,7 @@ impl Web {
         };
         let mut tried = Vec::new();
         if let Some(base) = &self.archive_base {
-            let refused = if self.archive_private_hosts {
-                None
-            } else {
-                archive::refusal(&parsed).await
-            };
-            match refused {
+            match archive::refusal(&parsed, self.archive_private_hosts).await {
                 Some(why) => tried.push(format!("no archived copy was asked for because {why}")),
                 None => match self.archived_copy(base, &parsed).await {
                     Ok(copy) => {
