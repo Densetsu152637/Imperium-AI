@@ -441,6 +441,16 @@ impl Settings {
         ) {
             return Err("web.search must be none, searxng, brave, tavily, kagi, or exa".into());
         }
+        if let Some(name) = self.web.search_fallback.iter().find(|name| {
+            !matches!(
+                name.as_str(),
+                "searxng" | "brave" | "tavily" | "kagi" | "exa"
+            )
+        }) {
+            return Err(format!(
+                "web.search_fallback has {name:?}; each entry must be searxng, brave, tavily, kagi, or exa"
+            ));
+        }
         if self.web.cache_ttl_s > 30 * 24 * 3600 {
             return Err("web.cache_ttl_s must be at most 2592000 (30 days)".into());
         }
@@ -1079,14 +1089,29 @@ impl Default for PetSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WebSettings {
-    /// Offer `web_fetch` (and `web_search` with a provider) to agents.
+    /// Offer `web_fetch` and `web_search` to agents.
     pub enabled: bool,
     /// `none`, `searxng`, `brave`, `tavily`, `kagi`, or `exa`.
     pub search: String,
     /// A SearXNG instance with the JSON format enabled.
     pub searxng_url: String,
-    /// The key for Brave, Tavily, Kagi, or Exa, from the keychain.
+    /// The key for Brave, Tavily, Kagi, or Exa, from the keychain; a provider's own key
+    /// below wins over it.
     pub api_key: Option<SecretRef>,
+    /// Providers tried in this order after `search` when it is blocked, fails or finds
+    /// nothing: names from `searxng`, `brave`, `tavily`, `kagi`, `exa`. Empty: no fallback.
+    pub search_fallback: Vec<String>,
+    /// Brave Search API key, from the keychain.
+    pub brave_key: Option<SecretRef>,
+    /// Tavily key, from the keychain.
+    pub tavily_key: Option<SecretRef>,
+    /// Kagi Search API token, from the keychain.
+    pub kagi_key: Option<SecretRef>,
+    /// Exa key, from the keychain.
+    pub exa_key: Option<SecretRef>,
+    /// When `web_fetch` meets a CAPTCHA or bot-protection challenge, ask the Wayback Machine
+    /// for an archived copy of a public page (and say it is archived). Off by default.
+    pub archive_fallback: bool,
     /// Domains `web_fetch` may read without asking (subdomains included).
     pub allow_domains: Vec<String>,
     /// How long `web_fetch` reuses a page it has read, in seconds; 0 turns the cache off.
@@ -1118,6 +1143,12 @@ impl Default for WebSettings {
             search: "none".into(),
             searxng_url: String::new(),
             api_key: None,
+            search_fallback: Vec::new(),
+            brave_key: None,
+            tavily_key: None,
+            kagi_key: None,
+            exa_key: None,
+            archive_fallback: false,
             allow_domains: Vec::new(),
             cache_ttl_s: 900,
             cache_max_mb: 50,
