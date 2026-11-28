@@ -69,6 +69,17 @@ fn apply(key: &str, value: Json) -> anyhow::Result<()> {
 /// What the offline `settings set models.default` says after saving when the model it was set to
 /// is switched off: the daemon would have refused, but offline only the saved settings know.
 fn default_disabled_warning(models: &imperium_config::ModelSettings) -> Option<String> {
+    let default = models.default.as_deref()?;
+    if models.local_off_for(models.spec_of(default)) {
+        return Some(
+            concat!(
+                "warning: that is a local model and local models are off (the default), ",
+                "so new sessions cannot start on it until you turn them on with ",
+                "`imperium config set models.local.enabled true`"
+            )
+            .to_string(),
+        );
+    }
     models.default_is_disabled().then(|| {
         concat!(
             "warning: that model is switched off (\"Use this model\" in Settings -> Models), ",
@@ -142,6 +153,7 @@ mod tests {
     #[test]
     fn a_default_that_is_switched_off_is_warned_about_after_saving() {
         let mut models = imperium_config::ModelSettings::default();
+        models.local.enabled = true;
         assert!(default_disabled_warning(&models).is_none());
         models.default = Some("llamacpp:gemma".into());
         assert!(default_disabled_warning(&models).is_none());
@@ -151,6 +163,12 @@ mod tests {
         assert!(warning.contains("another default"));
         // Naming a different default that is on gives no warning.
         models.default = Some("llamacpp:other".into());
+        assert!(default_disabled_warning(&models).is_none());
+        // With local models off, a local default is warned about too, whatever else is set.
+        models.local.enabled = false;
+        let warning = default_disabled_warning(&models).unwrap();
+        assert!(warning.contains("local models are off"), "{warning}");
+        models.default = Some("cloud:model".into());
         assert!(default_disabled_warning(&models).is_none());
     }
 }

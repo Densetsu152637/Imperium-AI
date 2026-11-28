@@ -574,7 +574,10 @@ and `environments.agent_update` (protocol 0.28)
     available — still in training* and offers no download button; once a source is set, the
     button lists the repository's files and starts the ordinary `models.download`. The card is
     dismissible, the dismissal is remembered in the app's settings, and it never shows while any
-    model is present. No protocol change
+    model is present. Local models are off by default (`models.local.enabled`, see
+    [04](04-models-and-routing.md#local-models-are-off-by-default-implemented)), so first run
+    suggests no house model, downloads or starts nothing local until the user turns them on; the
+    house models stay listed in the Local models panel, shown as off. No protocol change
     ([07](07-desktop-ui.md#house-models-on-first-run-implemented)). *Not built, to be fleshed
     out when the models are fully trained:* choosing between sizes and quantisations from the
     machine's hardware, download progress and resume on the card itself, checksum verification,

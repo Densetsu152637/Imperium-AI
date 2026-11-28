@@ -108,6 +108,10 @@ fn install_running(state: &DaemonState) -> bool {
 /// The [`AutoInstall`] decision for what `resolve` chose.
 pub(crate) fn decide(state: &DaemonState, resolved: &Resolved, hardware: &Hardware) -> AutoInstall {
     let settings = state.settings();
+    // Nothing local installs while local models are off, not even to fix the runtime.
+    if !settings.models.local.enabled {
+        return AutoInstall::Keep;
+    }
     let release = installed_ref(state.data_dir(), &resolved.server);
     auto_install(
         &settings.runtime.llamacpp,
@@ -205,6 +209,9 @@ fn use_resolved(state: &DaemonState, resolved: &Resolved) {
 /// or is Imperium's build of an earlier release, and runs a package manager's upgrade when
 /// `update_external = "auto"`.
 async fn improve(state: Arc<DaemonState>) {
+    if !state.settings().models.local.enabled {
+        return;
+    }
     let hardware = crate::onboarding::hardware(&state).await;
     let settings = state.settings();
     let resolved = resolve(
@@ -336,6 +343,7 @@ pub(crate) async fn update_external(
     state: Arc<DaemonState>,
 ) -> Result<RuntimeUpdateJob, ErrorObject> {
     let invalid = |message: String| ErrorObject::new(codes::INVALID_PARAMS, message);
+    crate::onboarding::require_local_on(&state, "updating the llama.cpp runtime")?;
     if let Some(running) = state
         .runtime_update
         .lock()
@@ -491,6 +499,39 @@ mod tests {
             server: PathBuf::from("llama-server"),
             check: None,
         }
+    }
+
+    #[test]
+    fn nothing_installs_while_local_models_are_off() {
+        let home = tempfile::tempdir().unwrap();
+        let hardware = Hardware {
+            gpus: Vec::new(),
+            ram_total_bytes: 16 << 30,
+            ram_available_bytes: 8 << 30,
+            cpu_cores: 8,
+            unified_memory: false,
+            overridden: false,
+            vram_overridden: false,
+        };
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        // No runtime is installed, so with local models on the build would be installed.
+        let missing = Resolved {
+            server: home.path().join("nothing-here"),
+            ..resolved(SOURCE_PACK, "linux-x64-cpu")
+        };
+        assert!(!settings.models.local.enabled, "off by default");
+        let off = DaemonState::new(
+            imperium_config::Paths::under(home.path()),
+            settings.clone(),
+            None,
+        );
+        assert_eq!(decide(&off, &missing, &hardware), AutoInstall::Keep);
+        settings.models.local.enabled = true;
+        let on = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        assert_eq!(decide(&on, &missing, &hardware), AutoInstall::Missing);
     }
 
     #[test]

@@ -227,6 +227,20 @@ impl Config {
             .try_into()
             .map_err(|error| ConfigError::Invalid(Box::new(error)))?;
         settings.apply_overrides();
+        // `models.local.enabled` unset anywhere: off, unless local models were set up before the
+        // switch existed. The built-in defaults leave it unset on purpose.
+        let explicit = self
+            .merged
+            .get("models")
+            .and_then(Value::as_table)
+            .and_then(|models| models.get("local"))
+            .and_then(Value::as_table)
+            .is_some_and(|local| local.contains_key("enabled"));
+        // Once migrated, unset means off; before, it follows older local setup (see
+        // `migrate_local_switch`, which the daemon runs at its first start).
+        if !explicit && !settings.models.local.migrated {
+            settings.models.local.enabled = settings.has_local_setup();
+        }
         settings.validate().map_err(ConfigError::Inconsistent)?;
         Ok(settings)
     }
