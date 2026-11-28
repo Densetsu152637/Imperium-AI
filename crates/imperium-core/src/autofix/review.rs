@@ -987,6 +987,13 @@ async fn checkout_problem(dir: &Path, branch: &str) -> Option<String> {
     if branch.is_empty() || branch.starts_with('-') {
         return Some("the pull request's branch name cannot be used".to_string());
     }
+    // The fetch runs what the repository's config names for the transport and credentials (a
+    // credential helper, `core.sshCommand`), so that is checked first.
+    if let Err(error) =
+        super::repository_allows(dir, crate::review::Step::AutofixPush, "work in it yourself").await
+    {
+        return Some(error);
+    }
     if git::fetch(dir, branch).await.is_err() {
         return Some("the pull request's branch could not be fetched from origin".to_string());
     }
@@ -1471,7 +1478,7 @@ async fn wake(state: Arc<DaemonState>, github: Arc<dyn GitHub>, wake: Wake, runn
                 Work::Ci { .. } => format!("imperium/fix-pr-{number}"),
             };
             if let Err(error) =
-                git::prepare_worktree(&project, &worktree, &branch, &local_branch).await
+                super::prepare_worktree(&project, &worktree, &branch, &local_branch).await
             {
                 say("failed", None, error);
                 return;
@@ -1772,9 +1779,9 @@ pub(crate) fn defang(text: &str) -> String {
     out
 }
 
-/// Prefixes of credentials that must never be posted: GitHub, GitLab, Slack, OpenAI and
-/// Anthropic style keys, AWS access keys, and PEM private keys.
-const SECRET_MARKS: [&str; 12] = [
+/// Prefixes of credentials that must never be posted: GitHub, GitLab, Slack, OpenAI, Anthropic,
+/// Stripe, Google, Hugging Face and npm style keys, AWS access keys, and PEM private keys.
+const SECRET_MARKS: [&str; 19] = [
     "ghp_",
     "gho_",
     "ghu_",
@@ -1782,21 +1789,64 @@ const SECRET_MARKS: [&str; 12] = [
     "ghr_",
     "github_pat_",
     "glpat-",
+    "xoxa-",
     "xoxb-",
     "xoxp-",
+    "xoxs-",
     "sk-",
+    "sk_live_",
+    "rk_live_",
+    "AIza",
+    "hf_",
+    "npm_",
     "AKIA",
     "PRIVATE KEY",
 ];
 
 /// Whether `text` looks like it holds a credential: a word that starts with a known prefix and
-/// is long enough to be a key, or a PEM private key.
+/// is long enough to be a key, a JSON web token, a connection string with a password in it
+/// (`scheme://user:password@host`), or a PEM private key. A best-effort check, not a scanner: a
+/// secret that has none of these shapes is not caught.
 pub(crate) fn looks_secret(text: &str) -> bool {
     if text.contains("PRIVATE KEY") {
         return true;
     }
     text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
         .any(|word| word.len() >= 20 && SECRET_MARKS.iter().any(|mark| word.starts_with(mark)))
+        || text
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
+            .any(is_jwt)
+        || has_password_in_url(text)
+}
+
+/// Three non-empty base64url parts joined by dots, the first starting `eyJ` (a JSON header).
+fn is_jwt(word: &str) -> bool {
+    let word = word.trim_end_matches('.');
+    let parts: Vec<&str> = word.split('.').collect();
+    word.len() >= 20
+        && parts.len() == 3
+        && parts.iter().all(|part| !part.is_empty())
+        && parts[0].starts_with("eyJ")
+}
+
+/// Whether some `scheme://user:password@host` appears with a non-empty user and password.
+fn has_password_in_url(text: &str) -> bool {
+    text.match_indices("://").any(|(at, _)| {
+        let rest = &text[at + 3..];
+        let end = rest
+            .find(|c: char| {
+                c.is_whitespace()
+                    || matches!(c, '/' | '?' | '#' | '"' | '\'' | '\\' | '`' | '<' | '>')
+            })
+            .unwrap_or(rest.len());
+        let authority = &rest[..end];
+        authority.rsplit_once('@').is_some_and(|(userinfo, host)| {
+            !host.is_empty()
+                && userinfo
+                    .split_once(':')
+                    .is_some_and(|(user, password)| !user.is_empty() && !password.is_empty())
+        })
+    })
 }
 
 /// Hooks for the daemon's tests: hold a wake at the moment it re-checks the session, shorten
@@ -1939,6 +1989,125 @@ mod tests {
         assert!(looks_secret("-----BEGIN OPENSSH PRIVATE KEY-----"));
         assert!(looks_secret("AKIAABCDEFGHIJKLMNOP"));
         assert!(!looks_secret("Renamed the greeting; see sk-learn docs."));
+    }
+
+    #[test]
+    fn more_credential_shapes_are_recognised() {
+        let stripe = format!("sk_live_{}", "a1B2c3D4e5F6g7H8");
+        assert!(looks_secret(&format!("key {stripe}")));
+        assert!(looks_secret("rk_live_51Habcdefghijklmnop"));
+        assert!(looks_secret("AIzaSyA-0123456789abcdefghijklmnopqrstu"));
+        assert!(looks_secret(&format!(
+            "token hf_{}",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGH"
+        )));
+        assert!(looks_secret("npm_abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(looks_secret("xoxa-2-1234567890-abcdef"));
+        assert!(looks_secret("xoxs-1234567890-abcdefghij"));
+        assert!(looks_secret("xoxp-1234567890-abcdefghij"));
+        assert!(looks_secret(
+            "Authorization: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl."
+        ));
+        assert!(looks_secret(
+            "postgres://admin:hunter2@db.internal:5432/app"
+        ));
+        assert!(looks_secret(
+            "see 'mongodb+srv://u:p%40ss@cluster0.example.net'"
+        ));
+    }
+
+    #[test]
+    fn ordinary_text_is_not_taken_for_a_credential() {
+        assert!(!looks_secret(
+            "see https://example.com/a/b and hf_ or npm_ alone"
+        ));
+        assert!(!looks_secret("ssh://git@github.com/owner/repo.git"));
+        assert!(!looks_secret("https://user@example.com/path"));
+        assert!(!looks_secret("postgres://user:@host/db"));
+        assert!(!looks_secret("a.b.c and eyJ.x.y and 1.2.3"));
+        assert!(!looks_secret("npm_config and AIza and the sk_live_ prefix"));
+        assert!(!looks_secret("mail me at user:name@example.com"));
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// A clone of a bare origin that has a `feature` branch.
+    fn clone_with_feature() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin.git");
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "--bare", "-q"]);
+        run_git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        run_git(&clone, &["config", "user.name", "Test"]);
+        run_git(&clone, &["config", "user.email", "test@example.com"]);
+        run_git(&clone, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(clone.join("a.txt"), "a").unwrap();
+        run_git(&clone, &["add", "-A"]);
+        run_git(&clone, &["commit", "-q", "-m", "a"]);
+        run_git(&clone, &["push", "-q", "-u", "origin", "feature"]);
+        // Forget what the push recorded, so a fetch is what makes the remote branch known.
+        run_git(&clone, &["update-ref", "-d", "refs/remotes/origin/feature"]);
+        (dir, clone)
+    }
+
+    fn remote_branch_known(clone: &Path) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(clone)
+            .args(["rev-parse", "--verify", "-q", "refs/remotes/origin/feature"])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[tokio::test]
+    async fn a_session_folder_is_checked_before_the_fetch_can_run_anything() {
+        let (_dir, clone) = clone_with_feature();
+        run_git(&clone, &["config", "credential.helper", "store"]);
+        let problem = checkout_problem(&clone, "feature").await;
+        assert!(
+            problem.is_some_and(|text| text.contains("credential")),
+            "a credential helper in the repository's config is refused"
+        );
+        assert!(!remote_branch_known(&clone), "nothing was fetched");
+        // Without the key the same folder is fetched and passes.
+        run_git(&clone, &["config", "--unset", "credential.helper"]);
+        assert_eq!(checkout_problem(&clone, "feature").await, None);
+        assert!(remote_branch_known(&clone));
+    }
+
+    #[tokio::test]
+    async fn a_worktree_is_not_prepared_when_the_config_would_run_in_the_fetch() {
+        let (dir, clone) = clone_with_feature();
+        run_git(&clone, &["config", "core.sshCommand", "ssh -v"]);
+        let worktree = dir.path().join("wt");
+        let refused =
+            super::super::prepare_worktree(&clone, &worktree, "feature", "imperium/fix").await;
+        assert!(refused.is_err_and(|text| text.contains("sshcommand")));
+        assert!(!remote_branch_known(&clone), "nothing was fetched");
+        assert!(!worktree.exists());
+        run_git(&clone, &["config", "--unset", "core.sshCommand"]);
+        super::super::prepare_worktree(&clone, &worktree, "feature", "imperium/fix")
+            .await
+            .unwrap();
+        assert!(worktree.join("a.txt").exists());
     }
 
     #[test]

@@ -188,8 +188,7 @@ pub async fn fix_ci(
     );
     let worktree = worktree_path(&state.settings(), state.data_dir(), repo, pr.number);
     let local_branch = format!("imperium/fix-pr-{}", pr.number);
-    if let Err(error) =
-        git::prepare_worktree(&watch.project, &worktree, &pr.branch, &local_branch).await
+    if let Err(error) = prepare_worktree(&watch.project, &worktree, &pr.branch, &local_branch).await
     {
         announce(state, repo, pr.number, "failed", None, error);
         return;
@@ -271,6 +270,62 @@ pub(crate) async fn repository_allows(
     tokio::task::spawn_blocking(move || crate::review::check_repository_config(&dir, step, what))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// [`git::prepare_worktree`], after refusing a repository whose own config names a program or a
+/// credential answer that the fetch would run (a credential helper, `core.sshCommand`, a transport
+/// program): that check comes before the first git call that reaches the remote.
+pub(crate) async fn prepare_worktree(
+    repo: &Path,
+    worktree: &Path,
+    branch: &str,
+    local_branch: &str,
+) -> Result<(), String> {
+    repository_allows(repo, Step::AutofixPush, "work on the pull request yourself").await?;
+    git::prepare_worktree(repo, worktree, branch, local_branch).await
+}
+
+/// Refuses a push that would not go to `repo`: `origin`'s push address, as git resolves it
+/// (`pushurl` and the `insteadOf` rewrites included), must name that GitHub repository. The
+/// address is not quoted, as it may hold a password.
+pub(crate) async fn check_push_target(dir: &Path, repo: &str) -> Result<(), String> {
+    let targets = git::push_urls(dir).await.map_err(|_| {
+        "the push address of origin could not be read, so nothing was pushed".to_string()
+    })?;
+    // A push goes to every address, so each one must name the repository.
+    if !targets.is_empty() && targets.iter().all(|target| push_target_is(target, repo)) {
+        return Ok(());
+    }
+    // The tests push to local folders, which name no GitHub repository: there every push
+    // address must be the fetch address, with no redirect of the push alone.
+    #[cfg(feature = "testing")]
+    if !targets.is_empty()
+        && testing_fetch_url(dir).is_some_and(|fetch| targets.iter().all(|target| *target == fetch))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "origin's push address does not name {repo} over https or ssh (a pushurl, a second pushurl or a pushInsteadOf may redirect it), so nothing was pushed"
+    ))
+}
+
+/// Whether `target` is an https or ssh GitHub address of `repo`: plain `http://` and `git://`
+/// are refused, and so is an SSH host alias such as `git@github.com-work:owner/repo` (fail
+/// closed).
+fn push_target_is(target: &str, repo: &str) -> bool {
+    let target = target.trim();
+    if target.starts_with("http://") || target.starts_with("git://") {
+        return false;
+    }
+    crate::pr_monitor::github_repo(target).is_some_and(|named| named.eq_ignore_ascii_case(repo))
+}
+
+#[cfg(feature = "testing")]
+fn testing_fetch_url(dir: &Path) -> Option<String> {
+    let mut command = crate::safe_git::command(dir);
+    command.args(["remote", "get-url", "origin"]);
+    let output = crate::safe_git::run(&mut command).ok()?;
+    Some(crate::safe_git::text(&output))
 }
 
 /// What a session's work became.
@@ -363,6 +418,10 @@ pub(crate) async fn deliver(
         say("failed", error);
         return Delivered::Failed;
     }
+    if let Err(error) = check_push_target(dir, repo).await {
+        say("failed", error);
+        return Delivered::Failed;
+    }
     let message = format!(
         "{title}\n\n{summary}\n\nImperium-Auto-Fix: session {session}",
         summary = summary.chars().take(1500).collect::<String>(),
@@ -430,6 +489,11 @@ pub(crate) async fn deliver(
     // turned off first and stays off until they confirm it again in the desktop app. If it
     // cannot be checked or turned off, nothing is pushed.
     if let Err(error) = repository_allows(dir, Step::AutofixPush, "push the fix yourself").await {
+        say("failed", error);
+        return Delivered::Failed;
+    }
+    // Checked again here: the config may have changed while the approval waited.
+    if let Err(error) = check_push_target(dir, repo).await {
         say("failed", error);
         return Delivered::Failed;
     }
@@ -701,6 +765,31 @@ fn announce_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_repository_being_fixed_is_a_push_target() {
+        for url in [
+            "https://github.com/owner/repo.git",
+            "git@github.com:Owner/Repo.git",
+            "ssh://git@github.com/owner/repo",
+            "https://x-access-token:t@github.com/owner/repo.git",
+        ] {
+            assert!(push_target_is(url, "owner/repo"), "{url}");
+        }
+        for url in [
+            "https://github.com/owner/other.git",
+            "https://github.com/attacker/repo.git",
+            "https://example.com/owner/repo.git",
+            "git@gitlab.com:owner/repo.git",
+            "http://github.com/owner/repo.git",
+            "git://github.com/owner/repo.git",
+            "git@github.com-work:owner/repo.git",
+            "/tmp/owner/repo.git",
+            "",
+        ] {
+            assert!(!push_target_is(url, "owner/repo"), "{url}");
+        }
+    }
 
     #[test]
     fn a_credential_failure_is_reported_once_until_a_poll_succeeds() {

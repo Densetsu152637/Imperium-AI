@@ -607,3 +607,89 @@ async fn a_listing_that_cannot_work_is_reported_to_the_user() {
     let summary = event["summary"].as_str().unwrap();
     assert!(summary.contains("gh auth login"), "{summary}");
 }
+
+/// Runs Fix CI on a fixture whose push address `redirect` has moved to `elsewhere` (another bare
+/// repository), and checks that the fix is refused before anything is asked or pushed.
+async fn a_redirected_push_is_refused(redirect: fn(&Path, &str, &str)) {
+    let Fixture {
+        daemon,
+        watch,
+        origin,
+        clone,
+        before,
+        _dir,
+    } = fixture("greeting.txt", "auto").await;
+    let elsewhere = _dir.path().join("elsewhere.git");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    git(&elsewhere, &["init", "--bare", "-q"]);
+    let elsewhere_url = elsewhere.to_str().unwrap().to_string();
+    let origin_url = git(&clone, &["config", "--get", "remote.origin.url"]);
+    redirect(&clone, &origin_url, &elsewhere_url);
+    // The redirect is among the addresses git resolves the push to.
+    assert!(
+        git(&clone, &["remote", "get-url", "--push", "--all", "origin"])
+            .lines()
+            .any(|line| line == elsewhere_url)
+    );
+
+    let mut announcements = daemon.announcements();
+    let pr = failing_pr(&before);
+    let fixing = {
+        let daemon = Arc::clone(&daemon);
+        tokio::spawn(async move { imperium_core::fix_ci(&daemon, &FakeGitHub, &watch, &pr).await })
+    };
+    let failure = loop {
+        let notification = tokio::time::timeout(Duration::from_secs(30), announcements.recv())
+            .await
+            .expect("an announcement within 30 s")
+            .unwrap();
+        match notification.method.as_str() {
+            "approval.requested" => panic!("the push was asked about: {}", notification.params),
+            "autofix.event" => {
+                let status = notification.params["status"].as_str().unwrap();
+                assert_ne!(status, "pushed", "{}", notification.params);
+                if status == "failed" {
+                    break notification.params["summary"].as_str().unwrap().to_string();
+                }
+            }
+            _ => {}
+        }
+    };
+    fixing.await.unwrap();
+    assert!(failure.contains("push address"), "{failure}");
+    assert!(failure.contains("owner/repo"), "{failure}");
+    assert_eq!(git(&origin, &["rev-parse", "feature"]), before);
+    assert_eq!(git(&elsewhere, &["for-each-ref"]), "");
+}
+
+#[tokio::test]
+async fn a_pushurl_redirect_stops_the_push() {
+    a_redirected_push_is_refused(|clone, _origin, elsewhere| {
+        git(clone, &["config", "remote.origin.pushurl", elsewhere]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_push_insteadof_redirect_stops_the_push() {
+    a_redirected_push_is_refused(|clone, origin, elsewhere| {
+        git(
+            clone,
+            &["config", &format!("url.{elsewhere}.pushInsteadOf"), origin],
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_second_pushurl_stops_the_push() {
+    a_redirected_push_is_refused(|clone, origin, elsewhere| {
+        // The first address is the real one; the second is where the push is also sent.
+        git(clone, &["config", "--add", "remote.origin.pushurl", origin]);
+        git(
+            clone,
+            &["config", "--add", "remote.origin.pushurl", elsewhere],
+        );
+    })
+    .await;
+}
