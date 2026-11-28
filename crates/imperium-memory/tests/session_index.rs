@@ -479,3 +479,29 @@ fn vectors_add_matches_by_meaning_and_follow_the_model() {
     index.sync(&sources);
     assert_eq!(index.counts(), (3, 1));
 }
+
+#[test]
+fn a_models_reasoning_is_never_indexed() {
+    let fx = Fixture::new();
+    let source = fx.source("t1", "thinking", None, false);
+    append(
+        &fx.journal("t1"),
+        &[
+            user("plan the migration"),
+            event(
+                "root",
+                SessionEvent::ThinkingDelta {
+                    text: "zanzibar secret deliberation".into(),
+                    at_ms: None,
+                },
+            ),
+            event("root", SessionEvent::ThinkingFinished { duration_ms: 1200 }),
+            delta("Start with the schema."),
+            done(),
+        ],
+    );
+    let index = fx.index(std::slice::from_ref(&source));
+    assert!(index.search(&query("zanzibar"), None).is_empty());
+    assert!(index.search(&query("deliberation"), None).is_empty());
+    assert!(!index.search(&query("schema"), None).is_empty());
+}

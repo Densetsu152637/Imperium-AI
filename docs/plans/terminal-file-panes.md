@@ -792,8 +792,9 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     thread-group leaders and count a process live when any thread is (test: a Python child whose
     main thread calls `SYS_exit` while a worker sleeps, under `bash -i`); the kill-all freezes
     before it kills and never gives up while a descendant lives (test: an exponential fork bomb
-    under `ulimit -u`, in a test binary of its own); a failed Job Object assignment kills the
-    shell and refuses the terminal; a Windows test shows the shell and its child in the job and
+    under bash's `ulimit -u`, in a test binary of its own; see the CI incident below); a failed
+    Job Object assignment kills the shell and refuses the terminal; a Windows test shows the shell
+    and its child in the job and
     closes the job alone; an environment test (a variable left out of `Spec.env` is not in the
     shell) and a canary descriptor test (`fd_canary.rs`) run on the OSes they apply to;
     `subscribe` returns the exit if it was already announced, callbacks are run under
@@ -811,6 +812,18 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     the daemon's sweep after 30 s; the sweep never stops the supervisor, only kills it. Tests: a C
     helper whose `vfork` child stops itself before `exec` (the parent sits in `D`), and unit tests
     of the loop with a fake that refuses signals, one that never stops, and the ordering rules.
+  - **CI incident (runner shut down during the pty tests):** `rust (ubuntu-22.04)` ended with
+    "The runner has received a shutdown signal" (exit 143) during or within seconds of the fork
+    bomb test. A kernel trace of every signal (`signal_generate`) over the pty suites showed **no
+    signal from the tests, the supervisor or the sweep to any process outside the terminal**; the
+    kill semantics above are unchanged. The cause was the test: it ran under `/bin/sh`, which is
+    dash on Ubuntu, where `ulimit -u` is not an option (dash's is `-p`), so the cap failed and the
+    bomb ran uncapped. It filled the pids cgroup the runner's agent lives in (`pids.max` about
+    19,000), the agent's Go runtime died on `newosproc`, and the agent shut the runner down. The
+    bomb now runs under bash, counts the user's tasks (threads, which `RLIMIT_NPROC` counts),
+    exits before forking if the limit did not take, and the test fails if the bomb outgrows its
+    cap. A test also checks that a process sharing the daemon's session and process group outlives
+    `end` unstopped.
   - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
     being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
     once the supervisor reports its handlers in place. The supervisor's poll also wakes every
@@ -820,8 +833,9 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     burst, input queue bound, short-lived thread, bad requests) and the unit tests of `ring.rs`;
     `tests/supervisor.rs` (Linux: setsid job, master closed, `SIGKILL` of the stand-in daemon,
     wrong start time, `SIGTERM`, fork loop, no zombie, unrelated `waitpid`, no descriptor above 2,
-    the three Ctrl+C checks, the late handover, the `tcsetpgrp` trace, the missing `pidfd_open`);
-    `tests/missing_syscall.rs`.
+    the three Ctrl+C checks, the late handover, the `tcsetpgrp` trace, the missing `pidfd_open`,
+    a process in the daemon's own session and group outliving `end`); `tests/fork_bomb.rs` (the
+    capped bomb); `tests/missing_syscall.rs`.
 - Handoff notes: the crate knows nothing of sessions or protocol; the shell choice and
   environment are stage 2a's. Changing `Cargo.lock` runs the presence end-to-end job (detect
   lists it); expect it.

@@ -85,6 +85,9 @@ Options:
       --read-only
           Mount the session's folders read-only: the agent reads but never writes there, and commands run only under isolation.tier = os or container
 
+      --show-thinking
+          Print a thinking model's reasoning as it streams. Without it a run of thinking is one line, `thinking… (10 seconds)`
+
   -h, --help
           Print help
 

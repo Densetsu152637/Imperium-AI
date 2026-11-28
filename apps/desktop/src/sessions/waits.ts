@@ -37,6 +37,7 @@ export type Sent = {
 /** Events that are an agent's output, or end its turn: its wait is over. */
 const OUTPUT = new Set<string>([
   "text_delta",
+  "thinking_delta",
   "tool_started",
   "tool_finished",
   "model_call_completed",
