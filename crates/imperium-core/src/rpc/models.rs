@@ -48,6 +48,9 @@ impl Connection {
                     crate::onboarding::remove_folder(Arc::clone(&self.state), params)
                 })
             }
+            ModelRescan::NAME => call_later::<ModelRescan, _>(c.params.take(), c.later, |_| {
+                crate::onboarding::rescan_models(Arc::clone(&self.state))
+            }),
             ModelUse::NAME => call::<ModelUse>(c.params.take(), |params: ModelUseParams| {
                 crate::onboarding::use_model(&self.state, params)
             }),

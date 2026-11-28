@@ -50,6 +50,7 @@ method models.hf_files
 method models.list
 method models.local
 method models.remove_folder
+method models.rescan
 method models.set_config
 method models.test
 method models.unload

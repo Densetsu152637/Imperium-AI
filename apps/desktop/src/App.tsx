@@ -98,6 +98,7 @@ import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
 import { PreviewPanel } from "./panels/PreviewPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
+import { localEnabled } from "./models/localModels";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
@@ -1305,6 +1306,7 @@ export function App() {
         onSelectEnvironment={setEnvId}
         models={modelTable?.models ?? []}
         localModels={localModels?.models ?? []}
+        localOn={localEnabled(localModels)}
         defaultModel={localModels ? (localModels.default_model ?? null) : undefined}
         modelsLoaded={modelTable !== null && localModels !== null}
         client={client}
@@ -1334,7 +1336,7 @@ export function App() {
       title: "Review",
       body: <ReviewPanel session={session} client={client} onOpenSession={selectSession} />,
     },
-    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
+    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} localOn={localEnabled(localModels)} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",
       title: "Local models",
@@ -1342,6 +1344,11 @@ export function App() {
         <LocalModelsPanel
           listing={localModels}
           onRefresh={refreshLocalModels}
+          onListing={(next) => {
+            setLocalModels(next);
+            // The model table shows local rows as off or on with the switches.
+            client?.call<ModelListResult>("models.list").then(setModelTable, report);
+          }}
           client={client}
           onConfigure={(id) => setModelDialog({ tab: "local", id })}
         />

@@ -1915,6 +1915,17 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   name, base URL, API key, and an optional model, which then becomes the default; the key goes to
   the system keychain, `models.add_endpoint`). The cards stack in a narrow column and sit side by
   side in a wide one; failures show as `Notice`s.
+- **Local models off by default.** A card at the top of the panel holds the *Enabled* switch of
+  `models.local.enabled`. While it is off the card says so, with how to turn them on, and lists the
+  house models (Emperor, Consul) as *off*; the models below carry an *off* badge, their *Use* and
+  *Test* buttons are disabled, and setup (*Add folder*, *Download*, the download form) waits for
+  the switch. Each model row also has its own *Enabled* switch (*Use this model*), kept while the
+  global one is off. The Models panel says the local rows are off, and the new-session view
+  suggests no house model and offers no setup that downloads. See
+  [04](04-models-and-routing.md#local-models-are-off-by-default-implemented).
+- **Rescan.** *Rescan* calls `models.rescan` (a plain re-read of `models.local` does not scan),
+  shows a spinner while it works and then how many models it found and which are new or gone, or
+  the error. It lists models as off when the switch is off and enables and starts nothing.
 - **Layout.** The Local models panel lists the models first, with a small, quiet *Rescan* (scan
   the folders again) and *Configure* above them; then the skipped items and the Hugging Face
   download form; and the *llama.cpp runtime* card at the bottom. It shows no free-memory summary

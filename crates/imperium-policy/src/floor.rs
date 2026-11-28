@@ -462,7 +462,8 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// and `config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` bring
 /// plugin code in, or turn it on, or point the daemon at a folder of it, so a person decides
 /// those too (a plugin with code still needs the desktop app's approval, which no command line
-/// gives); browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
+/// gives); `config set models.local.enabled` to anything but false turns local models on, which
+/// a person decides; browsing, inspecting, listing, disabling and uninstalling change nothing that runs.
 fn changes_agents(args: &[String]) -> bool {
     // Global options such as `--remote <name>` may sit between the words, so the subcommand is
     // looked for anywhere after the group word (a false alarm only asks a person).
@@ -480,6 +481,14 @@ fn changes_agents(args: &[String]) -> bool {
         || after("plugin", &["install", "update", "enable"])
         || plugin_marketplace_add(args)
         || changes_plugin_setting(args)
+        || turns_local_models_on(args)
+        // Downloads a model, installs a runtime, or undoes a change (which may be the one that
+        // turned local models off): each is local-model setup a person decides.
+        || after("models", &["pull"])
+        || after("runtime", &["install", "update"])
+        || after("config", &["undo"])
+        || changes_web_setting(args)
+        || changes_secret(args)
     {
         return true;
     }
@@ -537,6 +546,73 @@ fn changes_plugin_setting(args: &[String]) -> bool {
                     word.starts_with("extensions.disabled_plugins")
                         || word.starts_with("extensions.plugin_dirs")
                 })
+        })
+}
+
+/// `config [--remote x] set models.local.enabled <value>` (or the `models.local` table): turning
+/// local models on starts downloads, installs and model servers, so a person decides it. Only a
+/// plain `false` (or `off`, `no`, `0`) is left open to agents; `unset` falls back to the default
+/// (off, unless local models were set up before) and stays open too.
+fn turns_local_models_on(args: &[String]) -> bool {
+    let Some(at) = args.iter().position(|word| word == "config") else {
+        return false;
+    };
+    let rest = &args[at + 1..];
+    if !rest.iter().any(|word| word == "set") {
+        return false;
+    }
+    let unquote = |word: &str| {
+        word.trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase()
+    };
+    let off = |value: &str| matches!(unquote(value).as_str(), "false" | "off" | "no" | "0");
+    rest.iter().enumerate().any(|(index, word)| {
+        let word = unquote(word.as_str());
+        if !word.starts_with("models.local") {
+            return false;
+        }
+        // `key=value`, or the value as the next word: only an off value is left open.
+        let value = match word.split_once('=') {
+            Some((_, value)) => Some(value.to_string()),
+            None => rest.get(index + 1).cloned(),
+        };
+        !value.as_deref().is_some_and(off)
+    })
+}
+
+/// `secret [--remote x] set|delete …`: keychain secrets hold the provider keys the web tools
+/// use, so a person decides each change. `secret` must be the command itself (after any global
+/// options), so `plugin secret delete` is not caught here.
+fn changes_secret(args: &[String]) -> bool {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--remote" => {
+                words.next();
+            }
+            word if word.starts_with('-') => {}
+            "secret" => {
+                return words.any(|word| matches!(word.as_str(), "set" | "delete"));
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// `config [--remote x] set|unset web.…`: the web settings choose the search providers (and the
+/// keychain secret naming each key) and whether blocked pages go to a third-party archive, so
+/// a person decides each change. A false alarm only asks.
+fn changes_web_setting(args: &[String]) -> bool {
+    args.iter()
+        .position(|word| word == "config")
+        .is_some_and(|at| {
+            let rest = &args[at + 1..];
+            rest.iter()
+                .any(|word| matches!(word.as_str(), "set" | "unset"))
+                && rest
+                    .iter()
+                    .any(|word| word.to_ascii_lowercase().starts_with("web."))
         })
 }
 
@@ -688,6 +764,30 @@ mod tests {
             "imperium config unset extensions.disabled_plugins",
             "imperium --remote box config set extensions.plugin_dirs []",
             "/usr/bin/imperium config set Extensions.Plugin_Dirs []",
+            "imperium config set models.local.enabled true",
+            "imperium config set models.local.enabled=true",
+            "imperium --remote box config set Models.Local.Enabled true",
+            "imperium config set models.local.enabled 1",
+            "imperium models pull Qwen/Qwen3-8B-GGUF",
+            "imperium --remote box models pull owner/repo --quant Q4_K_M",
+            "imperium runtime install",
+            "imperium runtime install cuda12",
+            "imperium config undo 12",
+            "imperium config set web.search brave",
+            "imperium config set web.search_fallback '[\"tavily\"]'",
+            "imperium config unset web.brave_key",
+            "imperium config set web.archive_fallback true",
+            "imperium --remote box config set web.searxng_url http://x",
+            "imperium.exe config --remote box unset web.api_key",
+            "imperium config set Web.Exa_Key exa",
+            "imperium secret set brave-main",
+            "imperium secret delete brave-main",
+            "imperium --remote box secret set brave-main",
+            "imperium secret --remote box delete brave-main",
+            "/usr/bin/imperium.exe secret set k",
+            "sh -c 'imperium secret set k'",
+            "bash -lc \"imperium config set web.search brave\"",
+            "env X=1 imperium config unset web.kagi_key",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -704,7 +804,6 @@ mod tests {
             "imperium runtime vllm status",
             "imperium runtime vllm",
             "imperium runtime status",
-            "imperium runtime install",
             "imperium vllm setup",
             "imperium plugin",
             "imperium plugin marketplace list",
@@ -720,6 +819,16 @@ mod tests {
             "imperium config unset model.default",
             "imperium config explain extensions.plugin_dirs",
             "imperium config set permissions.mode ask",
+            "imperium config set models.local.enabled false",
+            "imperium config set models.local.enabled=false",
+            "imperium config unset models.local.enabled",
+            "imperium config explain models.local.enabled",
+            "imperium models folders",
+            "imperium models local",
+            "imperium config get models.local.enabled",
+            "imperium config explain web.search",
+            "imperium secret",
+            "imperium secret list",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }

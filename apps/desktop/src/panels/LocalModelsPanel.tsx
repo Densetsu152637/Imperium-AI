@@ -1,7 +1,9 @@
 // Local models: the models found with one-click Use / Test / Settings, downloads from Hugging
 // Face, and at the bottom the llama.cpp runtime and whether it sees the GPU. Model folders are
 // set in Settings → Models (the Resources panel shows free memory). With nothing set up it shows
-// the first-run choices instead.
+// the first-run choices instead. Local models are off by default (`models.local.enabled`): a
+// switch at the top turns them on, and until then everything stays listed, shown as off, and
+// nothing downloads, installs or starts (models/localModels.ts).
 
 import { Check, Download, FlaskConical, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
@@ -18,6 +20,7 @@ import type {
   RuntimeUpdateJob,
 } from "@imperium/protocol";
 import { Badge } from "../components/Badge";
+import { Switch } from "../components/Switch";
 import { EmptyState } from "../components/EmptyState";
 import { IconButton } from "../components/IconButton";
 import { Notice } from "../components/Notice";
@@ -27,6 +30,18 @@ import { Tooltip } from "../components/Tooltip";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { ModelSetup } from "./ModelSetup";
+import { HOUSE_MODELS, approxSize } from "../models/houseModels";
+import {
+  LOCAL_OFF_NOTE,
+  localEnabled,
+  offReason,
+  rowIsOff,
+  runRescan,
+  setLocalEnabled,
+  setModelEnabled,
+  type Call,
+  type RescanState,
+} from "../models/localModels";
 import { arrangeModels, markOf, type ModelMark } from "../models/modelPrefs";
 import { prefersReducedMotion, useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
@@ -78,14 +93,23 @@ function context(tokens: number | null): string {
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** The client's `call`, as the pure helpers take it. */
+const callOf =
+  (client: DaemonClient): Call =>
+  (method, params) =>
+    client.call(method, params);
+
 export function LocalModelsPanel({
   listing,
   onRefresh,
+  onListing,
   client,
   onConfigure,
 }: {
   listing: LocalModelListResult | null;
   onRefresh: () => void;
+  /** Takes the listing a rescan returned, so the app's other views follow it. */
+  onListing?: (listing: LocalModelListResult) => void;
   client: DaemonClient | null;
   /** Opens the model settings dialog, on one model when `id` is given. */
   onConfigure: (id?: string) => void;
@@ -95,11 +119,14 @@ export function LocalModelsPanel({
     hfInput.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
     hfInput.current?.focus();
   };
-  const download = <HfDownload client={client} onDone={onRefresh} inputRef={hfInput} />;
+  const [rescan, setRescan] = useState<RescanState>({ kind: "idle" });
+  const download = <HfDownload client={client} onDone={onRefresh} inputRef={hfInput} off={listing !== null && !localEnabled(listing)} />;
+  const switchCard = listing && <LocalSwitchCard listing={listing} client={client} onChanged={onRefresh} />;
   if (!listing || !listing.enabled) {
     return (
       <div className="models local-models">
-        <ModelSetup client={client} onChanged={onRefresh} onDownload={showDownload} />
+        {switchCard}
+        <ModelSetup client={client} onChanged={onRefresh} onDownload={showDownload} localOff={listing !== null && !localEnabled(listing)} />
         {download}
         {client && <RuntimeCard client={client} onChanged={onRefresh} />}
       </div>
@@ -107,9 +134,24 @@ export function LocalModelsPanel({
   }
   return (
     <div className="models local-models">
+      {switchCard}
       <div className="models-toolbar local-models-toolbar">
-        <Tooltip text="Scan the model folders again (set them in Settings → Models)">
-          <button className="ghost small" onClick={onRefresh}>
+        {rescan.kind === "scanning" && (
+          <span className="muted rescan-status" role="status">
+            <Spinner /> Scanning…
+          </span>
+        )}
+        {rescan.kind === "done" && (
+          <span className="muted rescan-status" role="status">
+            {rescan.message}
+          </span>
+        )}
+        <Tooltip text="Scan the model folders and the download folder again (set them in Settings → Models). Turns nothing on.">
+          <button
+            className="ghost small"
+            disabled={!client || rescan.kind === "scanning"}
+            onClick={() => client && void runRescan(callOf(client), setRescan, (next) => (onListing ? onListing(next) : onRefresh()))}
+          >
             <RefreshCw aria-hidden="true" /> Rescan
           </button>
         </Tooltip>
@@ -117,6 +159,7 @@ export function LocalModelsPanel({
           <SlidersHorizontal aria-hidden="true" /> Configure
         </button>
       </div>
+      {rescan.kind === "failed" && <Notice tone="danger">{rescan.message}</Notice>}
       <ModelTable listing={listing} client={client} onChanged={onRefresh} onConfigure={onConfigure} />
       {listing.skipped.length > 0 && (
         <details className="skipped">
@@ -135,6 +178,65 @@ export function LocalModelsPanel({
       {download}
       {client && <RuntimeCard client={client} onChanged={onRefresh} />}
     </div>
+  );
+}
+
+/**
+ * The global switch (`models.local.enabled`) and, while it is off, the note saying so and the
+ * house-model choices (Emperor and Consul), which stay listed but off.
+ */
+function LocalSwitchCard({
+  listing,
+  client,
+  onChanged,
+}: {
+  listing: LocalModelListResult;
+  client: DaemonClient | null;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = localEnabled(listing);
+  const toggle = async (next: boolean) => {
+    if (!client) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setLocalEnabled(callOf(client), next);
+      onChanged();
+    } catch (failure) {
+      setError(message(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card local-switch" aria-labelledby="local-switch-title">
+      <div className="local-switch-row">
+        <strong id="local-switch-title">Local models</strong>
+        <Switch checked={on} onChange={(next) => void toggle(next)} label="Enabled: local models" disabled={!client || busy} />
+      </div>
+      {on ? (
+        <p className="muted">On. Each model below has its own switch too; a model runs only when both are on.</p>
+      ) : (
+        <>
+          <Notice tone="info">{LOCAL_OFF_NOTE}</Notice>
+          <ul className="house-off" aria-label="House models">
+            {HOUSE_MODELS.map((model) => (
+              <li key={model.id}>
+                <span>
+                  <strong>{model.name}</strong> <span className="muted">· {approxSize(model.approxBytes)}</span>
+                </span>
+                <Badge className="off" title="Local models are off, so it is neither downloaded nor chosen">
+                  off
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {error && <Notice tone="danger">{error}</Notice>}
+    </section>
   );
 }
 
@@ -441,7 +543,13 @@ function ModelTable({
         key={row.id}
         row={row}
         isDefault={listing.default_model === spec}
-        unusable={row.problem != null || !row.enabled || (row.placement === "none" && !row.loaded)}
+        unusable={row.problem != null || rowIsOff(listing, row) || (row.placement === "none" && !row.loaded)}
+        offReason={offReason(listing, row)}
+        globalOff={!localEnabled(listing)}
+        onSwitch={(on) => {
+          setError(null);
+          if (client) setModelEnabled(callOf(client), localSpec(row), on).then(onChanged, (failure) => setError(message(failure)));
+        }}
         hidden={hidden}
         mark={markOf(marks, spec)}
         testing={testing === row.id}
@@ -486,6 +594,9 @@ function ModelRows({
   row,
   isDefault,
   unusable,
+  offReason,
+  globalOff,
+  onSwitch,
   hidden,
   mark,
   testing,
@@ -499,6 +610,12 @@ function ModelRows({
   row: LocalModelRow;
   isDefault: boolean;
   unusable: boolean;
+  /** Why the model is off, or null when it is on. */
+  offReason: string | null;
+  /** Local models are off as a whole. */
+  globalOff: boolean;
+  /** The model's own "Enabled" switch. */
+  onSwitch: (on: boolean) => void;
   /** In the collapsed "Hidden" group, drawn dimmed. */
   hidden: boolean;
   mark: ModelMark | null;
@@ -524,8 +641,8 @@ function ModelRows({
             {row.runtime === "vllm" && <Badge>vLLM</Badge>}
             {row.mmproj && <Badge title={row.mmproj}>vision</Badge>}
             {isDefault && <Badge tone="ok">default</Badge>}
-            {!row.enabled && (
-              <Badge className="off" title="Switched off in the model settings (Use this model): never routed to, offered or chosen">
+            {offReason !== null && (
+              <Badge className="off" title={offReason}>
                 off
               </Badge>
             )}
@@ -560,11 +677,12 @@ function ModelRows({
               <Check aria-hidden="true" /> Default
             </span>
           ) : (
-            <button className="small" onClick={onUse} disabled={row.problem != null || !row.enabled} title={row.enabled ? `Use for new sessions: ${localDescription(row)}` : "Switched off: turn it on in its settings first"}>
+            <button className="small" onClick={onUse} disabled={row.problem != null || offReason !== null} title={offReason === null ? `Use for new sessions: ${localDescription(row)}` : `Off: ${offReason}`}>
               Use
             </button>
           )}
-          <button className="small" onClick={onTest} disabled={busy || unusable} title="Load it and send one short prompt">
+          <Switch checked={row.own_enabled} onChange={onSwitch} label={`Enabled: ${row.alias ?? row.id}`} />
+          <button className="small" onClick={onTest} disabled={busy || unusable} title={globalOff ? "Turn on local models first" : "Load it and send one short prompt"}>
             <FlaskConical aria-hidden="true" /> {testing ? "Testing…" : "Test"}
           </button>
           <IconButton
@@ -621,10 +739,13 @@ function HfDownload({
   client,
   onDone,
   inputRef,
+  off,
 }: {
   client: DaemonClient | null;
   onDone: () => void;
   inputRef: RefObject<HTMLInputElement | null>;
+  /** Local models are off: nothing downloads until they are turned on. */
+  off: boolean;
 }) {
   const [repo, setRepo] = useState("");
   const [files, setFiles] = useState<HfFilesResult | null>(null);
@@ -697,6 +818,7 @@ function HfDownload({
   return (
     <section className="hf-download" aria-labelledby="hf-download-title">
       <h3 id="hf-download-title">Download from Hugging Face</h3>
+      {off && <p className="muted">Local models are off, so nothing downloads. Turn them on above first.</p>}
       <form className="models-toolbar" onSubmit={list}>
         <label htmlFor="hf-repo" className="field-label">
           Repository
@@ -711,7 +833,7 @@ function HfDownload({
           autoComplete="off"
           onChange={(event) => setRepo(event.target.value)}
         />
-        <button type="submit" className="small" disabled={!client || busy || !repo.trim()}>
+        <button type="submit" className="small" disabled={!client || off || busy || !repo.trim()}>
           <Search aria-hidden="true" /> List files
         </button>
       </form>
@@ -743,7 +865,7 @@ function HfDownload({
               vision projector
             </label>
           )}
-          <button className="primary small" onClick={start} disabled={busy || !variant}>
+          <button className="primary small" onClick={start} disabled={off || busy || !variant}>
             <Download aria-hidden="true" /> Download
           </button>
         </div>

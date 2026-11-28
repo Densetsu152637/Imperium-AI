@@ -28,6 +28,7 @@ export function ModelSetup({
   onChanged,
   onDownload,
   compact = false,
+  localOff = false,
 }: {
   client: DaemonClient | null;
   /** Called after a folder or endpoint was added, to refresh the model lists. */
@@ -36,6 +37,8 @@ export function ModelSetup({
   onDownload: () => void;
   /** Leaves out the heading (when the surrounding panel already says it). */
   compact?: boolean;
+  /** Local models are off (`models.local.enabled`): adding a folder or downloading waits for the switch. */
+  localOff?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,12 +78,12 @@ export function ModelSetup({
       )}
       <div className="setup-actions">
         <SetupCard icon={FolderPlus} title="Add a model folder" body="GGUF files, LM Studio or Hugging Face cache folders on this computer">
-          <button className="setup-action" onClick={addFolder} disabled={!client || busy}>
+          <button className="setup-action" onClick={addFolder} disabled={!client || busy || localOff} title={localOff ? "Turn on local models first" : undefined}>
             Add folder
           </button>
         </SetupCard>
         <SetupCard icon={Download} title="Download from Hugging Face" body="Pick a quantisation that fits this machine">
-          <button className="setup-action" onClick={onDownload} disabled={!client}>
+          <button className="setup-action" onClick={onDownload} disabled={!client || localOff} title={localOff ? "Turn on local models first" : undefined}>
             Download
           </button>
         </SetupCard>

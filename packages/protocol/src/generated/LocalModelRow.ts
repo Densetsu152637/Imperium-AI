@@ -98,7 +98,14 @@ pool_tokens: number,
  */
 pool_reserved_tokens: number, 
 /**
- * False when the user switched the model off ("Use this model" in the model configuration
- * dialog, `models.disabled`): it is not routed to, offered to agents, or selectable.
+ * False when the model may not be used: the user switched it off ("Use this model" in the
+ * model configuration dialog, `models.disabled`), or local models are off
+ * (`models.local.enabled`, see [`LocalModelListResult::local_enabled`]). It is not routed
+ * to, offered to agents, or selectable.
  */
-enabled: boolean, };
+enabled: boolean, 
+/**
+ * The model's own switch alone, whatever the global one says: false when the user switched
+ * this model off. A model runs when `own_enabled` and the global switch are both on.
+ */
+own_enabled: boolean, };

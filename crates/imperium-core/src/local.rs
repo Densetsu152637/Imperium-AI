@@ -324,10 +324,12 @@ impl LocalRuntime {
                 .models
                 .get(&row.id)
                 .and_then(|own| own.alias.clone());
-            row.enabled = !settings
-                .models
-                .is_disabled(&format!("{}:{}", row.runtime, row.id));
+            let spec = format!("{}:{}", row.runtime, row.id);
+            // `enabled` is what may run: the model's own switch and the global one.
+            row.own_enabled = !settings.models.is_switched_off(&spec);
+            row.enabled = !settings.models.is_disabled(&spec);
         }
+        listing.local_enabled = settings.models.local.enabled;
         listing.enabled = !listing.configured_folders.is_empty() || !listing.models.is_empty();
         listing
     }
@@ -414,6 +416,7 @@ impl LocalRuntime {
                     pool_reserved_tokens: status.map_or(0, |s| s.pool_reserved_tokens),
                     // The daemon's listing marks the models the user switched off.
                     enabled: true,
+                    own_enabled: true,
                 }
                 })
                 .collect();
@@ -464,6 +467,7 @@ impl LocalRuntime {
                 llama_cpp_ref: llama_cpp_ref().into(),
                 auto_install: self.supervisor.settings().auto_install,
             }),
+            local_enabled: true,
         }
     }
 }
@@ -503,6 +507,7 @@ pub(crate) fn disabled() -> LocalModelListResult {
         skipped: Vec::new(),
         hardware: None,
         runtime: None,
+        local_enabled: true,
     }
 }
 

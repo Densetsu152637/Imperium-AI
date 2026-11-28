@@ -147,6 +147,7 @@ pub(crate) async fn start(
     state: Arc<DaemonState>,
     params: ModelDownloadParams,
 ) -> Result<DownloadJob, ErrorObject> {
+    crate::onboarding::require_local_on(&state, "downloading a model")?;
     let revision = params
         .revision
         .unwrap_or_else(|| DEFAULT_REVISION.to_string());

@@ -20,7 +20,7 @@ use url::Url;
 
 use crate::browser::{Browser, MAX_TABS, TabInfo, View};
 use crate::tabs::one_line;
-use crate::{CITATION_INSTRUCTIONS, Web, render_hits};
+use crate::{CITATION_INSTRUCTIONS, Web, render_outcome};
 
 const BROWSER_TOOLS: [&str; 8] = [
     "browser_open",
@@ -275,14 +275,16 @@ impl WebTools {
             // approved (or the allow list covers) the URL asked for, not wherever it leads.
             let origin = Url::parse(&args.url).ok().map(|url| url.origin());
             let follow = |target: &Url| self.may_follow(origin.as_ref(), target);
+            // A page that blocks plain HTTP is tried as an archived copy when the user allowed
+            // that (the browser is not used: it has its own permission decision).
             self.web
                 .fetch_with(&args.url, args.offset, args.limit, &follow)
                 .await
         } else {
             self.web
-                .search(&args.query, args.count.unwrap_or(8))
+                .search_chain(&args.query, args.count.unwrap_or(8))
                 .await
-                .map(|hits| render_hits(&hits))
+                .map(|outcome| render_outcome(&outcome))
         };
         result.map_err(|error| error.to_string())
     }
@@ -748,11 +750,12 @@ mod tests {
         let names = |tools: &WebTools| -> Vec<String> {
             tools.specs().into_iter().map(|spec| spec.name).collect()
         };
-        assert_eq!(names(&tools(false)), ["web_fetch"]);
+        assert_eq!(names(&tools(false)), ["web_fetch", "web_search"]);
         assert_eq!(
             names(&tools(true)),
             [
                 "web_fetch",
+                "web_search",
                 "browser_open",
                 "browser_read",
                 "browser_click",
