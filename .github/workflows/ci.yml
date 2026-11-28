@@ -189,6 +189,48 @@ jobs:
           cargo test --locked --release -p imperium-script-worker --features test-support --test measure -- --nocapture 2>&1 | tee measure.log
           grep MEASURE measure.log >> "$GITHUB_STEP_SUMMARY" || true
 
+  # Resource caps (docs/plans/resource-caps.md, stage 1): the cap probes on every OS, on Linux in
+  # a delegated cgroup v2 subtree that sudo creates (with a hard ceiling of its own), and the L6
+  # measurements (a workspace build and a headless Chromium session) as MEASURE lines in the
+  # step summary. The `rust` job runs the same tests without the subtree (the Linux fallback).
+  limits:
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - if: runner.os == 'Linux'
+        run: bash scripts/ci/install-linux-deps.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Cap tests (delegated cgroup)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          IMPERIUM_REQUIRE_CGROUP: "1"
+        run: bash scripts/ci/limits-cgroup.sh cargo test --locked -p imperium-limits -- --nocapture --test-threads=1 2>&1 | tee limits.log
+      - name: Cap tests
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cargo test --locked -p imperium-limits -- --nocapture --test-threads=1 2>&1 | tee limits.log
+      - name: Measurements (workspace build, headless Chromium)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/ci/limits-measure.sh 2>&1 | tee -a limits.log
+      - name: Summary
+        if: always()
+        shell: bash
+        run: grep MEASURE limits.log | tee -a "$GITHUB_STEP_SUMMARY" || true
+
   # Work lands on experimental; main only takes experimental, once it has been released there.
   source:
     name: source branch
@@ -210,7 +252,7 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [detect, docs, workflows, rust, deny, script-worker, web, python, python-cas, presence-e2e, source]
+    needs: [detect, docs, workflows, rust, deny, script-worker, limits, web, python, python-cas, presence-e2e, source]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

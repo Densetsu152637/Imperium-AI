@@ -28,6 +28,7 @@ always-running `CI gate` job fails if any job failed, so it can be the single re
 | `rust`      | `Cargo.toml` exists  | fmt, clippy (`-D warnings`), tests on Linux, Windows, macOS   |
 | `deny`      | `Cargo.toml` exists  | `cargo deny check` (advisories, licences, sources; `deny.toml`) and the Monty pin check (`scripts/ci/check-monty-pin.sh`) |
 | `script-worker` | `Cargo.toml` exists | The script worker and its driver: clippy and tests on Linux x86-64, Linux aarch64, macOS and Windows (on Windows through the daemon's confined launch, with the folder labels), then a release build that logs cold start, binary size and resident memory (`MEASURE` lines in the step summary) |
+| `limits` | `Cargo.toml` exists | The resource-cap probes (`imperium-limits`, [plan](plans/resource-caps.md)) on Linux, Windows and macOS, Linux inside a delegated cgroup v2 subtree that `sudo` creates with a hard ceiling of its own (`scripts/ci/limits-cgroup.sh`); then, on Linux, the peak tasks and processes of a workspace build and a headless Chromium session (`scripts/ci/limits-measure.sh`). `MEASURE` lines go to the step summary |
 | `web`       | `package.json` exists | pnpm install (frozen), lint, typecheck, test, build          |
 | `python`    | `sidecars/media/pyproject.toml` exists | uv sync (locked), ruff, pytest              |
 | `python-cas` | `sidecars/cas/pyproject.toml` exists | uv sync (locked, no build), ruff check and format, pytest on Linux, Windows, macOS |
