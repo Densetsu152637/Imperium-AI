@@ -984,6 +984,7 @@ and `environments.agent_update` (protocol 0.28)
     setting that raises it. The existing CAS and code-mode limits are reused, not doubled. CI
     runs an allocation bomb, a fork bomb and a CPU spin on each OS, under probes that bound
     themselves ([plan](plans/resource-caps.md)).
+<!-- markdownlint-disable-next-line MD029 -->
 69. **Built-in reference MCP server** (planned). Imperium ships an offline reference server as a
     built-in [MCP](05-tools-and-isolation.md#mcp) server, so a small local model (Princeps in
     particular) looks words and APIs up instead of guessing them from its weights. One `lookup`
