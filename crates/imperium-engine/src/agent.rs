@@ -14,7 +14,7 @@ use imperium_api::{
 };
 use imperium_api::{PermissionMode, PermissionRule, RuleAction};
 use imperium_config::{Location, Tier};
-use imperium_models::{ChatClient, ChatRequest, Endpoint};
+use imperium_models::{ChatClient, ChatRequest, Endpoint, StreamDelta};
 use imperium_policy::permissions::{CallKind, Decision, Judgement, Refusal, Target, suggest};
 use imperium_policy::{SHELL_TOOLS, ToolSource};
 use imperium_protocol::patterns;

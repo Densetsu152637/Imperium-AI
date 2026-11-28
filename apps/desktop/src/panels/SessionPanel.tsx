@@ -52,6 +52,7 @@ import { Menu } from "../components/Menu";
 import { Notice } from "../components/Notice";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
+import { ThinkingBlock } from "../components/ThinkingBlock";
 import { ToolCall } from "../components/ToolCall";
 import { JumpToLatest } from "../components/JumpToLatest";
 import { ToolGroup } from "../components/ToolGroup";
@@ -788,6 +789,8 @@ export function EntryView({
           {rendered ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown> : <pre>{entry.text}</pre>}
         </div>
       );
+    case "thinking":
+      return <ThinkingBlock entry={entry} />;
     case "tool":
       return <ToolCall entry={entry} />;
     case "task":

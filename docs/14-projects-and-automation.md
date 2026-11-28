@@ -1097,7 +1097,7 @@ resumes it where it left off; both are announced as `session.updated` (unarchivi
 `session.created`), and the state is kept in the session's meta file, so it survives restarts.
 `session.delete` deletes an archived session as well.
 
-**Deleting a session for good (implemented, protocol 0.67):** the desktop app's session menu has
+**Deleting a session for good (implemented, protocol 0.69):** the desktop app's session menu has
 *Delete…* for every session, archived or not, after a confirmation that names the session. The
 app sends `session.erase { session_id }`, which is the desktop app's alone (the same gate as
 turning auto-merge on: the caller must be the installed app on the local socket, so an agent, a

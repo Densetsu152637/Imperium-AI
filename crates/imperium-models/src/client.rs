@@ -10,7 +10,10 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, Completion, Endpoint, ModelError, stream_chat_with};
+use crate::chat::{
+    ChatRequest, Completion, Endpoint, ModelError, StreamDelta, stream_chat_deltas,
+    stream_chat_with,
+};
 use crate::llamacpp;
 
 /// A streamed completion: its text, tool calls, and the usage the provider reported.
@@ -26,6 +29,20 @@ pub trait ChatClient: Send + Sync + fmt::Debug {
         request: ChatRequest<'a>,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> ChatFuture<'a>;
+
+    /// [`ChatClient::stream`] that also hands over the model's reasoning as
+    /// [`StreamDelta::Thinking`] fragments, for display. A client that does not stream
+    /// reasoning keeps this default, which delivers only the reply text.
+    fn stream_deltas<'a>(
+        &'a self,
+        request: ChatRequest<'a>,
+        on_delta: &'a mut (dyn FnMut(StreamDelta<'_>) + Send),
+    ) -> ChatFuture<'a> {
+        Box::pin(async move {
+            let mut on_text = |text: &str| on_delta(StreamDelta::Text(text));
+            self.stream(request, &mut on_text).await
+        })
+    }
 
     /// The model's own tokenizer, when its server offers one; context breakdowns then count
     /// exactly instead of estimating.
@@ -98,6 +115,20 @@ impl ChatClient for OpenAiCompatible {
             on_text,
         ))
     }
+
+    fn stream_deltas<'a>(
+        &'a self,
+        request: ChatRequest<'a>,
+        on_delta: &'a mut (dyn FnMut(StreamDelta<'_>) + Send),
+    ) -> ChatFuture<'a> {
+        Box::pin(stream_chat_deltas(
+            &self.http,
+            &self.endpoint,
+            request,
+            self.extra_body.as_ref(),
+            on_delta,
+        ))
+    }
 }
 
 /// A llama.cpp server: the OpenAI-compatible API plus its tokenizer (`/tokenize`,
@@ -125,6 +156,14 @@ impl ChatClient for LlamaCpp {
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> ChatFuture<'a> {
         self.chat.stream(request, on_text)
+    }
+
+    fn stream_deltas<'a>(
+        &'a self,
+        request: ChatRequest<'a>,
+        on_delta: &'a mut (dyn FnMut(StreamDelta<'_>) + Send),
+    ) -> ChatFuture<'a> {
+        self.chat.stream_deltas(request, on_delta)
     }
 
     fn tokenizer(&self) -> Option<&dyn Tokenizer> {

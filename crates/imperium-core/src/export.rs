@@ -875,6 +875,30 @@ mod tests {
     }
 
     #[test]
+    fn a_models_reasoning_is_left_out_of_every_export() {
+        let mut list = events();
+        list.insert(
+            1,
+            at(
+                "root",
+                SessionEvent::ThinkingDelta {
+                    text: "zanzibar deliberation".into(),
+                    at_ms: None,
+                },
+            ),
+        );
+        list.insert(
+            2,
+            at("root", SessionEvent::ThinkingFinished { duration_ms: 900 }),
+        );
+        for format in [ExportFormat::Markdown, ExportFormat::Json] {
+            let result = render("s1", "t", &list, format, true);
+            assert!(!result.content.contains("zanzibar"), "{format:?}");
+            assert!(result.content.contains("Looking now."));
+        }
+    }
+
+    #[test]
     fn a_transcript_with_a_credential_carries_a_warning() {
         let mut list = events();
         list.push(at(

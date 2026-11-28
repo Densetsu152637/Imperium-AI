@@ -632,6 +632,79 @@
   max-width: none;
 }
 
+/* ---- Thinking: one quiet collapsed row per run of reasoning; the text opens under a hairline ---- */
+.thinking {
+  font-size: var(--fs-sm);
+}
+
+.thinking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--sp-2) 0 var(--sp-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-subtle);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+.thinking-toggle:hover,
+.thinking-toggle[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text-muted);
+}
+
+.thinking-chevron {
+  flex: none;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  transition: transform var(--dur-fast) var(--ease-standard);
+}
+
+.thinking-toggle[aria-expanded="true"] .thinking-chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-label {
+  font-style: italic;
+}
+
+.thinking-pulse {
+  flex: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  animation: pulse var(--dur-spin) ease-in-out infinite;
+}
+
+.thinking-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.thinking-body {
+  margin: var(--sp-1) 0 var(--sp-1) calc(var(--sp-1) + var(--icon-sm) / 2);
+  padding-left: calc(var(--icon-sm) / 2 + var(--sp-2));
+  border-left: 1px solid var(--border-strong);
+}
+
+.thinking-body pre {
+  margin: 0;
+  max-height: 20rem;
+  overflow: auto;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---- Cards the agent raises: a permission request and questions (the model suggestion is a .card, house-models.css) ---- */
 .permission,
 .questions {
