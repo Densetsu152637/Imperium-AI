@@ -523,7 +523,24 @@ impl DaemonState {
         } else {
             self.resolve_usable_model(model)
         };
+        // A resumed session on a local model does not start it while local models are off: it
+        // waits for a model like one that never had any, and keeps the recorded model for when
+        // they are turned on again.
+        let mut parked_spec = None;
         let model = match resolved {
+            Ok(model)
+                if eval.is_none()
+                    && options.resume_id.is_some()
+                    && model.local
+                    && self.settings().models.local_off_for(&model.spec) =>
+            {
+                tracing::info!(
+                    model = %model.spec,
+                    "a resumed session's local model is not started: local models are off"
+                );
+                parked_spec = Some(model.spec);
+                None
+            }
             Ok(model) => Some(model),
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
             // No model named and the default is off: the session waits for a model as it does
@@ -742,7 +759,10 @@ impl DaemonState {
         if let Some(eval) = &eval {
             tools = eval.tools.clone();
         }
-        let model_spec = model.as_ref().map(|model| model.spec.clone());
+        let model_spec = model
+            .as_ref()
+            .map(|model| model.spec.clone())
+            .or(parked_spec);
         let effort = options.effort.unwrap_or(self.settings().models.effort);
         let journal_path = self
             .paths

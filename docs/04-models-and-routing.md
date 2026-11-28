@@ -1544,13 +1544,18 @@ shown as *off*, so they can be set up first.
 Two levels, and a local model runs only when both are on:
 
 - **Global switch** `models.local.enabled` (Settings → Local models; `imperium config set
-  models.local.enabled true`; applied at once, no restart). Unset, it is off, with one exception
-  that keeps existing setups working: with no `models.local.enabled` in any layer, local models
-  stay **on** when local models were set up on purpose before the switch existed (a model folder
-  or download folder in `models.folders` / `models.download_dir`, a local model in
-  `[[models.catalog]]`, a `[runtime.llamacpp.models.<id>]` table, a custom `llama-server`, or a
-  local `models.default`). A setting the user set explicitly always wins: `enabled = false` beside
-  a model folder keeps local models off. A hosted-only setup, or none, is off.
+  models.local.enabled true`; applied at once, no restart). Unset means off. So that existing
+  setups keep working, the daemon runs a **one-time migration** at its first start of the
+  version that introduced the switch: with `models.local.enabled` unset in every layer, it
+  writes it into the user's `config.toml` explicitly, `true` when local models were set up on
+  purpose before (a model folder, a download folder with models in it, such as `<data>/models`, a
+  local model in `[[models.catalog]]`, a `[runtime.llamacpp.models.<id>]` table, a custom
+  `llama-server`, or a local `models.default`), else `false`, and records
+  `models.local.migrated = true` so it never runs again (it logs what it wrote). A value the
+  user set explicitly is kept. From then on nothing is inferred: `config unset`, `models folders
+  add`, a `download_dir` and the like cannot turn local models on, only setting the switch
+  does. (Until the migration has run, a config read without the marker, as in a test, is
+  interpreted the way the migration would write it.)
 - **Each model's own switch**: *Use this model*, that is `models.disabled` and a row's `enabled`
   ([disabled models](#disabled-models-implemented)). `models.local` rows carry both: `enabled` is
   what may run (own switch and global switch together) and `own_enabled` the model's own switch
@@ -1569,9 +1574,19 @@ server. Downloads the user starts by hand (`models.download`, the panel's form) 
 installs the user asks for are the user's own calls, and the desktop disables them while the
 switch is off so the order is: turn local models on, then set them up.
 
+While the switch is off, `models.download`, `runtime.install` and `runtime.update_external` (and
+`imperium models pull`, `imperium runtime install`, `imperium runtime vllm setup`) are refused
+with a message saying how to turn local models on, and the daemon never installs or updates a
+runtime by itself, so opening the Local models panel downloads nothing. A resumed session whose
+model is local does not start it while the switch is off: it is restored without a model (its
+messages wait, as for a session that never had one), keeps the recorded model for when local
+models are on again, and its subagents route over hosted models only.
+
 Turning it **on** is the user's call: an agent's `imperium config set models.local.enabled <not
 false>` is a dangerous command (the [safety floor](05-tools-and-isolation.md) asks the person
-each time, like the other runtime settings); turning it off, `unset` and reading stay open to
+each time, like the other runtime settings), as are `imperium config undo` (which may undo the
+change that turned it off), `imperium models pull` and `imperium runtime install` (setup that
+only makes sense once local models are on); turning it off, `unset` and reading stay open to
 agents.
 
 `models.rescan` (protocol 0.71; `imperium models folders rescan`; the Local models panel's

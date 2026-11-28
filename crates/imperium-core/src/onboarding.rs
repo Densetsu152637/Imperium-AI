@@ -50,6 +50,23 @@ fn internal(message: impl Into<String>) -> ErrorObject {
     ErrorObject::new(codes::INTERNAL_ERROR, message.into())
 }
 
+/// The message for something that sets local models up (a download, a runtime install or
+/// update) while they are off.
+pub(crate) fn local_off_message(what: &str) -> String {
+    format!(
+        "{what} is refused while local models are off (the default): turn them on first with `imperium config set models.local.enabled true` or in Settings → Local models"
+    )
+}
+
+/// Refuses `what` while local models are off.
+pub(crate) fn require_local_on(state: &DaemonState, what: &str) -> Result<(), ErrorObject> {
+    if state.settings().models.local.enabled {
+        Ok(())
+    } else {
+        Err(invalid(local_off_message(what)))
+    }
+}
+
 /// Writes `key` to the user's config file and applies the setting to the running daemon with
 /// `apply`, which copies the new value from freshly loaded settings into the live ones.
 fn save(
@@ -758,6 +775,7 @@ fn update_install(state: &DaemonState, change: impl FnOnce(&mut RuntimeInstallJo
 pub(crate) async fn install_runtime(
     state: Arc<DaemonState>,
 ) -> Result<RuntimeInstallJob, ErrorObject> {
+    require_local_on(&state, "installing the llama.cpp runtime")?;
     let hardware = hardware(&state).await;
     let packs = packs_for(&state.settings().runtime.llamacpp.backend, &hardware);
     let pack = packs[0].clone();

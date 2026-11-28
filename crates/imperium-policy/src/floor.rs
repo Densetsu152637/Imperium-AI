@@ -482,6 +482,11 @@ fn changes_agents(args: &[String]) -> bool {
         || plugin_marketplace_add(args)
         || changes_plugin_setting(args)
         || turns_local_models_on(args)
+        // Downloads a model, installs a runtime, or undoes a change (which may be the one that
+        // turned local models off): each is local-model setup a person decides.
+        || after("models", &["pull"])
+        || after("runtime", &["install", "update"])
+        || after("config", &["undo"])
     {
         return true;
     }
@@ -725,6 +730,11 @@ mod tests {
             "imperium config set models.local.enabled=true",
             "imperium --remote box config set Models.Local.Enabled true",
             "imperium config set models.local.enabled 1",
+            "imperium models pull Qwen/Qwen3-8B-GGUF",
+            "imperium --remote box models pull owner/repo --quant Q4_K_M",
+            "imperium runtime install",
+            "imperium runtime install cuda12",
+            "imperium config undo 12",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -741,7 +751,6 @@ mod tests {
             "imperium runtime vllm status",
             "imperium runtime vllm",
             "imperium runtime status",
-            "imperium runtime install",
             "imperium vllm setup",
             "imperium plugin",
             "imperium plugin marketplace list",
@@ -761,6 +770,8 @@ mod tests {
             "imperium config set models.local.enabled=false",
             "imperium config unset models.local.enabled",
             "imperium config explain models.local.enabled",
+            "imperium models folders",
+            "imperium models local",
             "imperium config get models.local.enabled",
         ] {
             assert!(!dangerous_command(line), "{line}");

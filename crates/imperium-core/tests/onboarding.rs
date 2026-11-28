@@ -472,3 +472,70 @@ async fn local_setup_made_before_the_switch_stays_on_and_a_fresh_config_is_off()
     assert_eq!(rescanned["found"], 0);
     assert_eq!(rescanned["listing"]["local_enabled"], false);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_downloads_or_installs_while_local_models_are_off() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path(), "").await;
+    assert!(!daemon.settings().models.local.enabled);
+    for (method, params) in [
+        ("models.download", json!({"repo": "owner/tiny-GGUF"})),
+        ("runtime.install", json!({})),
+        ("runtime.update_external", json!({})),
+    ] {
+        let error = call(&mut socket, method, params).await.unwrap_err();
+        assert_eq!(error["code"], -32602, "{method}: {error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("local models are off"),
+            "{method}: {error}"
+        );
+    }
+    // Reading the runtime's state (what opening the Local models panel does) answers and
+    // installs nothing: no install job is started behind it.
+    call(&mut socket, "runtime.status", json!({}))
+        .await
+        .unwrap();
+    let error = call(&mut socket, "runtime.install", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error["code"], -32602,
+        "still refused, so no job is running: {error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_the_migration_a_folder_added_later_leaves_local_models_off() {
+    let home = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    std::fs::write(models.path().join("tiny.gguf"), gguf()).unwrap();
+    // As written by the migration for a user with no local models.
+    let (mut socket, daemon) = start_daemon(
+        home.path(),
+        "[models.local]\nenabled = false\nmigrated = true\n",
+    )
+    .await;
+    let added = call(
+        &mut socket,
+        "models.add_folder",
+        json!({"path": models.path().display().to_string()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["local_enabled"], false, "a folder is not a switch");
+    assert_eq!(added["models"][0]["enabled"], false);
+    assert!(!daemon.settings().models.local.enabled);
+    // Without the switch in the file at all, once migrated, it is off too.
+    let other = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(
+        other.path(),
+        "[models]\nfolders = ['/nowhere']\n[models.local]\nmigrated = true\n",
+    )
+    .await;
+    assert!(!daemon.settings().models.local.enabled);
+    let listing = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(listing["local_enabled"], false);
+}

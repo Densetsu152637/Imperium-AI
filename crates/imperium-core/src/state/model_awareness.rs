@@ -908,6 +908,61 @@ enabled = true
         }
 
         #[tokio::test]
+        async fn a_resumed_session_on_a_local_model_does_not_start_it_while_local_models_are_off() {
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let path = project.path().to_str().unwrap();
+            let resume = |state: &Arc<DaemonState>| {
+                state.create_session_with(
+                    path,
+                    Some("llamacpp:writer"),
+                    crate::state::SessionOptions {
+                        resume_id: Some("s-local".into()),
+                        ..crate::state::SessionOptions::default()
+                    },
+                )
+            };
+            // Off: the session is restored but has no model, so its messages wait; nothing
+            // local is asked for, and its subagents route over the hosted rows only.
+            let off = daemon_with(
+                home.path(),
+                &format!(
+                    "{CONFIG}
+[models.local]
+enabled = false
+"
+                ),
+            )
+            .await;
+            let (session, _) = resume(&off).expect("the resumed session is restored");
+            assert!(session.model().is_none(), "{:?}", session.model());
+            assert!(off.session_catalog().iter().all(|row| !row.model.local));
+            // A new session on that model is refused outright.
+            assert!(
+                off.create_session_with(
+                    path,
+                    Some("llamacpp:writer"),
+                    crate::state::SessionOptions::default()
+                )
+                .is_err()
+            );
+            // On, the same resume keeps its local model.
+            let home_on = tempfile::tempdir().unwrap();
+            let on = daemon_with(
+                home_on.path(),
+                &format!(
+                    "{CONFIG}
+[models.local]
+enabled = true
+"
+                ),
+            )
+            .await;
+            let (session, _) = resume(&on).expect("the resumed session is restored");
+            assert_eq!(session.model().as_deref(), Some("llamacpp:writer"));
+        }
+
+        #[tokio::test]
         async fn disabled_models_are_never_offered_routed_or_escalated_to() {
             use imperium_config::Tier;
             use imperium_engine::{TaskRequest, escalate, route};

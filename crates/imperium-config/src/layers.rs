@@ -236,7 +236,9 @@ impl Config {
             .and_then(|models| models.get("local"))
             .and_then(Value::as_table)
             .is_some_and(|local| local.contains_key("enabled"));
-        if !explicit {
+        // Once migrated, unset means off; before, it follows older local setup (see
+        // `migrate_local_switch`, which the daemon runs at its first start).
+        if !explicit && !settings.models.local.migrated {
             settings.models.local.enabled = settings.has_local_setup();
         }
         settings.validate().map_err(ConfigError::Inconsistent)?;

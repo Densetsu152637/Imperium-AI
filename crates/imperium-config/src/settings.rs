@@ -218,8 +218,9 @@ pub struct Settings {
 impl Settings {
     /// Whether the settings show local models set up on purpose: a model folder or download
     /// folder, a local model of the model table, per-model llama.cpp settings, a custom
-    /// `llama-server`, or a local default model. A user with any of these, and no explicit
-    /// `models.local.enabled`, keeps local models on after the switch was introduced.
+    /// `llama-server`, or a local default model. The migration writes `models.local.enabled`
+    /// as true for a user with any of these (or a non-empty download folder); until it has run
+    /// (`models.local.migrated`), a config with none of the switch set is read the same way.
     pub fn has_local_setup(&self) -> bool {
         let models = &self.models;
         !models.folders.is_empty()
@@ -1796,8 +1797,9 @@ pub struct ModelSettings {
 }
 
 /// `[models.local]`: whether local models (llama.cpp, vLLM) may be used at all. They are off
-/// until the user turns them on, except for a user who had set local models up before the
-/// switch existed (see [`Settings::has_local_setup`]). A local model runs only when this and its
+/// until the user turns them on; the one-time migration at the first start of the version
+/// that introduced the switch keeps them on for a user who had set them up before (see
+/// [`Settings::has_local_setup`]). A local model runs only when this and its
 /// own switch (`models.disabled`, or a row's `enabled`) are both on.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -1806,6 +1808,11 @@ pub struct LocalModelsSettings {
     /// listed (as "off") and can be configured while this is false. Nothing local downloads,
     /// installs or starts while it is false.
     pub enabled: bool,
+    /// Set by the daemon's one-time migration ([`crate::migrate_local_switch`]), which writes
+    /// `enabled` explicitly (on for a setup that had local models, else off). Once set, an
+    /// unset `enabled` means off and is never inferred from other settings. Not a setting a
+    /// client can change.
+    pub migrated: bool,
 }
 
 /// Whether `spec` names a local model (`llamacpp:<id>` or `vllm:<id>`).

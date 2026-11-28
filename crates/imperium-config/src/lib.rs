@@ -54,7 +54,7 @@ pub use paths::{Paths, PathsError};
 pub use permissions::{AutoPermissionSettings, PermissionSettings, save_permissions};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
-    set_user_setting, setting,
+    migrate_local_switch, set_user_setting, setting,
 };
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,

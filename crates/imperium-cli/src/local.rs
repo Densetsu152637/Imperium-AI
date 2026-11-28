@@ -349,9 +349,23 @@ pub fn list() -> anyhow::Result<()> {
     })
 }
 
+/// Refuses `what` (a download or an install) while local models are off, the same refusal the
+/// daemon gives `models.download` and `runtime.install`.
+pub fn refuse_while_local_off(
+    settings: &imperium_config::Settings,
+    what: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        settings.models.local.enabled,
+        "{what} is refused while local models are off (the default): turn them on first with `imperium config set models.local.enabled true` or in Settings -> Local models"
+    );
+    Ok(())
+}
+
 pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    refuse_while_local_off(&settings, "installing the llama.cpp runtime")?;
     let hardware = probe(&settings.hardware);
     let packs = match pack {
         Some(pack) => vec![pack],
@@ -406,4 +420,26 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installs_and_setups_are_refused_while_local_models_are_off() {
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        for what in ["installing the llama.cpp runtime", "setting up vLLM"] {
+            let error = refuse_while_local_off(&settings, what)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(what), "{error}");
+            assert!(error.contains("models.local.enabled true"), "{error}");
+        }
+        settings.models.local.enabled = true;
+        assert!(refuse_while_local_off(&settings, "installing the llama.cpp runtime").is_ok());
+    }
 }
