@@ -221,6 +221,45 @@ test("nursery: an error in one session leaves the other session's pet and your p
   expect(JSON.stringify(n.entries.get(RESIDENT)!.arbiter)).toBe(resident);
 });
 
+test("nursery: switching, deselecting or archiving the followed session leaves nothing behind on your pet", () => {
+  const list = (archivedA = false) => [session("a", [agent("root", "idle")], "Alpha", { archived: archivedA }), session("b", [agent("root", "idle")], "Beta")];
+  const make = () => {
+    const n = new Nursery("nursery", deps);
+    n.setResident("pet", "Clawd", T0);
+    n.snapshots(list(), "a", T0);
+    return n;
+  };
+  const mine = (n: Nursery) => busyOf(n.entries.get(RESIDENT)!.arbiter);
+  const t = T0 + 5000;
+  // A failure and an eating overlay in A, then the selection moves to B.
+  const n = make();
+  n.event(ev("root", "turn_started", {}, "a"), t);
+  n.event(ev("root", "memory_saved", { name: "m", scope: "user" }, "a"), t + 10);
+  n.event(ev("root", "turn_failed", { message: "x" }, "a"), t + 20);
+  expect(shown(n, RESIDENT, t + 30)).toBe("failed");
+  n.snapshots(list(), "b", t + 40);
+  expect(shown(n, RESIDENT, t + 50)).not.toBe("failed");
+  expect(mine(n)).toBeNull();
+  expect(n.entries.get(RESIDENT)!.overlayEnds).toEqual({});
+  expect(n.entries.get(RESIDENT)!.review).toEqual({});
+  // Selection goes to null.
+  const m = make();
+  m.event(ev("root", "turn_started", {}, "a"), t);
+  expect(mine(m)).toBe("working");
+  m.snapshots(list(), null, t + 10);
+  expect(mine(m)).toBeNull();
+  m.event(ev("root", "turn_started", {}, "a"), t + 20);
+  expect(mine(m)).toBeNull();
+  // The selected session is archived.
+  const k = make();
+  k.event(ev("root", "turn_started", {}, "a"), t);
+  expect(mine(k)).toBe("working");
+  k.snapshots(list(true), "a", t + 10);
+  expect(mine(k)).toBeNull();
+  k.event(ev("root", "turn_started", {}, "a"), t + 20);
+  expect(mine(k)).toBeNull();
+});
+
 test("nursery: pets are born in session order, your pet first, so older sessions stand behind newer ones", () => {
   const n = new Nursery("nursery", deps);
   n.setResident("pet", "Clawd", T0);

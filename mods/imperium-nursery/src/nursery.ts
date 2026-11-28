@@ -92,6 +92,8 @@ export class Nursery {
   private sessionIds = new Set<string>();
   private titles = new Map<string, string>();
   private retired = new Set<string>();
+  /** The session your pet follows now (null: none). */
+  private residentFollows: string | null = null;
   private serial = 0;
   onChange: () => void = () => {};
   /** The `play` setting: free pets now and then play with each other. */
@@ -260,6 +262,16 @@ export class Nursery {
     this.liveSessions = new Set(live.map((s) => s.sessionId));
     const resident = this.entries.get(RESIDENT);
     const heard = new Set<string>();
+    // When the followed session changes, nothing the old one made (a one-shot still playing, an
+    // overlay, a reviewer mark) may carry over: your pet starts afresh.
+    const follows = this.selected !== null && this.liveSessions.has(this.selected) ? this.selected : null;
+    if (resident && follows !== this.residentFollows) {
+      resident.arbiter = dispatch(initial(now, hash(resident.key)), { type: "start" }, now, this.deps.envFor(resident.petId, resident.kind));
+      resident.overlayEnds = {};
+      resident.review = {};
+      resident.cache = null;
+    }
+    this.residentFollows = follows;
     live.forEach((s, i) => {
       const key = sessionKey(s.sessionId);
       let entry = this.entries.get(key);
@@ -291,7 +303,12 @@ export class Nursery {
     });
     if (resident) {
       // Whatever it no longer follows (a subagent, another session after the selection moved, an archived or deleted session) is over.
-      for (const src of Object.keys(resident.arbiter.sources)) if (src !== "main" && !heard.has(src)) this.send(resident, [{ type: "end", source: src }], now);
+      for (const src of Object.keys(resident.arbiter.sources)) {
+        if (src === "main" || heard.has(src)) continue;
+        this.send(resident, [{ type: "end", source: src }], now);
+        delete resident.overlayEnds[src];
+        delete resident.review[src];
+      }
     }
     // An archived or deleted session's pet walks out; if it comes back in time it simply stays.
     for (const entry of this.entries.values()) {
