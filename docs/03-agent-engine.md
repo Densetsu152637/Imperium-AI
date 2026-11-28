@@ -57,7 +57,7 @@ text arrives in a field this parser does not read, which is a follow-up. A headl
 `imperium run` result and its prompt hashes carry no thinking.
 
 `imperium chat` prints `thinking…` as soon as a run begins and, on a terminal, finishes that same
-line with ` (10 seconds)` when it ends (the duration is worded: `less than a second`, `1 second`,
+line with `(10 seconds)`, after a space, when it ends (the duration is worded: `less than a second`, `1 second`,
 `1 minute`, `2 minutes 5 seconds`); piped, it prints the whole line `thinking… (10 seconds)` once,
 at the end. `--show-thinking` prints the text as it streams after `thinking…`, and the summary
 line after it. `thinking_delta` carries the `at_ms` of its fragment, so a client can time a run
