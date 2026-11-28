@@ -87,8 +87,16 @@ fn non_public_v6(ip: Ipv6Addr) -> bool {
     if let Some(mapped) = ip.to_ipv4_mapped() {
         return non_public_v4(mapped);
     }
-    let first = ip.segments()[0];
+    let segments = ip.segments();
+    let first = segments[0];
+    // NAT64 (64:ff9b::/96), 6to4 (2002::/16), deprecated site-local (fec0::/10) and the
+    // documentation range (2001:db8::/32) embed or stand for addresses that are not public.
+    let nat64 = first == 0x64 && segments[1] == 0xff9b && segments[2..6].iter().all(|&s| s == 0);
     ip.is_loopback()
+        || nat64
+        || first == 0x2002
+        || (first & 0xffc0) == 0xfec0
+        || (first == 0x2001 && segments[1] == 0x0db8)
         || ip.is_unspecified()
         || (first & 0xfe00) == 0xfc00
         || (first & 0xffc0) == 0xfe80

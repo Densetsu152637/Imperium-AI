@@ -385,6 +385,10 @@ async fn non_public_hosts_are_refused_by_the_archive_guard() {
         "http://[fd00::1]/",
         "http://[fe80::1]/",
         "http://[::ffff:10.0.0.1]/",
+        "http://[64:ff9b::a00:1]/",
+        "http://[2002:c0a8:101::1]/",
+        "http://[fec0::1]/",
+        "http://[2001:db8::1]/",
     ] {
         let why = refusal(&url::Url::parse(url).unwrap(), false).await;
         assert!(why.is_some(), "{url} must be refused");

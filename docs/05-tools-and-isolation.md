@@ -76,10 +76,13 @@ request carries the same honest `User-Agent` (`Imperium/<version> (AI agent web 
   `web.api_key`; keys go out only as request headers, are redacted from `Debug` output and never
   appear in errors or logs.
 - *Who can change this.* The file tools never write `config.toml` and no app-config tool changes
-  `[web]`. A command an agent runs under the policy tier is floored for these changes:
-  `imperium config set|unset web.*` and `imperium secret set|delete` (also quoted, wrapped in a
-  shell, or with `--remote`) always ask the user, so under the policy tier an agent cannot change
-  these keys or their secrets unasked; turning a provider on stays the user's decision.
+  `[web]`. The agent floor makes an agent's direct `imperium config set|unset web.*` and
+  `imperium secret set|delete` commands ask the user (also wrapped in a shell, or with
+  `--remote`). Under the policy tier that is a speed bump, not a boundary: a quoted executable
+  path containing spaces is not caught yet (the quote-aware tokenizer lands with PR #330), and a
+  shell write to `config.toml` is not checked. For real protection use the OS or container
+  isolation tier, or an ask rule on `run_command`. Turning a provider on stays the user's
+  decision.
 
 ### Fetch cache and robots.txt (implemented)
 
