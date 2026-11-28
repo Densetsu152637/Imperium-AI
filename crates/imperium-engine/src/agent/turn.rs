@@ -303,6 +303,8 @@ impl Agent {
             let mut uncapped = false;
             // What the reservation counted for the prompt, to compare with what it was.
             let mut estimate: u32;
+            // The reply room the call that finished was sent with (`max_tokens`).
+            let mut reserved_output: Option<u32>;
             let (client, queue_wait, started, first_text, result) = loop {
                 // A used-up budget stops spend here, before each call, mid-turn included.
                 if let Some(message) = self.budget_stop().await {
@@ -339,6 +341,7 @@ impl Agent {
                     effort: self.call_effort(),
                 };
                 let capped = request.max_tokens.is_some();
+                reserved_output = request.max_tokens;
                 let started = Instant::now();
                 let mut first_text = None;
                 // When the current run of reasoning fragments began; ends with the reply.
@@ -498,6 +501,7 @@ impl Agent {
                         client: client.as_ref(),
                         model: &self.model,
                         usage: completion.usage,
+                        reserved_output,
                     },
                     &Request {
                         messages: &self.messages,

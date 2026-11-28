@@ -144,6 +144,12 @@ export type ContextBreakdown = {
   /** The provider's reported prompt size; the categories add up to it. */
   promptTokens: number | null;
   cachedTokens: number;
+  /** The model table's `context_window`: the configured maximum; null when the row sets none. */
+  configuredWindow: number | null;
+  /** Tokens held back for the reply (the call's `max_tokens`); null when it set no cap. */
+  reservedOutput: number | null;
+  /** Tokens of context a local server holds for the agent; null for hosted models. */
+  allocatedContext: number | null;
 };
 
 export type SessionState = {
@@ -498,6 +504,10 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
         categories: event.categories,
         promptTokens: event.prompt_tokens,
         cachedTokens: event.cached_tokens,
+        // Absent from a daemon before protocol 0.69 and from older journals.
+        configuredWindow: event.configured_window ?? null,
+        reservedOutput: event.reserved_output_tokens ?? null,
+        allocatedContext: event.allocated_context ?? null,
       },
     };
   }

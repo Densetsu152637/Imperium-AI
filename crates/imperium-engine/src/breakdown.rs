@@ -482,6 +482,8 @@ pub(crate) struct Call<'a> {
     pub client: &'a dyn ChatClient,
     pub model: &'a ResolvedModel,
     pub usage: Option<Usage>,
+    /// The `max_tokens` the call was sent with: the reply's reserved room.
+    pub reserved_output: Option<u32>,
 }
 
 /// A tool set's (built-in, MCP) tokens as a template renders them, or `None` when the server
@@ -632,6 +634,10 @@ impl TokenCounter {
             categories,
             prompt_tokens: reported.map(|usage| usage.prompt_tokens),
             cached_tokens: call.usage.map_or(0, |usage| usage.cached_tokens),
+            configured_window: call.model.context_window,
+            reserved_output_tokens: call.reserved_output.map(u64::from),
+            // Only a local server allocates context ahead of use; its slot's window is it.
+            allocated_context: window.filter(|_| call.model.local),
         }
     }
 
