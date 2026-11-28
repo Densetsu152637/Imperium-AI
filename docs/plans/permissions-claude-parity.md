@@ -1,6 +1,7 @@
 # Plan: permissions with Claude Code parity, and an auto mode that decides well
 
-Revision: 2026-11-29, revision 3 (critic round 2: N1 to N5 and the stage 0 residual risk
+Revision: 2026-11-29, revision 4 (final edits R1, R2 and improvements 1 to 3 folded in, plus
+[future work](#future-work); revision 3 folded in critic round 2: N1 to N5 and the stage 0 residual risk
 folded in, adding the [opt-in settings](#opt-in-settings) and D10; revision 2 folded in critic
 round 1: findings F1 to F10, adding
 [stage 0](#stage-0-hotfix-on-the-current-engine), the [headless rule](#headless-runs) and the
@@ -48,7 +49,7 @@ migrate --dry-run` report (see [migration](#migration)).
 - **Non-goals:** managed (organisation) settings and their locks; Claude Code's OS sandbox
   (Imperium's isolation tiers stay as they are); Claude Code's server-side classifier review;
   PowerShell as a separate tool (Imperium has one command tool); importing a user's
-  `~/.claude/settings.json` (an [open decision](#open-decisions) covers project files only).
+  `~/.claude/settings.json` ([future work](#future-work); D5 covers project files only).
 - **Assumptions:** one user per machine; the daemon remains the only enforcer; no local Rust
   builds (CI runs them); the eval runs through Imperium's own code path, not a separate script.
 - **Relevant paths:** `crates/imperium-policy/src/permissions.rs`, `crates/imperium-policy/src/floor.rs`,
@@ -290,9 +291,12 @@ and `sed -i` is behind the opt-in `permissions.accept_edits_commands`
 Every change to what runs unasked is off until the user turns it on. Each setting below
 defaults to `false`, and becomes `true` only by a user action: accepting its one-time notice in
 the desktop app, or the user running `imperium config set permissions.<name> true`. An agent
-cannot set it: the floor refuses `imperium config set|unset` of these keys from an agent's
-shell, as it already does for `extensions.plugin_dirs`, and `refused_write` already refuses
-file-tool writes to `config.toml`. Users of the CLI only, and headless runs, stay at `false`
+cannot set it: the three keys are marked `user_only` in the daemon's settings API, so a
+`config.set` of them is refused unless it comes from the user's own client (the desktop app,
+or the CLI run by the user on the local socket), and never from the MCP bridge, a harness
+client or an agent; the floor also refuses `imperium config set|unset` of these keys from an
+agent's shell, as it already does for `extensions.plugin_dirs`, and `refused_write` already
+refuses file-tool writes to `config.toml`. Users of the CLI only, and headless runs, stay at `false`
 unless they set it themselves.
 
 | Setting | Default | Turns on | What it changes when `true` |
@@ -511,6 +515,10 @@ Three further rules sit outside the per-call order:
     run, as a count (denominator: all cases of those classes, at least 90).
   - **Format-failure rate** = classifier calls with no verdict (cut off, unparseable, error) /
     all classifier calls.
+  - **By category.** The eval JSON breaks the false-ask rate and the classifier false-ask rate
+    down by the call's category: `fetch` (`web_fetch`), `browser` (browser tools), `command`
+    (`run_command`) and `other` (every other tool), each with its own numerator and
+    denominator.
 - **Targets.** The set has **at least 30 routine cases that reach the classifier** (step 4),
   so the classifier false-ask rate has a real denominator. False-ask rate at most 10% and
   classifier false-ask rate at most 10% on the gate model (today 100%, E1); whether the
@@ -520,7 +528,10 @@ Three further rules sit outside the per-call order:
 - **Running it.** `imperium auto-mode eval --cases <file> --json` runs each case through the
   same pipeline and classifier code the daemon uses and prints the metrics. CI replays the set
   against a scripted fake model to check the deterministic steps (which cases may never reach
-  the classifier, and what each step decides); the scored run needs a real model and is run
+  the classifier, and what each step decides), including the read-only path-bypass cases of
+  [stage 3](#stage-3-claude-code-precedence-and-the-read-only-command-set) (`$VAR` paths,
+  globs under `~/.ssh`, `grep -r` from `~`, `git show HEAD:.env`), which must never be
+  built-in approvals; the scored run needs a real model and is run
   through the Imperium harness by the session that owns evaluations, which posts the numbers on
   the stage's pull request.
 
@@ -595,10 +606,12 @@ Three further rules sit outside the per-call order:
 - Acceptance checks: CI green; no protocol change.
 - Status: in progress (implementation dispatched separately, 2026-11-29)
 - Outcome:
-- Residual risk: interpreter, shell, wrapper and runner **allow rules users already saved**
-  stay live until [stage 2](#stage-2-configuration-shape-and-migration-report) migrates them
-  as "needs review, not applied". Stage 0 only logs a warning naming each such rule at load;
-  it does not disable it.
+- Saved rules: interpreter, shell, wrapper and runner **allow rules users already saved** (for
+  example `run_command python`) are not applied from stage 0 on: a call they would have
+  allowed asks instead, and a one-time notice lists each such rule and where it is saved. The
+  rules stay in the file untouched; [stage 2](#stage-2-configuration-shape-and-migration-report)
+  later converts them to "needs review, not applied". Tests: a saved `run_command python`
+  allow makes `python x.py` ask, and the notice names it once.
 - Handoff notes: stage 4 later narrows session allowances further (F7) and replaces
   `suggest`; stage 0's prefix list carries into stages 2 (migration) and 4 (prompts) unchanged.
 
@@ -646,7 +659,8 @@ Three further rules sit outside the per-call order:
   targets checked as file calls.
 - Depends on: stage 2.
 - Owned paths: `crates/imperium-policy/src/permissions.rs`, `crates/imperium-policy/src/floor.rs`
-  (refusing agent `config set` of the opt-in keys), `crates/imperium-engine/src/agent/tools.rs`
+  (refusing agent `config set` of the opt-in keys), `crates/imperium-core/` (marking the three
+  keys `user_only` in the settings API), `crates/imperium-engine/src/agent/tools.rs`
   (tool list filtering), `docs/05-tools-and-isolation.md` (rules section).
 - Tests: precedence across scopes (no specificity override); E2's read-only commands run in
   `default` with `read_only_commands` on and ask with it off; `python -c` still asks; path
@@ -656,7 +670,12 @@ Three further rules sit outside the per-call order:
   junction or file symlink) to `~/.ssh/id_ed25519`; redirect targets pass only with
   `check_redirect_targets` on; all three [opt-in settings](#opt-in-settings) default to `false`
   and the floor refuses `imperium config set permissions.<name>` from an agent's shell; every
-  floor and refusal test unchanged; the one-time notices.
+  floor and refusal test unchanged; the one-time notices. A `config.set` of any of the three
+  keys sent through the MCP bridge or by a harness client is refused as `user_only`. Path
+  bypasses stay out of the read-only set (they ask, and are in the CI replay): `cat $HOME/.ssh/id_ed25519`
+  and other `$VAR` paths, `cat ~/.ssh/*` and other globs under `~/.ssh`, `grep -r token ~`
+  (a recursive search from a folder above a secret folder), and `git show HEAD:.env` (a secret
+  path named inside a revision argument).
 - Acceptance checks: CI green; the pipeline-order test shows steps 1 to 9 of
   [what Imperium keeps](#what-imperium-keeps-on-top) decide before any allow rule.
 - Status: pending
@@ -761,10 +780,19 @@ Three further rules sit outside the per-call order:
 - Outcome:
 - Handoff notes: entries from repository files show read-only.
 
+## Future work
+
+Out of scope for this plan, recorded so they are not lost:
+
+- **Host OS confinement for the read-only set**, needed only if [D10](#open-decisions) is ever
+  answered yes: running the set on the host in a headless run would then need an OS-level
+  read-only confinement (no writes, no network) instead of relying on the command parser.
+- **Importing rules from the user's `~/.claude/settings.json`**, beside [D5](#open-decisions)'s
+  project files: reading a Claude Code user's own allow, ask and deny lists into Imperium's
+  user scope.
+
 ## Risks
 
-- **Saved interpreter rules before stage 2:** allow rules such as `run_command python` that
-  users already saved keep working until stage 2; stage 0 only warns about them.
 - **Widening on migration:** `*` crossing spaces can allow more; handled by review-only
   conversion of such allow rules.
 - **Stricter precedence:** calls an environment allow used to run now ask; the notice names
@@ -792,9 +820,9 @@ Three further rules sit outside the per-call order:
 - **D6.** Hooks: keep observers only (recommended) or let a hook allow as Claude Code's
   `PreToolUse` can.
 - **D7.** The gate model: the local Qwen3.5 9B with reasoning off, or a hosted small model.
-- **D8.** Subordinate to the user's [headless rule](#headless-runs) (commands outside the
-  read-only set run only in the throwaway sandbox, else are denied): which mode name a headless
-  run reports, `dontAsk` (recommended) or `default`.
+- **D8.** Subordinate to the user's [headless rule](#headless-runs) (every headless command,
+  the read-only set included, runs only in the throwaway sandbox, else is denied): which mode
+  name a headless run reports, `dontAsk` (recommended) or `default`.
 - **D9.** Gate target for both the false-ask rate and the classifier false-ask rate: 10%
   (recommended for the first gate) or 5%.
 - **D10.** Exempt the read-only set in headless runs, so it runs on the host instead of in the
