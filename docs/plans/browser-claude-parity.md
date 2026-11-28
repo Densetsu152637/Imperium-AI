@@ -1,7 +1,10 @@
 # Plan: a browser that works like Claude's
 
-Revision: 2026-11-29, revision 1 (first draft), written against `experimental` at `0d444fe9`
-(last updated). Extends roadmap [item 32](../12-roadmap.md#next-in-order) (web and browser) and
+Revision: 2026-11-29, revision 2 (critic round 1 folded in: stage 0 hotfix, private networks
+blocked at a daemon proxy, the popup mechanism, `browser_eval` limited to cookie-less contexts,
+the permissions seam of [#355](https://github.com/Densetsu152637/Imperium-AI/pull/355), engine
+ownership, and minor fixes; revision 1 was the first draft), written against `experimental` at
+`0d444fe9` (last updated). Extends roadmap [item 32](../12-roadmap.md#next-in-order) (web and browser) and
 depends on [item 68](resource-caps.md) (resource caps). Status: planned (no stage started).
 
 The user's request: "the native web browser is not good. Rework that entire feature to work like
@@ -37,19 +40,24 @@ harness" means the desktop browser-check harness of
    scrolling, dragging and `browser_form_input` work on the fixtures, and a stale reference is an
    error that tells the agent to read the page again. Check: real-browser tests.
 4. **Each site is approved separately, and an approval can be revoked.** Approvals are allow once,
-   always allow or deny, for one site at a time. Check: `imperium-web` and `imperium-policy` unit
-   tests, plus the core test `browser_sites`.
-5. **The hard rules are enforced, not only prompted.** The daemon refuses an agent's typing or
+   always allow or deny, for one site at a time, held in one store (`SiteGrants`). No browser tool
+   gets a session allowance. Check: `imperium-web` and `imperium-policy` unit tests, plus the core
+   test `browser_sites`.
+5. **Private, loopback and link-local addresses are unreachable from the browser**, except the
+   session's own preview port. The daemon's proxy refuses every request type at connect time.
+   Check: the stage 5b proxy tests, which include a DNS-rebinding fixture.
+6. **The hard rules are enforced, not only prompted.** The daemon refuses an agent's typing or
    `form_input` into a password, one-time-code or payment field, and masks those fields' values in
    reads and screenshots. On a CAPTCHA frame it refuses the action and hands control to the user.
    A consequential action asks every time, even on an always-allowed site. A download asks every
    time. Check: guard tests in stage 6, each with a positive control.
-6. **Every byte of page-derived text is labelled as untrusted.** Check: a test runs every browser
+7. **Every byte of page-derived text is labelled as untrusted.** Check: a test runs every browser
    tool over the injection fixtures and asserts the framing and the escaping.
-7. **The browser is one capped, sandboxed process tree per profile.** It is owned by the daemon and
-   stopped with it. Check: the stage 1 tests, and the `browser` class tests of resource caps
-   stage 4.
-8. **The `web_fetch` and `web_search` path is untouched.** Check: `git diff` of the stages over
+8. **The browser is one capped, sandboxed process tree per profile, reachable only through a
+   pipe.** It is owned by the daemon and stopped with it, and it listens on no port. Check: the
+   stage 0 no-listening-port test, the stage 1 tests, and the `browser` class tests of resource
+   caps stage 4.
+9. **The `web_fetch` and `web_search` path is untouched.** Check: `git diff` of the stages over
    `crates/imperium-web/src/{lib.rs,cache.rs,robots.rs,search.rs,html.rs}` is empty (see
    [the fetch path](#relation-to-web_fetch-and-web_search)).
 
@@ -142,7 +150,9 @@ What those sources establish:
   session's agents. Every session gets the **same** profile folder. A second session's browser
   therefore appears to collide with the first's profile lock (unverified; stage 1 tests it).
   `browser_control.rs` serves `session.browser_control` (who drives) and `session.browser_act`
-  (the user's input) to any authenticated caller. There is no desktop-app gate.
+  (the user's input) to any authenticated caller. There is no desktop-app gate. That gap, the
+  loopback debugging port and the unprotected profile folder are being fixed now by a separate
+  hotfix ([stage 0](#stage-0-hotfix-gate-pipe-and-secret-profile)).
 - **The desktop pane** (`apps/desktop/src/panels/BrowserPanel.tsx`) shows the JPEG screenshot
   that arrives as a `browser_view` event after each agent action or user action. It has a tab
   strip, an address bar, *Take over* and *Give back to agent*, and typing batched every 200 ms.
@@ -173,9 +183,9 @@ What those sources establish:
 | Diagnostics | `read_console`, `read_network` and `javascript_exec`, off by default [C3] | None | `browser_console`, `browser_network` and `browser_eval`, off by default (stage 10) |
 | Tabs | `new_tab`, `list_tabs`, `switch_tab`, `close_tab`; the state block is untrusted [C3] | The same four, with 8 tabs and numeric ids | Kept; the state footer goes on every result |
 | Site permission | Per site: Allow once, Always allow or Deny; local dev servers free; revocable in Settings [C1] | `web.allow_domains` is shared with `web_fetch`; click and type always ask | Per-site grants in the permission store, revocable in Settings; loopback follows the preview rule |
-| What still asks | Downloads, sensitive info, authorizations [C4]; private-network actions [C2] | Downloads | Downloads, credential fields, consequential actions, private-network actions |
+| What still asks | Downloads, sensitive info, authorizations [C4]; private-network actions [C2] | Downloads | Downloads, credential fields and consequential actions; private networks are blocked outright, which is stricter than [C2] |
 | Downloads | Ask before downloading [C4] | Refused by the browser; `browser_download` asks each time and has no cookies | Still refused, and still asked each time; may carry the approved site's cookies (stage 9) |
-| Injection | Page data is untrusted, hidden text excluded, classifiers [C3, C5] | Tab titles and notices framed; page text not framed | All page output framed with a nonce, hidden text excluded, writes reviewed by the classifier (stage 5) |
+| Injection | Page data is untrusted, hidden text excluded, classifiers [C3, C5] | Tab titles and notices framed; page text not framed | All page output framed with a nonce, hidden text excluded, writes reviewed by the classifier (stage 5a) |
 | Credentials | Never entered; fields masked in reads [C2, C5] | No rule | Refused and masked by the daemon |
 | CAPTCHA | Never bypassed [C1, C5] | No rule | Detected and refused; control handed to the user |
 | Irreversible actions | Confirmed by a human before each call [C3, C7] | Every click asks, which is coarse | Consequential actions always ask, other actions follow the site grant |
@@ -196,7 +206,10 @@ What those sources establish:
   session.
 - **Launch.** The service always runs the browser headless (`--headless=new`), because the pane
   is the window, and never passes `--no-sandbox`. It verifies the sandbox flags in a test. It
-  keeps the existing warm-up, the loopback port and the download refusal. It starts through
+  keeps the existing warm-up and the download refusal. It talks CDP over `--remote-debugging-pipe`
+  (from stage 0), so no port listens. Every tab is a flattened session on that one pipe
+  (`Target.attachToTarget`/`setAutoAttach` with `flatten: true`), not a socket of its own. It
+  sends all traffic through the daemon's proxy (stage 5b). It starts through
   `imperium-limits` as the `browser` class
   ([resource caps stage 4](resource-caps.md#stage-4-mcp-servers-hooks-the-browser-and-daemon-tools)).
   Until that stage merges, it starts through a `Launcher` seam, so this plan does not implement
@@ -256,14 +269,14 @@ What those sources establish:
   agent's call already in flight finishes its current CDP step, and its next one is refused with
   `USER_DRIVING`, as today. *Give back to agent* clears the flag. The agent's `browser_handoff`
   `{reason}` sets the flag, shows the reason as a banner in the pane (framed as the agent's text)
-  and a notification, and waits until the user gives control back or `timeout_s` passes (at most
-  1,800 s). It then returns `returned`, or `timed out` with the page's new URL. This is how
-  sign-ins, CAPTCHAs and payment steps reach the user.
-- **The gate.** `session.browser_act` and the stream are accepted only from the desktop app,
-  through the D2 desktop-app identity gate of the terminal plan
-  ([stage 2b](terminal-file-panes.md#stage-2b-terminal-protocol-and-the-gate)). Typing into a
-  signed-in browser is as sensitive as typing into a terminal. A phone or other protocol caller can
-  watch (read-only frames, when its scope allows), but cannot act.
+  and a notification, and waits until the user gives control back or `timeout_s` passes (default
+  600 s, at most 1,800 s). It then returns `returned`, or `timed out` with the page's new URL.
+  This is how sign-ins, CAPTCHAs and payment steps reach the user. `browser_handoff` cannot run
+  inside `browser_batch`: a batch that contains it is refused before any item runs.
+- **The gate.** `session.browser_act` and `session.browser_control` accept only the desktop app,
+  through `require_desktop_app` (stage 0). Stage 7 puts the stream's attach call behind the same
+  check. Typing into a signed-in browser is as sensitive as typing into a terminal. A phone or
+  other protocol caller can watch (read-only frames, when its scope allows), but cannot act.
 
 ### Profiles and the sign-in store
 
@@ -273,10 +286,10 @@ What those sources establish:
 - **The user signs in themselves.** The agent never types into a credential field (stage 6
   guards). When a page needs a sign-in, the agent calls `browser_handoff`. The browser-use
   instructions tell it to do that, and never to ask the user for a password in chat.
-- **The profile is data that must never leak.** `<data>/browser/**` is on the safety floor's
-  secret paths (the file tools and commands ask for it every time, as for `~/.ssh`). It is
-  excluded from session export, from the journal and from logs. The debugging port listens on
-  loopback only and is never reported (`redact` stays).
+- **The profile is data that must never leak.** Stage 0 makes `<data>/browser/**` a secret path
+  on the safety floor (the file tools and commands ask for it every time, as for `~/.ssh`) and
+  excludes it from session export and logs. Every new profile folder this plan adds lives under
+  that path, so it inherits the rule.
 - **Cookie import** (stage 11, optional, [D5](#open-decisions)). The user starts it in the desktop
   app, never the agent. It imports one site's cookies (one registrable domain, eTLD+1, with its
   subdomains) per import, from a browser profile the user chooses, into the chosen Imperium
@@ -284,36 +297,68 @@ What those sources establish:
 
 ### The site-permission model
 
-The permissions redesign is being planned separately and is not in the tree at `0d444fe9`. This
-plan defines the interface it needs, so the two meet at one seam:
+The permissions redesign is planned in
+[#355](https://github.com/Densetsu152637/Imperium-AI/pull/355)
+(`docs/plans/permissions-claude-parity.md`, in review, not on `experimental` at `0d444fe9`). This
+plan defines the interface it needs from that plan, so the two meet at one seam:
 
+- **One store, one judge.** Every `browser_*` tool is argument-dependent: whether it asks depends
+  on the site the call reaches, not on the tool. No browser tool gets a session allowance
+  ("allow for this session" is not offered) or a tool-wide "don't ask again" rule. #355's rules
+  and allowances never match a `browser_*` call. A browser call is judged only by `SiteGrants`,
+  and then by the `always_asks` set below. That includes the old `browser_open`, whose separate
+  allow-list path goes away. The browser's "always allow" is a site grant in `SiteGrants`, and
+  there is no second store. A test (stage 5a) asserts that a session allowance or a whole-tool
+  allow rule for any `browser_*` name changes no decision.
 - **`Target::Site(SitePattern)`** in `imperium-policy`. A pattern is a scheme plus a host, an exact
   host or `*.host`, as in [C2]: a bare host also covers its `www.` form. It is matched on the host
   the URL parser produces (lower case, ASCII, no trailing dot), as `WebTools::allows` does today.
-- **Decisions:** `allow_once` (this call and the same site until the tab leaves it), `always`
-  (stored in the user layer with the time and the session that granted it, revocable in Settings,
-  listed per site) and `deny` (stored, refuses before asking).
+- **Decisions:** `allow_once`, `always` (stored in the user layer with the time and the session
+  that granted it, revocable in Settings, listed per site) and `deny` (stored, refuses before
+  asking).
+- **`allow_once` scope, a deliberate choice.** It covers the asking call and later calls in the
+  same tab while that tab's top-level page stays on the same site. It ends when the tab navigates
+  to another site, when the tab closes, or when the user takes over. It is not tied to one call
+  because one task on a site is a run of reads and clicks, and asking for each would train the
+  user to click through. It is not tied to the session either, because a later visit to the site
+  is a new decision. Other tabs on the same site do not inherit it.
 - **What a grant covers:** navigating to the site, reading its pages and ordinary actions on them
-  (click, type, scroll, form input). The site is the top-level page's site. A cross-site iframe is
-  judged by the top-level page, but a click that lands in a CAPTCHA frame is refused (stage 6).
+  (click, type, scroll, form input). The site is the top-level page's site. A frame inherits the
+  top page's grant only when its own target is a public `http(s)` address on a site that is not
+  blocked. A frame whose target is private, loopback, link-local, blocked or not `http(s)` never
+  inherits it, and the proxy and the `Fetch` check refuse it whatever the top page's grant. A
+  click that lands in a CAPTCHA frame is refused (stage 6).
 - **What a grant never covers** (asks every call, the tool provider's `always_asks`): downloads,
-  consequential actions, private-network sites (RFC 1918, link-local, CGNAT and `.local`, checked
-  on the resolved address) and `browser_eval`.
-- **Loopback:** the session's own preview port needs no approval, as in [C1]. Any other loopback
-  port asks, which is Imperium's stricter preview rule, because a loopback port may be something
-  private on this machine.
+  consequential actions and `browser_eval`.
+- **Private networks are blocked, not asked.** The browser runs with
+  `--proxy-server=<daemon proxy>` and `--proxy-bypass-list=<-loopback>`, so loopback traffic also
+  goes through the proxy. The proxy (`browser/proxy.rs`, owned by the daemon and bound to a
+  loopback port only the browser's context is given) resolves each host itself and refuses, at
+  connect time, any address that is private (RFC 1918, ULA `fc00::/7`), loopback (`127.0.0.0/8`,
+  `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), CGNAT (`100.64.0.0/10`), unspecified or
+  multicast. It applies to every request type the browser makes: documents, subresources,
+  fetch/XHR, WebSockets and `CONNECT` tunnels. The connection goes to the address the proxy
+  checked, so a DNS answer that changes between the check and the connect (rebinding) cannot
+  reach a private host. The **only exception** is the session's own preview server: `127.0.0.1`
+  on the port the session's `preview_open` command is serving, while it runs. There is no
+  approval that opens any other private address. Imperium's existing loopback-asks rule for the
+  Preview panel is unchanged; the browser simply cannot reach those ports.
 - **Blocked sites:** `browser.blocked_sites` (user and project layers; projects may only add). A
   blocked site refuses the agent and shows a banner in the pane. The user can still browse it
   ([C2]: the policy restricts Claude, not the user).
-- **Enforcement point:** the service enables `Fetch.enable` with a `Document` request pattern on
-  every page. Every top-level and frame navigation, every redirect hop and every popup is checked
-  before it is sent. Only `http(s)` (and `about:blank`) pass. `file:`, `chrome:`, `devtools:`,
+- **Enforcement point:** the network-level address rule is the proxy's. The site rule is the
+  service's: it enables `Fetch.enable` with a `Document` request pattern on every target. Every
+  top-level and frame navigation, every redirect hop and every popup is checked before it is
+  sent. Popups and new targets are caught by `Target.setAutoAttach { autoAttach: true,
+  waitForDebuggerOnStart: true, flatten: true }` on the browser and on each page session. A new
+  target is paused before its first request. The service enables `Fetch` on it, then calls
+  `Runtime.runIfWaitingForDebugger`, so its first navigation is judged like any other. Only `http(s)` (and `about:blank`) pass. `file:`, `chrome:`, `devtools:`,
   `javascript:`, `data:` and `blob:` navigations are failed. A top-level navigation to a site
   without a grant pauses the request, parks it as a pending approval, and fails it if the user
   denies it. While the user drives, user navigations are not judged (as in [C2]); the agent's next
   call is judged on the page it finds.
 - **Modes:** plan mode refuses every write action. `full` mode skips the site ask but never the
-  `always_asks` set. In `auto` mode the classifier
+  `always_asks` set, the proxy's block or the blocked-sites list. In `auto` mode the classifier
   ([05, auto mode](../05-tools-and-isolation.md#auto-mode-implemented)) may turn a site ask into a
   run. Whether a write action on an external site also goes to the classifier in other modes, as
   Claude does [C1, C2], is [D2](#open-decisions).
@@ -338,7 +383,7 @@ everywhere, defaults to the active tab, and is a short id string. `Target` is
 | `browser_click` | `target`, `button?` (left, right or middle), `clicks?` (1 to 3), `modifiers?`, `tab?` | Ack and footer | Site grant, plus consequential-action and CAPTCHA guards |
 | `browser_hover` | `target`, `tab?` | Ack | Site grant |
 | `browser_drag` | `from` (coordinate), `to` (coordinate), `tab?` | Ack | Site grant |
-| `browser_scroll` | `target` (coordinate), `direction`, `amount?` (1 to 10), `tab?` | Ack | Site grant |
+| `browser_scroll` | `target` (coordinate), `direction` (`"up"`, `"down"`, `"left"` or `"right"`), `amount?` (wheel notches, 1 to 10, default 3), `tab?` | Ack | Site grant |
 | `browser_scroll_to` | `target` (ref), `tab?` | Ack | Site grant |
 | `browser_type` | `text` (at most 10,000 characters), `tab?` | Ack | Site grant, plus the credential-field guard on the focused element |
 | `browser_key` | `keys` (`"Enter"`, `"ctrl+a"`, `"Tab Tab"`), `repeat?` (1 to 100), `tab?` | Ack | Site grant; `Enter` on a form runs the consequential-action guard |
@@ -348,12 +393,12 @@ everywhere, defaults to the active tab, and is a short id string. `Target` is
 | `browser_tab_new` | `url?` | Footer | Site grant for the URL |
 | `browser_switch` | `tab` | Footer | Site grant of the tab's page |
 | `browser_close` | `tab` | Footer | None |
-| `browser_handoff` | `reason` (at most 300 characters), `timeout_s?` | `returned` or `timed out`, with the URL | None (the user acts) |
+| `browser_handoff` | `reason` (at most 300 characters), `timeout_s?` (default 600, 30 to 1,800) | `returned` or `timed out`, with the URL | None (the user acts); refused inside `browser_batch` |
 | `browser_download` | `url` (kept as today) | As today | Always asks |
 | `browser_console` (off by default) | `tab?`, `level?` | Framed lines since the last read, redacted | Site grant |
 | `browser_network` (off by default) | `tab?` | Framed request lines (method, URL redacted, status, type, time) | Site grant |
-| `browser_eval` (off by default) | `expression` (at most 4,000 characters), `tab?` | Framed value, at most 20,000 characters | Always asks; refused on a page with a credential field |
-| `browser_batch` | `actions: [{name, input}]`, at most 10 | Each item's result, in order; stops at the first error | Each item judged on its own, before it runs [C3] |
+| `browser_eval` (off by default) | `expression` (at most 4,000 characters), `tab?` | Framed value, at most 20,000 characters | Always asks; offered only in a context whose cookie mode is `off` and that holds no signed-in state (see R9) |
+| `browser_batch` | `actions: [{name, input}]`, at most 10 | Each item's result, in order; stops at the first error | Each item judged on its own, before it runs [C3]; a batch containing `browser_handoff` or another `browser_batch` is refused whole |
 
 **Schema sketch** (the JSON Schema the provider returns, abbreviated):
 
@@ -398,8 +443,9 @@ in, pay, solve a CAPTCHA or enter a secret is a reason to call `browser_handoff`
 **Migration.** `browser_open` (now `browser_navigate` plus `browser_get_text`) and `browser_read`
 (now `browser_get_text`) stay as aliases for one stage and are then removed. `browser_click` and
 `browser_type` change meaning in stage 3: a call with a `selector` gets an error that names the
-new parameters. Eval traces and Princeps tool-use data that use the old names are the research
-session's to update; the stage that removes the aliases tells them first.
+new parameters. The stage that removes the aliases updates the eval traces and Princeps tool-use
+data that use the old names, and tells the research session one stage ahead because it runs the
+evals.
 
 ## Security requirements
 
@@ -415,7 +461,7 @@ session's to update; the stage that removes the aliases tells them first.
   a field, with a message to call `browser_handoff`. The fields' values are replaced by `•••` in
   reads, and blacked out in screenshots and zooms (their boxes are painted over before the image
   is encoded, and the stream is not affected). The masking cannot stop `browser_eval`, which is
-  why that tool is off by default and refused on pages with such fields [C2].
+  why R9 limits that tool [C2].
 - **R3. No CAPTCHA solving.** A frame or element from the known challenge providers (reCAPTCHA,
   hCaptcha, Cloudflare Turnstile, Arkose; a list in `guards.rs`), or a page whose title or main
   heading matches the challenge-page patterns, sets `captcha` on the tab. Clicks, typing and keys
@@ -431,25 +477,47 @@ session's to update; the stage that removes the aliases tells them first.
 - **R5. Downloads need permission.** The browser still refuses every download by itself.
   `browser_download` asks on every call, as today. Stage 9 lets it attach the cookies of the
   approved URL's site, and only that site's, from the session's context.
-- **R6. Per-site approval** is as described above, enforced at the `Fetch` layer, so redirects,
-  popups and frames cannot step around it.
-- **R7. Process isolation and caps.** The browser runs as a cap unit (the `browser` class, 4 GiB,
+- **R6. Per-site approval** is as described above. It is enforced at the `Fetch` layer, with new
+  targets paused by auto-attach until `Fetch` is on, so redirects, popups and frames cannot step
+  around it. Grants live only in `SiteGrants`; no session allowance or tool rule applies.
+- **R7. Private networks are unreachable.** The daemon proxy refuses private, loopback and
+  link-local addresses at connect time for every request type, on the address it resolved itself,
+  so DNS rebinding cannot pass. The only exception is the session's own preview port.
+- **R8. Process isolation and caps.** The browser runs as a cap unit (the `browser` class, 4 GiB,
   512 processes). Chromium's sandbox stays on, and a test fails if a launch argument disables it.
-  The debugging port is loopback-only. The profile sits under `<data>` with the user's permissions
-  only (0700 on Unix; an owner-only ACL on Windows). The screencast is throttled, and frames are
+  CDP goes over `--remote-debugging-pipe`, and no debugging port listens (stage 0). The profile
+  sits under `<data>/browser`, a secret path (stage 0), with the user's permissions only (0700 on
+  Unix; an owner-only ACL on Windows). The screencast is throttled, and frames are
   dropped for a slow connection. Every buffer (console, network, refs, pending approvals) is
   bounded.
-- **R8. Only the user's own input drives the takeover**, through the desktop gate. The agent
-  cannot call `session.browser_act`. A plugin, a mod frame or a page in the Preview panel cannot
-  reach it ([06](../06-extensibility.md)).
+- **R9. `browser_eval` only where nothing is signed in** [C3]. It is offered only in a context
+  whose cookie mode is `off`, and only while that context holds no signed-in state: no cookies
+  imported, no user takeover since the context was created (a user may sign in while driving), and
+  no page in it with a credential field. As soon as any of these stops holding, the tool is
+  refused for the rest of the context's life. It also asks every call, and the code it runs is
+  logged in the transcript.
+- **R10. Only the user's own input drives the takeover**, through `require_desktop_app`
+  (stage 0). The agent cannot call `session.browser_act` or `session.browser_control`. A plugin,
+  a mod frame or a page in the Preview panel cannot reach them ([06](../06-extensibility.md)).
 
 **Tests (all in CI):**
 
 - Injection fixtures (`tests/fixtures/browser/injection/*.html`): hidden text in every way R1
   lists, instructions in `aria-label`, in titles and in `alt`, a fake `</page-content>`, a fake
   system message, and a page that opens a popup to an unapproved site. For each one, every tool's
-  output is framed, hidden text is absent, the closing tag is escaped, and the popup is blocked
-  until approved. **Positive control:** a visible-text fixture proves the reader does return text.
+  output is framed, hidden text is absent, and the closing tag is escaped. For the popup, the
+  fixture server that hosts the unapproved site counts the requests it receives and must have
+  received **none** before the approval, so no prefetch, preconnect or first navigation slipped
+  out while the target was paused. **Positive control:** a visible-text fixture proves the reader
+  does return text, and an approved popup does reach the server.
+- Seam tests (#355): a session allowance and a whole-tool allow rule for every `browser_*` name
+  are set, and no decision changes. An `always` grant for one site does not cover another.
+- Proxy tests: a fixture page loads, from a public-looking test host, a document, an image, a
+  `fetch`, an XHR and a WebSocket aimed at `127.0.0.1`, `10.0.0.1`, `169.254.169.254` and `[::1]`.
+  Every one is refused at connect, and a listener on each records zero connections. A DNS-rebinding
+  fixture (a test resolver whose first answer is public and second is `127.0.0.1`) never reaches
+  loopback. An iframe to a private address on a granted page is refused. **Positive control:** the
+  session's own preview port loads, and another loopback port does not.
 - A scripted-model session (the engine's fake provider) obeys a fixture that tells it to navigate
   elsewhere. The navigation must stop at the site ask. This tests the daemon's guard, not the
   model's judgement. A live-model injection evaluation through `imperium run --headless --json` is
@@ -471,7 +539,7 @@ cache, `robots.txt` and redirect rules
 more resilient. To keep the two from overlapping:
 
 - No stage edits `crates/imperium-web/src/{lib.rs,cache.rs,robots.rs,search.rs,html.rs}` or the
-  `run_web` half of `tools.rs` (goal 8).
+  `run_web` half of `tools.rs` (goal 9).
 - Stage 1 moves the browser half out of `tools.rs` into `browser/tools.rs`. It starts after the
   fetch PR merges, or rebases onto it, so that file has one writer at a time.
 - The two share only the host-normalising rule (`WebTools::allows` and its parser), which moves to
@@ -490,25 +558,27 @@ more resilient. To keep the two from overlapping:
 - Not in scope: driving the user's own Chrome (a Claude-in-Chrome-style extension: [D6](#open-decisions));
   `file_upload` (left off, as [C3] advises, until a staged upload folder exists); a hosted site
   safety list like [C2]'s (Imperium has no such service; the blocklist is the user's); any change
-  to `web_fetch` or `web_search`; and caps themselves (resource caps owns them).
-- The engine files the research session owns (`crates/imperium-engine/src/agent/{tools.rs,turn.rs,compact.rs}`,
-  `eval/record.rs`, `eval/variant.rs`) are touched only by stage 4, and only after that session
-  agrees ([D7](#open-decisions)).
+  to `web_fetch` or `web_search`; caps themselves (resource caps owns them); and the stage 0
+  hotfix, which is being implemented separately.
+- The engine belongs to this (implementation) session, so stage 4 changes the engine's
+  tool-result path directly.
 
 ## Assumptions
 
 - The Chrome, Chromium or Edge build on users' machines and CI runners supports
   `Target.createBrowserContext`, `Accessibility.getFullAXTree`, `Fetch.enable` and
   `Page.startScreencast` (all stable CDP domains).
-- The permissions redesign will accept a `Site` target with once, always and deny decisions. If
-  it lands later than stage 5, stage 5 stores grants in a `browser.sites` user-layer table behind
-  the same `SiteGrants` trait, and the redesign migrates them.
-- The D2 desktop gate (terminal stage 2b, PR #343 in review) merges before stage 7.
+- The permissions redesign (#355) will accept a `Site` target with once, always and deny
+  decisions, and the rule that `browser_*` calls are judged only by `SiteGrants`. If it lands
+  later than stage 5a, stage 5a stores grants in a `browser.sites` user-layer table behind the same
+  `SiteGrants` trait, and the redesign migrates them. Either way there is one store.
+- Stage 0 (`require_desktop_app`, the debugging pipe, the secret profile path) merges before
+  stage 1.
 
 ## Relevant paths
 
 - `crates/imperium-web/src/{browser.rs,tabs.rs,tools.rs,download.rs}` become
-  `crates/imperium-web/src/browser/{mod.rs,cdp.rs,service.rs,tabs.rs,page_model.rs,input.rs,guards.rs,sites.rs,screencast.rs,profiles.rs,tools.rs}`
+  `crates/imperium-web/src/browser/{mod.rs,cdp.rs,service.rs,tabs.rs,page_model.rs,input.rs,guards.rs,sites.rs,proxy.rs,screencast.rs,profiles.rs,tools.rs}`
 - `crates/imperium-core/src/{browser_control.rs,state.rs,state/create.rs,state/sessions.rs}`
 - `crates/imperium-protocol/src/{methods/session_control.rs,session.rs}`, and the tool definitions
 - `crates/imperium-policy/src/permissions.rs` (`Target::Site`)
@@ -523,20 +593,45 @@ more resilient. To keep the two from overlapping:
 [05](../05-tools-and-isolation.md) (current behaviour; this plan wins for the browser once a stage
 merges and updates it), [07](../07-desktop-ui.md#preview-and-browser-panels-implemented),
 [resource caps](resource-caps.md) (wins on caps), [terminal and file panes](terminal-file-panes.md)
-(wins on the desktop gate and the harness), [reactive tools](reactive-tools.md) (wins on tool
-loading), and the separate permissions redesign (wins on the permission store once it exists).
+(wins on the harness), [reactive tools](reactive-tools.md) (wins on tool loading), and the
+permissions redesign in [#355](https://github.com/Densetsu152637/Imperium-AI/pull/355) (wins on
+the permission store once it merges, except that `browser_*` calls stay judged only by
+`SiteGrants`).
 
 ## Stages
+
+### Stage 0: Hotfix: gate, pipe and secret profile
+
+- Objective: close today's three gaps before the rework starts.
+  - `session.browser_act` and `session.browser_control` call `require_desktop_app` (the check
+    `rpc/pull_requests.rs` uses), so only the desktop app can drive or take over the browser.
+  - The browser is launched with `--remote-debugging-pipe` instead of `--remote-debugging-port`
+    and `--remote-debugging-address`, so CDP runs over inherited pipe handles and no port listens.
+  - `<data>/browser/**` becomes a secret path on the safety floor and is excluded from session
+    export and from logs.
+- Depends on: none. It is being implemented separately, outside this plan's stages.
+- Owned paths: `crates/imperium-core/src/browser_control.rs` and its RPC dispatch,
+  `crates/imperium-web/src/browser.rs` (the transport), `crates/imperium-policy` (secret paths),
+  the export and log filters, docs 05.
+- Acceptance checks: the core test shows a caller that is not the desktop app is refused on both
+  methods. A **no-listening-port test** lists the browser process tree's listening sockets after
+  launch (from the OS socket table) and finds none. `read_file` and `run_command` on
+  `<data>/browser` ask every time. A sentinel cookie value is absent from the export and from
+  TRACE logs.
+- Status: in progress (separate implementation)
+- Outcome: -
+- Handoff notes: stage 1's CDP module builds on the pipe transport. Every later stage keeps the
+  gate and the secret path, and none re-adds them.
 
 ### Stage 1: The browser service and per-session contexts
 
 - Objective: replace the per-session `BrowserSetup` with the daemon-owned `BrowserService`, which
   runs one process per profile and one browser context per session, with stable tab ids and
-  per-session routing. Split `browser.rs` into the `browser/` module (`cdp.rs` for the socket,
-  `service.rs` and `tabs.rs`) and move the browser half of `tools.rs` into `browser/tools.rs` as
-  `BrowserTools`. Add the `Launcher` seam for cap units. The tool surface and its behaviour stay
-  the same.
-- Depends on: the fetch-resilience PR merged (or this stage rebased onto it).
+  per-session routing. Split `browser.rs` into the `browser/` module: `cdp.rs` for the stage 0
+  pipe, with flattened sessions per target; `service.rs`; and `tabs.rs`. Move the browser half of
+  `tools.rs` into `browser/tools.rs` as `BrowserTools`. Add the `Launcher` seam for cap units. The
+  tool surface and its behaviour stay the same.
+- Depends on: stage 0; the fetch-resilience PR merged (or this stage rebased onto it).
 - Owned paths: `crates/imperium-web/src/browser/**`, the browser half of `tools.rs`,
   `crates/imperium-core/src/{state.rs,state/create.rs,state/sessions.rs,browser_control.rs}`,
   `docs/05-tools-and-isolation.md` (the browser paragraph).
@@ -594,9 +689,9 @@ loading), and the separate permissions redesign (wins on the permission store on
   with a provider that maps it per model). A model that cannot see images gets the existing
   describer's text instead (as attachments do). Add `browser_screenshot` and `browser_zoom`, with
   coordinate scaling and R2 masking applied to the pixels.
-- Depends on: stage 3; the research session's agreement to the engine change ([D7](#open-decisions)).
+- Depends on: stage 3.
 - Owned paths: `crates/imperium-api/src/tools.rs`, the provider adapters in `imperium-models`,
-  the engine's tool-result path (named with the research session), `browser/tools.rs`, docs 03
+  the engine's tool-result path (`crates/imperium-engine/src/agent/`), `browser/tools.rs`, docs 03
   and 05.
 - Acceptance checks: provider adapter tests for an image tool result (Anthropic, OpenAI-compatible
   and local); the describer fallback for a text-only model; the image size stays within limits;
@@ -604,33 +699,66 @@ loading), and the separate permissions redesign (wins on the permission store on
   black in the pixels.
 - Status: pending
 - Outcome: -
-- Handoff notes: the biggest cross-team stage. If it cannot land, stages 5 to 11 do not depend on
-  it.
+- Handoff notes: the engine's tool-result path is a shared hot spot, so keep the change to one
+  new result type. Stages 5a to 11 do not depend on this stage, except stage 6's pixel masking.
 
-### Stage 5: Site permissions
+### Stage 5a: Site grants
 
-- Objective: `Target::Site` and the `SiteGrants` store (once, always, deny), checked at the
-  `Fetch` layer for navigations, redirects, popups and frames; scheme refusal; the private-network
-  and loopback rules; `browser.blocked_sites`; Settings that list and revoke grants; and the
-  one-time migration of `web.allow_domains` if D4 says so.
-- Depends on: stage 3; the permissions redesign's interface (or the fallback table under
-  Assumptions).
+- Objective: `Target::Site` and the `SiteGrants` store (once, always, deny) as the only judge of
+  `browser_*` calls (the #355 seam: argument-dependent, no session allowance, no tool-wide rule,
+  and `browser_open`'s separate allow path removed). Grants are checked at the `Fetch` layer for
+  navigations, redirects, popups and frames. Popups and new targets are caught by
+  `Target.setAutoAttach { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }`, with
+  `Fetch.enable` on the new target before `Runtime.runIfWaitingForDebugger`. The stage also adds
+  scheme refusal, the frame-inheritance rule, `browser.blocked_sites`, Settings that list and
+  revoke grants, and the one-time migration of `web.allow_domains` if D4 says so.
+- Depends on: stage 3; the #355 interface (or the fallback table under Assumptions).
 - Owned paths: `crates/imperium-policy/src/permissions.rs`, `browser/sites.rs`,
   `crates/imperium-core` (approvals and Settings RPC), Settings UI, docs 05 and 10.
-- Acceptance checks: `imperium-policy` unit tests for pattern matching (IDN, trailing dot,
-  userinfo, `www.` form, `*.` wildcard); a redirect from a granted site to an ungranted one asks
-  (mock CDP); a popup to an ungranted site is held; `file:` and `chrome:` are refused; a private
-  address resolved from a public name asks on every action; a revoked grant asks again; a blocked
-  site refuses the agent but not the user's own navigation; plan mode refuses writes.
+- Acceptance checks:
+  - `imperium-policy` unit tests for pattern matching (IDN, trailing dot, userinfo, `www.` form,
+    `*.` wildcard);
+  - a redirect from a granted site to an ungranted one asks (mock CDP);
+  - **popup:** a granted page opens a popup to an ungranted fixture host; the host's request
+    counter is zero until approval, and after a denial it stays zero (real browser);
+  - the seam tests ([security requirements](#security-requirements)): a session allowance or a
+    whole-tool allow rule for each `browser_*` name changes no decision;
+  - `allow_once` ends when the tab leaves the site, and another tab on the same site asks;
+  - `file:`, `chrome:`, `data:` and `javascript:` navigations are refused; a frame to a blocked or
+    non-`http(s)` target on a granted page is refused;
+  - a revoked grant asks again; a blocked site refuses the agent but not the user's own
+    navigation; plan mode refuses writes.
 - Status: pending
 - Outcome: -
 - Handoff notes: settle D2 (the classifier on writes) before this stage starts.
+
+### Stage 5b: The private-network proxy
+
+- Objective: the daemon-owned proxy (`browser/proxy.rs`). The browser is launched with
+  `--proxy-server` pointing at it and `--proxy-bypass-list=<-loopback>`. The proxy resolves each
+  host itself, refuses private, loopback, link-local, CGNAT, unspecified and multicast addresses
+  at connect time for every request type (documents, subresources, fetch/XHR, WebSockets,
+  `CONNECT`), and connects only to the address it checked. The single exception is the session's
+  own running preview port. It listens on a loopback port chosen at each launch. Another local
+  process that found the port would gain nothing: the proxy reaches only public addresses (which
+  that process can reach anyway) and the preview port (which is already on its own loopback).
+- Depends on: stage 1 (it may land before or after 5a).
+- Owned paths: `browser/proxy.rs`, the launch arguments in `browser/service.rs`, docs 05.
+- Acceptance checks: the proxy tests under [security requirements](#security-requirements)
+  (every request type to every private range is refused, and the listeners record zero
+  connections; DNS rebinding cannot pass; a private iframe on a granted page is refused; the
+  positive control loads the preview port); the browser makes no direct connection (a test
+  listener on a public-looking fixture address sees connections only from the proxy);
+  `web_fetch` is unaffected (it does not use the proxy).
+- Status: pending
+- Outcome: -
+- Handoff notes: there is no "ask" path for private addresses, by design.
 
 ### Stage 6: Guards for credentials, CAPTCHAs and consequential actions
 
 - Objective: R2 refusal and pixel masking, R3 challenge detection, the R4 lexicon (always asks),
   and the browser instructions text.
-- Depends on: stage 5 (and stage 4 for pixel masking).
+- Depends on: stage 5a (and stage 4 for pixel masking).
 - Owned paths: `browser/guards.rs`, fixtures, `browser/tools.rs`, docs 05.
 - Acceptance checks: every guard test and positive control listed under
   [security requirements](#security-requirements); the scripted-model injection test stops at the
@@ -643,10 +771,11 @@ loading), and the separate permissions redesign (wins on the permission store on
 ### Stage 7: The live pane and takeover
 
 - Objective: the screencast stream per attached connection, the full `session.browser_act` input
-  set, implicit takeover, the `browser_handoff` tool, the D2 desktop gate on acting, and a new
+  set, implicit takeover, the `browser_handoff` tool (default 600 s, refused inside
+  `browser_batch`), the stream's attach call behind stage 0's `require_desktop_app`, and a new
   `BrowserPanel` that draws frames on a canvas and forwards input. Remove `web.headless` (the
   browser is always headless and the pane is its window). This changes the protocol minor at merge.
-- Depends on: stage 3; terminal stage 2b (the gate) and stage 4 (the harness).
+- Depends on: stages 0 and 3; terminal-file-panes stage 4 (the harness).
 - Owned paths: `browser/screencast.rs`, `crates/imperium-core/src/browser_control.rs`, the
   protocol `session_control.rs` and `session.rs` with snapshots and generated types,
   `apps/desktop/src/panels/BrowserPanel.tsx`, `apps/desktop/src/sessions/preview.ts`,
@@ -654,24 +783,24 @@ loading), and the separate permissions redesign (wins on the permission store on
 - Acceptance checks: the core test shows that frames reach only the attached connection, a phone
   cannot act, and a caller without the gate is refused; the harness `browser-takeover` scenario
   (frames render, a click there takes control, the agent's call is refused, *Give back* restores
-  it); `browser_handoff` returns on give-back and on timeout; nothing streams when no pane is
-  shown (a frame counter stays at zero).
+  it); `browser_handoff` returns on give-back and on timeout, and a batch holding it is refused
+  before any item runs; nothing streams when no pane is shown (a frame counter stays at zero).
 - Status: pending
 - Outcome: -
 - Handoff notes: keep `browser_view` for transcript thumbnails.
 
 ### Stage 8: Profiles, cookies and sign-in
 
-- Objective: `browser.cookies` (off, shared, per session), *Clear browsing data*, the profile on
-  the safety floor's secret paths, its exclusion from export and logs, OAuth popups as tabs, and
-  handoff guidance for sign-in.
+- Objective: `browser.cookies` (off, shared, per session), *Clear browsing data*, OAuth popups as
+  tabs, the context's "signed-in state" flag that R9 reads, and handoff guidance for sign-in. The
+  secret path and the export and log exclusion are stage 0's, and every new profile folder lives
+  under `<data>/browser`.
 - Depends on: stages 1 and 7.
-- Owned paths: `browser/profiles.rs`, `crates/imperium-policy` (secret paths), Settings, the pane
-  menu, docs 05, 07 and 10.
+- Owned paths: `browser/profiles.rs`, Settings, the pane menu, docs 05, 07 and 10.
 - Acceptance checks: each mode's cookie lifetime (real browser: a cookie survives a daemon restart
   only in `shared` and `per_session` modes); a `per_session` profile is deleted with its session;
-  `read_file` and `run_command` on `<data>/browser` ask every time; a sentinel cookie value is
-  absent from the journal, export and TRACE logs.
+  each new profile folder is under `<data>/browser` (so stage 0's tests cover it); a takeover
+  sets the signed-in flag.
 - Status: pending
 - Outcome: -
 - Handoff notes: the default mode is D1.
@@ -696,11 +825,14 @@ loading), and the separate permissions redesign (wins on the permission store on
 - Objective: `browser_console`, `browser_network` and `browser_eval`, each off by default and
   turned on per session by the user (`browser.diagnostics`). Values that look like credentials are
   redacted, entries are bounded, the code `browser_eval` runs is logged in the transcript, and it
-  asks every time and is refused on pages with credential fields.
-- Depends on: stage 6.
+  asks every time. `browser_eval` follows R9: it is offered only in an `off`-mode context with no
+  signed-in state.
+- Depends on: stages 6 and 8.
 - Owned paths: `browser/tools.rs`, a new `browser/diagnostics.rs`, docs 05 and 10.
 - Acceptance checks: the tools are absent unless enabled; a token in a request URL is redacted;
-  the buffers are capped; eval asks under `full` mode and is refused on a password page.
+  the buffers are capped; eval asks under `full` mode; eval is refused in `shared` and
+  `per_session` contexts, after a takeover, after an import, and on a password page, and
+  **positive control:** it runs in a fresh `off` context.
 - Status: pending
 - Outcome: -
 - Handoff notes: -
@@ -729,7 +861,8 @@ loading), and the separate permissions redesign (wins on the permission store on
 - Acceptance checks: the aliases are absent from the tool definitions; the docs CI passes.
 - Status: pending
 - Outcome: -
-- Handoff notes: tell the research session one stage ahead (eval traces).
+- Handoff notes: update the eval traces in this stage, and tell the research session one stage
+  ahead, because it runs the evals.
 
 ## Risks
 
@@ -739,8 +872,10 @@ loading), and the separate permissions redesign (wins on the permission store on
 - **Signed-in profiles raise the stakes of injection.** `shared` cookies plus an always-allowed
   site give a manipulated agent the user's account on that site. Mitigations: per-site grants,
   the always-ask set, and `off` as a possible default (D1).
-- **The image results stage touches engine files another session owns.** Stage 4 is isolated so
-  the rest can ship without it.
+- **The image results stage touches the engine's tool-result path,** which many features share.
+  Stage 4 is isolated so the rest can ship without it.
+- **The proxy is on every request's path.** A proxy bug breaks browsing. It also adds latency,
+  kept low by connection reuse. CI covers every request type.
 - **Streaming cost.** The screencast runs only while a pane is shown, and frames are throttled and
   dropped under backpressure.
 - **CDP drift across Chrome versions.** Stay on stable domains, and keep the real-browser tests on
@@ -760,5 +895,3 @@ loading), and the separate permissions redesign (wins on the permission store on
   (proposed: build it last, after a security review).
 - **D6. A Claude-in-Chrome-style extension for the user's own browser:** out of scope here
   (proposed), and a separate plan if wanted.
-- **D7. Image tool results (stage 4):** agree the engine change with the research session, or
-  ship without model screenshots for now.
