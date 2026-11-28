@@ -902,6 +902,9 @@ impl DaemonState {
             .settings
             .write()
             .unwrap_or_else(PoisonError::into_inner) = Arc::new(settings);
+        // A changed `mcp.trusted_projects` can newly admit a project's plugin folders, so guard
+        // them now rather than at that environment's next session.
+        self.guard_environment_plugin_folders();
     }
 
     /// The store every secret is read from.
