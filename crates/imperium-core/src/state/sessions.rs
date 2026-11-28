@@ -414,12 +414,15 @@ impl DaemonState {
             );
         }
         let running = self.session(id);
+        let mut stopped = true;
         if let Some(session) = &running {
             session.stop();
             let deadline = tokio::time::Instant::now() + ERASE_STOP_WAIT;
-            while session.status().0 == SessionStatus::Working
-                && tokio::time::Instant::now() < deadline
-            {
+            while session.status().0 == SessionStatus::Working {
+                if tokio::time::Instant::now() >= deadline {
+                    stopped = false;
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
@@ -429,21 +432,38 @@ impl DaemonState {
         drop(running);
         // A stopped agent may still save its state as it halts, after the first removal: sweep
         // until a sweep finds nothing, so nothing of the session comes back.
-        let mut failed = Vec::new();
+        // Only the last sweep's failures count: an earlier one may have lost a race.
+        let mut left = Vec::new();
+        let mut settled = false;
         for _ in 0..ERASE_SWEEPS {
-            if !self.sweep_erased(id, &mut failed) {
+            left.clear();
+            if !self.sweep_erased(id, &mut left) {
+                settled = true;
                 break;
             }
             tokio::time::sleep(ERASE_SETTLE).await;
         }
-        if failed.is_empty() {
+        let mut problems = Vec::new();
+        if !stopped {
+            problems.push(format!(
+                "it did not stop within {} s, so it may have kept writing",
+                ERASE_STOP_WAIT.as_secs()
+            ));
+        }
+        if !settled {
+            problems.push("its files kept coming back".to_string());
+        }
+        if !left.is_empty() {
+            left.sort();
+            left.dedup();
+            problems.push(format!("these could not be removed: {}", left.join("; ")));
+        }
+        if problems.is_empty() {
             Ok(())
         } else {
-            failed.sort();
-            failed.dedup();
             Err(format!(
-                "the session was deleted, but these could not be removed: {}",
-                failed.join("; ")
+                "the session was deleted from the lists, but {}",
+                problems.join("; ")
             ))
         }
     }

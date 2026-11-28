@@ -359,3 +359,25 @@ async fn erasing_a_session_during_a_turn_leaves_nothing_behind() {
     assert_eq!(world.leftovers(&id), Vec::<String>::new());
     assert!(!world.listed().await.contains(&id));
 }
+
+/// A file that cannot be removed is named in the error, and the session is gone from the lists
+/// all the same; only the final sweep's failures are reported.
+#[tokio::test]
+async fn an_erase_names_what_could_not_be_removed() {
+    let world = World::new("");
+    let id = world.session();
+    // A folder where the saved conversation should be: it cannot be removed as a file.
+    let stuck = world.stored(&id, "messages.json");
+    std::fs::remove_file(&stuck).unwrap();
+    std::fs::create_dir_all(stuck.join("inside")).unwrap();
+
+    let mut app = world.app().await;
+    let (code, message, _) = error(call(&mut app, "session.erase", erase(&id)).await);
+    assert_eq!(code, codes::INVALID_PARAMS, "{message}");
+    assert!(message.contains("messages.json"), "{message}");
+    assert!(message.contains("could not be removed"), "{message}");
+    assert!(world.daemon.session(&id).is_none());
+    assert!(!world.listed().await.contains(&id));
+    // The rest of the session's files went.
+    assert!(!world.stored(&id, "jsonl").exists());
+}
