@@ -1,5 +1,7 @@
 use imperium_protocol::jsonrpc::server_features;
 
+use super::pull_requests::forbidden;
+
 use super::*;
 
 impl Connection {
@@ -336,8 +338,15 @@ impl Connection {
                     crate::suggestions::respond(Arc::clone(&self.state), params)
                 })
             }
+            // The user's own process only (see `Connection::delete_gate`): an agent's command, a
+            // mod, a phone or a plain token holder cannot delete sessions.
             SessionDelete::NAME => {
                 call::<SessionDelete>(c.params.take(), |params: SessionDeleteParams| {
+                    if let Some((pid, accepted_at)) = self.delete_gate(&params.session_id)?
+                        && crate::peer::may_grant(&self.state, pid, accepted_at).is_err()
+                    {
+                        return Err(forbidden(NOT_A_USER));
+                    }
                     self.state
                         .delete_session(&params.session_id, params.remove_worktrees)
                         .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
@@ -345,16 +354,26 @@ impl Connection {
             }
             // The desktop app's alone (see `SessionErase`): refused on a server before any
             // caller is looked at, then for every caller that is not the installed app.
-            SessionErase::NAME => {
-                call::<SessionErase>(c.params.take(), |params: SessionEraseParams| {
-                    self.refuse_on_server(server_features::SESSION_ERASE)?;
-                    self.require_desktop_app_for("erase a session", "erase a session")?;
-                    self.state
-                        .erase_session(&params.session_id)
-                        .map(|()| Accepted {})
-                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
-                })
-            }
+            SessionErase::NAME => call_later::<SessionErase, _>(
+                c.params.take(),
+                c.later,
+                |params: SessionEraseParams| {
+                    let state = Arc::clone(&self.state);
+                    let gate = self
+                        .refuse_on_server(server_features::SESSION_ERASE)
+                        .and_then(|()| {
+                            self.require_desktop_app_for("erase a session", "erase a session")
+                        });
+                    async move {
+                        gate?;
+                        state
+                            .erase_session(&params.session_id)
+                            .await
+                            .map(|()| Accepted {})
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
             SessionAnswer::NAME => {
                 call::<SessionAnswer>(c.params.take(), |params: SessionAnswerParams| {
                     self.session(&params.session_id)?
@@ -445,7 +464,31 @@ impl Connection {
     }
 }
 
+/// Why `session.delete` refused a caller.
+const NOT_A_USER: &str = "deleting a session needs a process of your own on the local socket (not one an agent ran, not a mod's page, not over TCP or SSH): run `imperium session delete` from your own terminal, or delete it in the desktop app";
+
 impl Connection {
+    /// Whether this connection may delete sessions with `session.delete`: it is not a paired
+    /// device's and the daemon is not a server (`-32010`). `Ok(None)`: yes already (a test that
+    /// stands in for the user, or the `imperium` command deleting its own evaluation session).
+    /// `Ok(Some(peer))`: if the process on the local socket is the user's own
+    /// ([`crate::peer::may_grant`], which the caller checks). A connection with no such process (loopback TCP, which any
+    /// mod's page can open with the token) is refused.
+    pub(super) fn delete_gate(&self, session_id: &str) -> Result<Option<(u32, u64)>, ErrorObject> {
+        if self.allowed.is_some() {
+            return Err(forbidden("a paired device cannot delete a session"));
+        }
+        self.refuse_on_server(server_features::SESSION_DELETE)?;
+        #[cfg(feature = "testing")]
+        if self.desktop_app_for_tests {
+            return Ok(None);
+        }
+        if self.may_eval() && self.eval_sessions.owns(session_id) {
+            return Ok(None);
+        }
+        self.peer.map(Some).ok_or_else(|| forbidden(NOT_A_USER))
+    }
+
     /// An error unless this connection may start evaluation sessions.
     pub(super) fn eval_forbidden(&self) -> Result<(), ErrorObject> {
         if self.may_eval() {

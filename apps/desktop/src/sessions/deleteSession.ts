@@ -1,13 +1,13 @@
 // Deleting a session for good, free of React so tests can run it (test/deleteSession.test.ts). The
 // session's ⋯ menu offers "Delete…" for every session, running or archived, except an environment's
 // persistent agent (its environment turns it off). The dialog names the session and says the delete
-// is permanent. Confirming goes only through the app's own `session_erase` command: the daemon
+// is permanent (the app then asks again in a native dialog the page cannot answer). Confirming goes only through the app's own `session_erase` command: the daemon
 // answers `session.erase` to the desktop app's own process alone, so the webview cannot send it.
 
 import { plain } from "../shared/plainText.ts";
 
 /** What `session_erase` answers (apps/desktop/src-tauri/src/session_erase.rs `Outcome`). */
-export type EraseOutcome = { erased: boolean; reason: string | null };
+export type EraseOutcome = { erased: boolean; cancelled: boolean; reason: string | null };
 
 /** The Tauri command bridge, injected so a test can stand in for it. */
 export type Invoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -38,5 +38,7 @@ export function deleteConfirmation(title: string, archived: boolean): { heading:
 /** Asks the app to delete the session. Rejects with the reason it was not. */
 export async function eraseSession(invoke: Invoke, sessionId: string): Promise<void> {
   const outcome = (await invoke("session_erase", { session: sessionId })) as EraseOutcome;
+  // The user said no in the app's own native dialog: nothing to report.
+  if (outcome.cancelled) return;
   if (!outcome.erased) throw new Error(plain(outcome.reason) || "The session could not be deleted.");
 }

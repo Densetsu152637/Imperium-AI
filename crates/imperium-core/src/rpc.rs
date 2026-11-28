@@ -541,6 +541,11 @@ impl EvalSessions {
         }
     }
 
+    /// Whether `id` is one of this connection's evaluation sessions.
+    pub(crate) fn owns(&self, id: &str) -> bool {
+        self.list().ids.iter().any(|known| known == id)
+    }
+
     /// Lets go of `id`: its owner deleted it.
     pub(crate) fn remove(&self, id: &str) {
         self.list().ids.retain(|known| known != id);
@@ -1326,7 +1331,7 @@ mod tests {
 
     #[tokio::test]
     async fn attachments_are_staged_inside_the_session_and_checked_again_on_send() {
-        let mut connection = handshaken();
+        let mut connection = handshaken().as_desktop_app_for_tests();
         let project = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("notes.md"), "# Plan").unwrap();

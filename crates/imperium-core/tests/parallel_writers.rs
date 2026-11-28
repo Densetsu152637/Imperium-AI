@@ -502,7 +502,7 @@ async fn deleting_the_session_removes_its_writers_worktrees_and_keeps_their_bran
     .unwrap();
     let paths = imperium_config::Paths::under(home.path());
     let state = DaemonState::new(paths.clone(), settings, None);
-    let mut connection = Connection::new(Arc::clone(&state));
+    let mut connection = Connection::new(Arc::clone(&state)).as_desktop_app_for_tests();
     call(
         &mut connection,
         "system.handshake",

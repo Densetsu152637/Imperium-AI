@@ -290,3 +290,72 @@ async fn an_environments_persistent_agent_is_not_erased() {
     assert_eq!(code, codes::INVALID_PARAMS, "{message}");
     assert!(world.daemon.session(&id).is_some());
 }
+
+/// `session.delete` is the user's own process alone, so it does not undercut `session.erase`:
+/// an agent's command (a process of the daemon's own, which is what the test process is), a mod's
+/// page or a plain token holder (no process on the local socket) and a paired phone are refused,
+/// and nothing is removed.
+#[tokio::test]
+async fn session_delete_refuses_an_agent_a_mod_a_token_holder_and_a_phone() {
+    let world = World::new("");
+    let id = world.session();
+    let params = json!({"session_id": id, "remove_worktrees": true});
+
+    let mut agent =
+        Connection::new(Arc::clone(&world.daemon)).with_peer(Some((std::process::id(), 0)));
+    shake(&mut agent, "imperium-cli").await;
+    let (code, message, _) = error(call(&mut agent, "session.delete", params.clone()).await);
+    assert_eq!(code, codes::FORBIDDEN, "{message}");
+
+    let mut token = world.other().await;
+    let (code, message, _) = error(call(&mut token, "session.delete", params.clone()).await);
+    assert_eq!(code, codes::FORBIDDEN, "{message}");
+
+    let mut phone = Connection::restricted(Arc::clone(&world.daemon), vec!["session.delete"]);
+    shake(&mut phone, "phone").await;
+    let (code, message, _) = error(call(&mut phone, "session.delete", params).await);
+    assert_eq!(code, codes::FORBIDDEN, "{message}");
+
+    assert!(world.daemon.session(&id).is_some());
+    assert!(world.leftovers(&id).contains(&"jsonl".to_string()));
+    assert!(world.listed().await.contains(&id));
+}
+
+#[tokio::test]
+async fn session_delete_is_refused_on_a_server_and_works_for_the_user() {
+    let server = World::new("[daemon]\nserver = true");
+    let id = server.session();
+    let mut app = server.app().await;
+    let (code, _, data) = error(call(&mut app, "session.delete", json!({"session_id": id})).await);
+    assert_eq!(code, codes::UNAVAILABLE_ON_SERVER);
+    assert_eq!(
+        data,
+        Some(json!({"feature": server_features::SESSION_DELETE}))
+    );
+
+    // A connection standing in for the user's own process still deletes.
+    let world = World::new("");
+    let id = world.session();
+    let mut user = world.app().await;
+    result(call(&mut user, "session.delete", json!({"session_id": id})).await);
+    assert!(world.daemon.session(&id).is_none());
+}
+
+/// Erasing a session whose turn is running stops it first: nothing writes to its files after the
+/// erase, so none comes back.
+#[tokio::test]
+async fn erasing_a_session_during_a_turn_leaves_nothing_behind() {
+    let world = World::new("");
+    let id = world.session();
+    let session = world.daemon.session(&id).unwrap();
+    // A turn against an endpoint that is not there: it runs, then fails.
+    session.send("hello".into()).unwrap();
+    drop(session);
+
+    let mut app = world.app().await;
+    result(call(&mut app, "session.erase", erase(&id)).await);
+    // Whatever the turn did afterwards, it wrote nothing to the session's files.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(world.leftovers(&id), Vec::<String>::new());
+    assert!(!world.listed().await.contains(&id));
+}

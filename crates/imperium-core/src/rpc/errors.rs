@@ -55,7 +55,10 @@ pub(crate) fn unavailable_on_server(feature: &'static str) -> ErrorObject {
              made at a terminal"
         }
         f::SESSION_ERASE => {
-            "erasing a session is unavailable on a server (daemon.server): only the desktop app              on its own machine may; archive the session instead"
+            "erasing a session is unavailable on a server (daemon.server): only the desktop app \n             on its own machine may; archive the session instead"
+        }
+        f::SESSION_DELETE => {
+            "deleting a session is unavailable on a server (daemon.server): archive it instead"
         }
         f::CONTAINER_TIER => imperium_config::CONTAINER_TIER_ON_SERVER,
         _ => "unavailable on a server (daemon.server)",

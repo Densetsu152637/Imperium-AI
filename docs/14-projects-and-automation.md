@@ -1102,13 +1102,23 @@ resumes it where it left off; both are announced as `session.updated` (unarchivi
 app sends `session.erase { session_id }`, which is the desktop app's alone (the same gate as
 turning auto-merge on: the caller must be the installed app on the local socket, so an agent, a
 mod, a paired phone, another local process or a plain token holder gets `-32005`, and a daemon
-in server mode `-32010`, feature `session_erase`). The daemon stops the session if it runs, then removes everything it stored
+in server mode `-32010`, feature `session_erase`). The daemon stops the session if it runs and waits a short time for its turn
+to end, so nothing writes to its files any more; only then does it remove everything it stored
 for it: the journal (the transcript), the record, the saved conversation, saved tool results,
 the agents' kept state, attachments, checkpoints and the scratch folder, and announces
 `session.deleted`. It removes nothing else: the session's git worktrees, the project's files and
 every branch stay (`session.delete` with `remove_worktrees` is how those go, from the command line).
-An environment's persistent agent is refused. From the CLI: `imperium session delete <id>` stays
-as it was. Other commands: `imperium session archive
+An environment's persistent agent is refused, and so is a file that cannot be removed (the error
+names its path; the session is gone from the lists all the same). The app asks twice: its own
+dialog, then a native one from its Rust shell that names the session as the daemon knows it (the
+page cannot answer that one).
+
+`session.delete` (`imperium session delete <id> [--remove-worktrees]`) is held to the same user
+check as granting trust (`peer::may_grant`): the caller must be the user's own process on the local
+socket, so an agent's command, a mod's page, a paired phone or a plain token holder over TCP is
+refused (`-32005`), and a server refuses it (`-32010`, feature `session_delete`). The `imperium`
+command, the desktop app and an evaluation run deleting its own session pass; the daemon's own
+cleanups call the state directly, not over RPC. Other commands: `imperium session archive
 <id>`, `imperium session unarchive <id>`, and `imperium session list [--archived]`.
 
 Sessions are also archived on their own:

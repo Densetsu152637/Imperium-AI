@@ -45,17 +45,21 @@ test("confirming asks the app's own command with the session only", async () => 
   const sent: Array<[string, Record<string, unknown>]> = [];
   await eraseSession(async (command, args) => {
     sent.push([command, args]);
-    return { erased: true, reason: null };
+    return { erased: true, cancelled: false, reason: null };
   }, "s1");
   assert.deepEqual(sent, [["session_erase", { session: "s1" }]]);
 });
 
 test("a refusal rejects with the reason, so the dialog stays open and shows it", async () => {
   await assert.rejects(
-    eraseSession(async () => ({ erased: false, reason: "only the desktop app can erase a session" }), "s1"),
+    eraseSession(async () => ({ erased: false, cancelled: false, reason: "only the desktop app can erase a session" }), "s1"),
     /only the desktop app/,
   );
-  await assert.rejects(eraseSession(async () => ({ erased: false, reason: null }), "s1"), /could not be deleted/);
+  await assert.rejects(eraseSession(async () => ({ erased: false, cancelled: false, reason: null }), "s1"), /could not be deleted/);
+});
+
+test("a cancel in the app's native dialog closes quietly", async () => {
+  await eraseSession(async () => ({ erased: false, cancelled: true, reason: "cancelled: nothing was deleted" }), "s1");
 });
 
 test("the webview never names the daemon's session.erase: only the app's own shell may send it", () => {

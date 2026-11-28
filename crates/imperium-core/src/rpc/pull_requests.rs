@@ -203,7 +203,7 @@ impl Connection {
 }
 
 /// A refusal for a caller that may not do this: `permission denied`.
-fn forbidden(reason: impl std::fmt::Display) -> ErrorObject {
+pub(super) fn forbidden(reason: impl std::fmt::Display) -> ErrorObject {
     ErrorObject::new(codes::FORBIDDEN, format!("permission denied: {reason}"))
 }
 

@@ -120,7 +120,7 @@ async fn subagents_are_listed_resumed_and_deleted_with_the_session() {
         .unwrap();
     let session_id = session.id().to_string();
     let mut events = session.subscribe();
-    let mut connection = Connection::new(Arc::clone(&state));
+    let mut connection = Connection::new(Arc::clone(&state)).as_desktop_app_for_tests();
     let handshake = json!({"client": {"name": "test", "version": "0"},
                            "protocol": {"major": 0, "minor": 2}});
     let _: Value = result(call(&mut connection, "system.handshake", handshake));

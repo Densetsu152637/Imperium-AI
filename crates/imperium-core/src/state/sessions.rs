@@ -1,5 +1,8 @@
 use super::*;
 
+/// How long `erase_session` waits for a stopped session to end its turn before it deletes.
+const ERASE_STOP_WAIT: Duration = Duration::from_secs(10);
+
 impl DaemonState {
     /// Sessions with a turn running: the user's, and background ones.
     pub(crate) fn working_sessions(&self) -> (u32, u32) {
@@ -386,20 +389,42 @@ impl DaemonState {
         Ok(result)
     }
 
-    /// Permanently deletes a session, running or archived (`session.erase`): it is stopped, then
-    /// everything stored for it goes, the transcript included (the journal, the saved
-    /// conversation and the branch turns file beside it, on top of what [`Self::delete_session`]
-    /// removes). Only the session's own storage is touched: its git worktrees stay, and so do
-    /// the project's files and every branch. A persistent agent's session is refused.
-    pub fn erase_session(&self, id: &str) -> Result<(), String> {
-        // Taken before the delete forgets it; stopped only once the delete has not refused.
+    /// Permanently deletes a session, running or archived (`session.erase`), in this order: a
+    /// running session is stopped and given a bounded time to end its turn, so nothing writes to
+    /// its files any more; then [`Self::delete_session`] forgets it and removes what it stores;
+    /// then the transcript goes (the journal, the saved conversation and the branch turns file
+    /// beside it). Only the session's own storage is touched: its git worktrees stay, and so do
+    /// the project's files and every branch. A persistent agent's session is refused, and so is
+    /// an unknown id. Fails, naming each path, when a file could not be removed (the session is
+    /// forgotten all the same).
+    pub async fn erase_session(&self, id: &str) -> Result<(), String> {
+        let persistent = self
+            .placements
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(|placement| placement.persistent);
+        if persistent {
+            return Err(
+                "this is a persistent agent of its environment; delete the agent in the environment".into(),
+            );
+        }
         let running = self.session(id);
+        if let Some(session) = &running {
+            session.stop();
+            let deadline = tokio::time::Instant::now() + ERASE_STOP_WAIT;
+            while session.status().0 == SessionStatus::Working
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
         // Refuses an id that names no session, so `id` is a known one below.
         self.delete_session(id, false)?;
-        if let Some(session) = running {
-            session.stop();
-        }
+        // Let go of the session: its journal closes with the last holder.
+        drop(running);
         let sessions = self.paths.data_dir().join("sessions");
+        let mut failed = Vec::new();
         for name in [
             format!("{id}.jsonl"),
             format!("{id}.messages.json"),
@@ -409,10 +434,17 @@ impl DaemonState {
             if let Err(error) = std::fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                tracing::warn!(path = %path.display(), %error, "could not delete the session's file");
+                failed.push(format!("{}: {error}", path.display()));
             }
         }
-        Ok(())
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the session was deleted, but these files could not be removed: {}",
+                failed.join("; ")
+            ))
+        }
     }
 
     /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in
