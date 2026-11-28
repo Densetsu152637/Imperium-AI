@@ -1157,9 +1157,14 @@ enabled = false
     fn local_setup_made_before_the_switch_stays_on() {
         // Each of these was a way to set local models up on purpose before the switch existed;
         // with no `models.local.enabled` anywhere, they keep local models on.
+        // `download_dir` must be absolute on every platform.
+        let download = format!(
+            "[models]\ndownload_dir = '{}'\n",
+            std::env::temp_dir().display()
+        );
         for before in [
             "[models]\nfolders = [\"/models\"]\n",
-            "[models]\ndownload_dir = \"/models\"\n",
+            download.as_str(),
             "[models]\ndefault = \"llamacpp:tiny\"\n",
             "[runtime.llamacpp.models.tiny]\nslots = 2\n",
             "[runtime.llamacpp]\ncustom_path = \"/bin/llama-server\"\n",
