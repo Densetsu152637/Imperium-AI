@@ -122,7 +122,7 @@ that answered it. Nothing secret appears below; the session IDs are local file n
 | --- | --- | --- | --- |
 | Rule shape | `{ tool, pattern, action }` tables in `rules` | `Tool` or `Tool(specifier)` strings in `allow`, `ask`, `deny` lists | differs |
 | Tool names | `run_command`, `read_file`, `write_file`, `edit_file`, `list_dir`, `web_fetch` | `Bash`, `Read`, `Edit` (covers every edit tool), `WebFetch`, `WebSearch`, `Agent(name)` | differs |
-| Command pattern | word prefix; a final `*` word matches the rest; `*` inside a word stays in it | whole-text glob, `*` matches any text including spaces; trailing ` *` or `:*` also matches the bare command | differs |
+| Command pattern | word prefix; a final `*` word matches the rest; `*` inside a word stays in it | whole-text glob, `*` matches any text including spaces; a trailing space-star or `:*` also matches the bare command (`ls *` matches `ls`) | differs |
 | Compound commands | split at `;` `&&` `\|\|` `\|` `&` newline; every part must be allowed | same separators plus `\|&`; deny and ask also match inside substitutions and loop bodies; a trailing `&&` is unparseable | same, with gaps |
 | Wrappers | not stripped for rules (the floor unwraps them) | `timeout`, `time`, `nice`, `nohup`, `stdbuf`, `command`, `builtin`, `noglob`, bare `xargs` stripped | missing |
 | Leading assignments | every `NAME=value` skipped, for allow rules too | allow matches only past known-safe variables; deny and ask match past any | differs (Imperium looser) |
@@ -181,7 +181,7 @@ additionalDirectories = ["~/.rustup"]
   `mcp__<server>__<tool>` is unchanged. Imperium's other tools keep their own names
   (`browser_open`, `memory_remember`, `git_commit`, `open_pull_request`, ...). Imperium's own
   names are accepted as aliases, so `run_command(cargo test *)` means `Bash(cargo test *)`.
-- **Bash.** Whole-text glob with `*` for any text; ` *` or `:*` at the end also matches the bare
+- **Bash.** Whole-text glob with `*` for any text; a trailing space-star (`git log *`) or `:*` also matches the bare
   command; compound commands split as today plus `|&`, every part must be allowed, and deny and
   ask rules match inside `$( )`, backticks, `<( )` and control-flow bodies. The fixed wrapper
   list is stripped before matching; a leading assignment lets an allow rule match only for the
