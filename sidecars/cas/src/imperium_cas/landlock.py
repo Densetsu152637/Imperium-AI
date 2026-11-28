@@ -2,13 +2,20 @@
 
 `imperium_cas.__main__` calls `confine()` as its first statement, before any other import and
 before stdin is read. On Linux with Landlock (ABI 1 or later) the ruleset handles
-`LANDLOCK_ACCESS_FS_EXECUTE` and allows it only beneath the interpreter's own installation
-(`sys.base_prefix`, inside the managed environment) and for the interpreter's ELF loader (the
-kernel opens it for execution too, so without it the interpreter could not start itself). So
-neither the front nor a worker it starts (workers inherit the ruleset) can `execve` a shell or
-anything else in `/usr/bin`.
+`LANDLOCK_ACCESS_FS_EXECUTE` and allows it only for the interpreter's own executable
+(`realpath(sys.executable)`, inside the managed environment) and for its ELF loader (the kernel
+opens it for execution too, so without it the interpreter could not start a worker). Workers
+inherit the ruleset.
+
+What this does and does not do: it blocks a direct `execve` of a shell or anything else in
+`/usr/bin`. It does not cover the ELF loader itself: `ld.so <binary>` maps and runs any ELF file
+the process can read, without an `execve` of that file. So this rule is defence in depth; the
+boundary on Linux is the `bwrap` profile (plan D4, stage 4), which binds only the environment
+root and the system library folders.
 
 - Landlock present but the ruleset fails: exit with `FAILED` before stdin is read.
+- Landlock present but the interpreter's installation is `/`, `/usr` or `/usr/local` (a system
+  Python, not the managed one): exit with `FAILED`, because the CAS must run its own interpreter.
 - Landlock absent (kernel before 5.13, or disabled): carry on; `confinement` is `no-landlock`.
 - Not Linux: `confinement` is `not-linux` (Seatbelt or the AppContainer confines the server).
 
@@ -29,6 +36,7 @@ PR_SET_NO_NEW_PRIVS = 38
 PT_INTERP = 3
 
 FAILED = 71  # the exit status when Landlock is present but the ruleset could not be applied
+SYSTEM_PREFIXES = frozenset({"/", "/usr", "/usr/local"})  # a system Python: fail closed
 
 # What `confine()` decided; the stdin reader refuses to read before it is set.
 STATE = {"confinement": None}
@@ -83,9 +91,16 @@ def elf_interpreter(path: str) -> str | None:
 
 
 def exec_roots() -> list[str]:
-    """Where execution stays allowed: the interpreter's installation and its ELF loader."""
-    roots = [os.path.realpath(sys.base_prefix)]
-    loader = elf_interpreter(os.path.realpath(sys.executable))
+    """What stays executable: the interpreter's own file and its ELF loader.
+
+    Raises `ValueError` when the interpreter is a system one (installed at `/`, `/usr` or
+    `/usr/local`), so `confine()` fails closed."""
+    prefix = os.path.realpath(sys.base_prefix)
+    if prefix in SYSTEM_PREFIXES:
+        raise ValueError(f"the interpreter is installed at {prefix}, not in the CAS environment")
+    executable = os.path.realpath(sys.executable)
+    roots = [executable]
+    loader = elf_interpreter(executable)
     if loader is not None:
         roots.append(os.path.realpath(loader))
     return roots

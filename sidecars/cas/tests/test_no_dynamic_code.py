@@ -67,8 +67,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
 EXCEPTIONS = {
     "pool.py": {"subprocess", "os"},
     "limits_macos.py": {"ctypes"},
+    "limits_windows.py": {"ctypes"},
     "landlock.py": {"ctypes", "os", "open"},  # `os.open` of the interpreter and the roots
-    "worker.py": {"os"},  # `os._exit` and `os.getpid` only (test_worker_uses_os_narrowly)
+    "worker.py": {"os"},  # `os._exit`, `os.getpid` and `os.write` (test_worker_uses_os_narrowly)
     "limits_posix.py": {"open"},  # `/proc/self/statm` only, before the hook (test below)
 }
 # Attributes starting with `_` that a module may use (R2), each a documented need.
@@ -82,11 +83,27 @@ DEFAULT_IMPORTS = BASE_IMPORTS | {"types"}  # plus any `imperium_cas` module
 EXTRA_IMPORTS = {
     "pool.py": {"subprocess", "os", "signal", "sys", "threading", "time"},
     "limits_macos.py": {"ctypes", "sys"},
+    "limits_windows.py": {"ctypes", "ctypes.wintypes", "sys"},
     "limits_posix.py": {"resource", "signal", "sys"},
     "landlock.py": {"ctypes", "os", "sys"},
     "framing.py": {"json"},
     "worker.py": {"os", "sys", "time"},
     "__main__.py": {"sys"},
+    # Stage 3: the tools and the result printer use SymPy; the MCP front uses the SDK.
+    "tools.py": {"random", "sympy"},
+    "format.py": {"sympy"},
+    "nocodegen.py": {"sympy.polys", "mpmath"},
+    "server.py": {
+        "itertools",
+        "sys",
+        "time",
+        "functools",
+        "anyio",
+        "mcp_types",
+        "jsonschema",
+        "mcp.server.lowlevel",
+        "mcp.server.stdio",
+    },
 }
 # R4's list plus the sibling modules each pure module is built on. The plan's R4 names no sibling
 # imports, but `guard` needs `parse`'s tree types and every module needs the function table.
@@ -101,6 +118,20 @@ R4_ALLOWED = {
 SYMPY_NAMES = set(FUNCTIONS) | {"Symbol", "Integer", "Rational", "Matrix", "Eq", "Ne", "Lt", "Le"}
 SYMPY_NAMES |= {"Gt", "Ge", "Pow", "Add", "Mul", "I", "E", "pi", "oo"}
 SYMPY_NAMES |= {"Tuple", "true", "false", "sstr"}  # stage 2a: lists, isprime's result, printing
+# Stage 3: what the tools call (every one a fixed function or class, none parses a string) and
+# what the printer uses. No module but these three imports SymPy.
+TOOL_NAMES = {"Abs", "AccumBounds", "Complexes", "ConditionSet", "Equality", "Expr", "FiniteSet"}
+TOOL_NAMES |= {"I", "Integer", "Integral", "Limit", "Matrix", "MatrixBase", "Rational", "Reals"}
+TOOL_NAMES |= {"Rel", "Tuple", "Unequality", "default_sort_key", "diff", "expand", "factor"}
+TOOL_NAMES |= {"factorint", "integrate", "limit", "linsolve", "nonlinsolve", "series"}
+TOOL_NAMES |= {"simplify", "solveset"}
+SYMPY_IMPORTERS = {
+    "build.py": SYMPY_NAMES,
+    "tools.py": TOOL_NAMES,
+    "format.py": {"Equality", "MatrixBase", "Unequality", "latex", "sstr"},
+    "nocodegen.py": {"rings"},  # `from sympy.polys import rings`, to replace its MonomialOps
+}
+SYMPY_SUBMODULES = {"nocodegen.py": {"sympy.polys"}}
 
 
 def scan(source: str, module: str) -> list[str]:
@@ -161,11 +192,14 @@ def check_import(node, module: str, line: int, allowed_names: set[str]) -> list[
             module not in R4_ALLOWED and target.split(".")[0] == "imperium_cas"
         ):
             problems.append(f"R4 line {line}: {module} imports {target}")
-        if target == "sympy":
-            if module != "build.py" or not isinstance(node, ast.ImportFrom):
+        if target.split(".")[0] == "sympy":
+            allowed_targets = {"sympy"} | SYMPY_SUBMODULES.get(module, set())
+            if module not in SYMPY_IMPORTERS or not (
+                isinstance(node, ast.ImportFrom) and target in allowed_targets
+            ):
                 problems.append(f"R4 line {line}: sympy only as `from sympy import <name>`")
             for name in names:
-                if name not in SYMPY_NAMES:
+                if name not in SYMPY_IMPORTERS.get(module, set()):
                     problems.append(f"R4 line {line}: sympy name {name} is not in the table")
     return problems
 
@@ -331,7 +365,7 @@ def test_worker_uses_os_narrowly():
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
     }
-    assert used == {"_exit", "getpid"}
+    assert used == {"_exit", "getpid", "write"}  # `write`: the hook's refusal frame
 
 
 def test_the_r2_exception_is_per_module():
@@ -364,13 +398,37 @@ def test_limits_posix_opens_only_statm():
 
 def test_the_front_never_imports_sympy_or_the_worker():
     """`pool.py`, `landlock.py` and `__main__.py` reach neither SymPy nor `worker`/`build`."""
-    for name in ("pool.py", "landlock.py", "__main__.py", "limits_macos.py", "framing.py"):
+    for name in (
+        "pool.py",
+        "landlock.py",
+        "__main__.py",
+        "limits_macos.py",
+        "framing.py",
+        "server.py",
+    ):
         tree = ast.parse((PACKAGE / name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import | ast.ImportFrom):
                 for target in import_targets(node)[0]:
                     assert target.split(".")[0] != "sympy", (name, target)
-                    assert target not in {"imperium_cas.worker", "imperium_cas.build"}, (
+                    assert target not in {
+                        "imperium_cas.worker",
+                        "imperium_cas.build",
+                        "imperium_cas.tools",
+                        "imperium_cas.format",
+                    }, (
                         name,
                         target,
                     )
+
+
+def test_the_stage_3_modules_exist_and_sympy_stays_in_three():
+    names = {path.name for path in modules()}
+    assert {"server.py", "tools.py", "format.py"} <= names
+    assert scan("from sympy import solveset", "tools.py") == []
+    assert scan("from sympy import sympify", "tools.py") != []
+    assert scan("from sympy import Basic", "format.py") != []
+    assert scan("from sympy.parsing import sympy_parser", "tools.py") != []
+    assert scan("from sympy import solveset", "server.py") != []
+    assert scan("import anyio", "server.py") == []
+    assert scan("import anyio", "tools.py") != []

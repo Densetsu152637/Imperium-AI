@@ -43,6 +43,7 @@ import os
 import sys
 import time
 
+from . import nocodegen
 from .build import Builder, MathError, text
 from .framing import (
     CPU,
@@ -62,6 +63,8 @@ from .framing import (
 )
 from .functions import FUNCTIONS
 from .parse import CasInputError, render_error
+from .tools import TOOLS, run_tool
+from .tools import WARM_UP as TOOL_WARM_UP
 
 if sys.platform != "win32":
     from . import limits_posix
@@ -69,9 +72,9 @@ if sys.platform != "win32":
 MAX_INT_DIGITS = 100_000
 
 # Audit events a warmed-up worker may raise while it handles a call, measured over the hostile
-# corpus and every table entry (stage 2a, tests/test_audit_hook.py): only `array.__new__`, which
-# SymPy's prime sieve raises each time it grows (`factorial(25000)`, `prime(10^6)`). Stage 3
-# measures it again over the eleven tools. `compile`, `exec`, `import`, `open`, `os.*`,
+# corpus and every table entry (stage 2a) and over the eleven tools (stage 3,
+# tests/test_audit_hook.py): only `array.__new__`, which SymPy's prime sieve raises each time it
+# grows (`factorial(25000)`, `prime(10^6)`). `compile`, `exec`, `import`, `open`, `os.*`,
 # `subprocess.*`, `socket.*` and `ctypes.*` must never be added.
 ALLOWED_EVENTS: frozenset[str] = frozenset({"array.__new__"})
 
@@ -112,10 +115,8 @@ def parse_limits(argv: list[str]) -> dict[str, int]:
 
 
 def build_call(request: dict) -> dict:
-    """Stage 2a's one call: parse, guard and build an expression, and return its text.
-
-    Stage 3 replaces this with the eleven tools.
-    """
+    """Parse, guard and build one expression and return its text: the worker's own check call
+    (stage 2a), which tests use. The front never sends it; it offers only the eleven tools."""
     expression = request.get("expression")
     if not isinstance(expression, str):
         return {"ok": False, "category": "parse", "message": "parse: expression must be a string"}
@@ -128,7 +129,18 @@ def build_call(request: dict) -> dict:
         return {"ok": False, "category": "math", "message": f"math: {exc.message}"}
 
 
-HANDLERS = {"build": build_call}
+def tool_call(request: dict) -> dict:
+    """One of the eleven tools: `{"tool": name, "args": {...}}`."""
+    name, args = request["tool"], request.get("args")
+    try:
+        return run_tool(name, args)
+    except CasInputError as exc:
+        return {"ok": False, "category": exc.category, "message": render_error(exc, exc.source)}
+    except MathError as exc:
+        return {"ok": False, "category": "math", "message": f"math: {exc.message}"}
+
+
+HANDLERS = {"build": build_call, **dict.fromkeys(TOOLS, tool_call)}
 
 
 def handle(request: dict) -> dict:
@@ -140,7 +152,10 @@ def handle(request: dict) -> dict:
 
 
 def warm_up() -> None:
-    """Run every code path a call can take once, so nothing is imported lazily under the hook."""
+    """Run every code path a call can take once, so nothing is imported lazily under the hook.
+
+    First, SymPy's polynomial rings stop generating code at run time (`nocodegen`)."""
+    nocodegen.install()
     for function in FUNCTIONS.values():
         args = ", ".join(["7"] * function.min_args)
         for expression in (f"{function.name}({args})", f"{function.name}(x)"):
@@ -152,6 +167,8 @@ def warm_up() -> None:
         handle({"tool": "build", "expression": bad})
     handle({"tool": "build", "expression": "x", "assume": {"x": ["positive", "negative"]}})
     handle({"tool": "build", "expression": "x", "assume": {"__class__": ["real"]}})
+    for name, args in TOOL_WARM_UP:
+        handle({"tool": name, "args": args})
     encode_frame({"ok": True, "text": "x"}, REPLY_CAP)
 
 
@@ -159,15 +176,52 @@ def warm_up() -> None:
 STATE = {"audit_hook": False}
 
 
+def printable(text, limit: int = 80) -> str:
+    text = text[-limit:] if isinstance(text, str) else "?"
+    return "".join(ch if " " <= ch < "\x7f" else "?" for ch in text)
+
+
+def refusal_frame(event, args=()) -> bytes:
+    """The reply frame the hook writes before it exits: the refused event's name and, for
+    `compile` and `exec`, where the code came from (the file name SymPy or Python gave it, never
+    the source), each at most 80 printable ASCII characters."""
+    where = ""
+    try:
+        if event == "compile" and len(args) > 1 and isinstance(args[1], str):
+            where = args[1]
+        elif event == "exec" and args:
+            where = args[0].co_filename
+    except Exception:  # noqa: BLE001, S110 - a report detail, never worth failing for
+        pass
+    reply = {"ok": False, "category": "refused", "event": printable(event)}
+    if where:
+        reply["where"] = printable(where)
+    return encode_frame(reply, REPLY_CAP)
+
+
 def install_audit_hook(allowed: frozenset[str] = ALLOWED_EVENTS) -> None:
     """Install the allow-list hook. It cannot be removed, and it exits rather than raises.
 
     `os._exit` and the exit code are bound as defaults, so rebinding `os` or the module's names
-    later cannot change what the hook does.
+    later cannot change what the hook does. Before exiting it writes one reply frame naming the
+    event (only its name, which is Python's or SymPy's, never input), straight to the stdout
+    file descriptor, so the front can say which event was refused.
     """
 
-    def hook(event: str, args: tuple, allowed=allowed, exit=os._exit, status=REFUSED) -> None:
+    def hook(
+        event: str,
+        args: tuple,
+        allowed=allowed,
+        exit=os._exit,
+        write=os.write,
+        status=REFUSED,
+        frame=refusal_frame,
+    ) -> None:
         if event not in allowed:
+            try:
+                write(1, frame(event, args))
+            except BaseException:  # noqa: BLE001, S110 - exiting matters, the report does not
+                pass
             exit(status)
 
     sys.addaudithook(hook)

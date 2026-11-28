@@ -88,8 +88,17 @@ def test_the_stdin_reader_checks_the_record_before_its_first_read():
 
 
 def test_the_front_starts_and_ends_with_stdin():
-    """`python -m imperium_cas` confines itself, then serves until stdin ends."""
-    result = run_python("import runpy; runpy.run_module('imperium_cas', run_name='__main__')")
+    """`python -m imperium_cas` confines itself, then serves MCP until stdin ends.
+
+    The SDK imports `pywin32` on Windows, whose own `.pth` adds its folders, so the site-packages
+    folder is added as a site directory (`PYTHONPATH` alone skips `.pth` files; plan stage 6)."""
+    import sysconfig
+
+    site = sysconfig.get_paths()["purelib"]
+    result = run_python(
+        f"import site; site.addsitedir({site!r})\n"
+        "import runpy; runpy.run_module('imperium_cas', run_name='__main__')"
+    )
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert result.stdout == b""
 
@@ -138,12 +147,17 @@ except OSError as exc:
 """
 
 
+SYSTEM_PYTHON = os.path.realpath(sys.base_prefix) in landlock.SYSTEM_PREFIXES
+
+
 @NEEDS_LANDLOCK
 def test_execve_is_refused_for_the_front_and_its_children():
-    sh = os.path.realpath("/bin/sh")
-    if sh.startswith(os.path.realpath(sys.base_prefix) + os.sep):
-        pytest.skip("the interpreter is installed where /bin/sh is; the rule allows both")
     result = run_python(EXEC_PROBE)
+    if SYSTEM_PYTHON:
+        # A system interpreter (installed where /bin/sh is) is refused outright: fail closed.
+        assert result.returncode == landlock.FAILED, result.stderr.decode(errors="replace")
+        assert b"not in the CAS environment" in result.stderr
+        return
     lines = result.stdout.decode().splitlines()
     assert len(lines) == 4, (lines, result.stderr.decode(errors="replace"))
     assert lines[:2] == ["landlock", str(errno.EACCES)]
@@ -177,5 +191,55 @@ def test_the_elf_loader_is_found():
         pytest.skip("ELF is Linux here")
     loader = landlock.elf_interpreter(os.path.realpath(sys.executable))
     assert loader is None or os.path.exists(loader)
+    if SYSTEM_PYTHON:
+        with pytest.raises(ValueError, match="not in the CAS environment"):
+            landlock.exec_roots()
+        return
     roots = landlock.exec_roots()
-    assert roots[0] == os.path.realpath(sys.base_prefix)
+    # Only the interpreter's own file (not its whole installation) and the loader.
+    assert roots[0] == os.path.realpath(sys.executable)
+    assert len(roots) == (1 if loader is None else 2)
+
+
+SYSTEM_PREFIX = """
+import runpy, sys
+sys.base_prefix = {prefix!r}
+runpy.run_module("imperium_cas", run_name="__main__")
+"""
+
+
+@NEEDS_LANDLOCK
+@pytest.mark.parametrize("prefix", sorted(landlock.SYSTEM_PREFIXES))
+def test_a_system_interpreter_fails_closed(prefix):
+    request = encode_frame({"tool": "build", "expression": "1"}, REQUEST_CAP)
+    result = run_python(SYSTEM_PREFIX.format(prefix=prefix), stdin=request)
+    assert result.returncode == landlock.FAILED
+    assert result.stdout == b""
+    assert b"not in the CAS environment" in result.stderr
+
+
+@NEEDS_LANDLOCK
+def test_another_program_in_the_installation_cannot_be_executed():
+    """The rule is the interpreter's file, not its folder: another executable beside it (`pydoc3`,
+    `idle3` and the like in a uv-managed install) is refused."""
+    probe = (
+        "import errno, os, sys\n"
+        "from imperium_cas import landlock\n"
+        "landlock.confine()\n"
+        "others = [os.path.join(os.path.dirname(os.path.realpath(sys.executable)), name)\n"
+        "          for name in os.listdir(os.path.dirname(os.path.realpath(sys.executable)))]\n"
+        "target = next((p for p in sorted(others) if os.path.isfile(p) and os.access(p, os.X_OK)\n"
+        "               and os.path.realpath(p) != os.path.realpath(sys.executable)), None)\n"
+        "if target is None:\n"
+        "    print('none')\n"
+        "else:\n"
+        "    try:\n"
+        "        os.execv(target, [target, '--version'])\n"
+        "    except OSError as exc:\n"
+        "        print(exc.errno)\n"
+    )
+    if SYSTEM_PYTHON:
+        pytest.skip("a system interpreter fails closed (test above)")
+    result = run_python(probe)
+    out = result.stdout.decode().strip()
+    assert out in {"none", str(errno.EACCES)}, (out, result.stderr.decode(errors="replace"))

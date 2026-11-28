@@ -81,7 +81,7 @@ MEASUREMENTS: list[str] = []
 
 
 def worker_env() -> dict[str, str]:
-    """The environment for a test worker: the package and the tests on the path, hash seed 0.
+    """The environment for a test worker: the package and the tests on the path.
 
     Production workers run the base interpreter under `-I` and find the package and SymPy
     through a `.pth` file (test_pid.py checks that path in CI). Tests run the base interpreter
@@ -92,7 +92,7 @@ def worker_env() -> dict[str, str]:
 
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([SRC, TESTS, sysconfig.get_paths()["purelib"]])
-    env["PYTHONHASHSEED"] = "0"
+    env.pop("PYTHONHASHSEED", None)  # production workers run under `-I`, which ignores it
     return env
 
 
@@ -153,14 +153,60 @@ def install_string_trap() -> None:
 
 
 def make_spawner(script: str | None = None, *extra: str):
-    """A `PosixSpawner` for `imperium_cas.worker` (or a test worker script), with the test
-    environment instead of `-I` (see `worker_env`). On Windows the worker applies no limit, so
-    only the wall clock and cancellation hold there; tests opt in to that explicitly."""
-    from imperium_cas.pool import PosixSpawner
+    """A spawner for `imperium_cas.worker` (or a test worker script), with the test environment
+    instead of `-I` (see `worker_env`). On Windows it is `WindowsSpawner`: the worker applies no
+    limit itself there, so each one runs in a Job Object with its CPU and memory limits."""
+    from imperium_cas.pool import PosixSpawner, WindowsSpawner
 
     target = [os.path.join(TESTS, "workers", script)] if script else ["-m", "imperium_cas.worker"]
-    return PosixSpawner(
-        command=[BASE_PYTHON, "-B", *target, *extra],
-        env=worker_env(),
-        unlimited_on_windows=True,
+    command = [BASE_PYTHON, "-B", *target, *extra]
+    if sys.platform == "win32":  # each worker in a Job Object with its limits
+        return WindowsSpawner(command=command, env=worker_env())
+    return PosixSpawner(command=command, env=worker_env())
+
+
+# --- Stage 3: isolated (`-I`) processes and the corpus as tool calls ---
+
+
+def isolated_command(module: str) -> list[str]:
+    """Run `module` as `__main__` under `-I -B`, as production does, without installing anything.
+
+    `-I` ignores `PYTHONPATH`, so a two-line bootstrap passed with `-c` puts `src` and the venv's
+    `site-packages` on `sys.path` and runs the module with `runpy` (production reaches both
+    through a `.pth` file, stage 6). `-I` also ignores `PYTHONHASHSEED`, so every such process
+    has its own random hash seed."""
+    import sysconfig
+
+    paths = [SRC, sysconfig.get_paths()["purelib"]]
+    bootstrap = (
+        f"import sys, runpy; sys.path[:0] = {paths!r}\n"
+        f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)"
     )
+    return [BASE_PYTHON, "-I", "-B", "-c", bootstrap]
+
+
+def isolated_spawner():
+    """A `PosixSpawner` for `imperium_cas.worker` under `-I` (see `isolated_command`)."""
+    from imperium_cas.pool import PosixSpawner, WindowsSpawner
+
+    command = isolated_command("imperium_cas.worker")
+    if sys.platform == "win32":
+        return WindowsSpawner(command=command, env={"SYSTEMROOT": os.environ["SYSTEMROOT"]})
+    return PosixSpawner(command=command, env={})
+
+
+def tool_requests(text: str) -> list[tuple[str, dict]]:
+    """One corpus line as the main argument of each of the eleven tools."""
+    return [
+        ("simplify", {"expression": text}),
+        ("expand", {"expression": text}),
+        ("factor", {"expression": text}),
+        ("solve", {"equations": [text]}),
+        ("differentiate", {"expression": text, "variable": "x"}),
+        ("integrate", {"expression": text, "variable": "x"}),
+        ("limit", {"expression": text, "variable": "x", "to": "0"}),
+        ("series", {"expression": text, "variable": "x"}),
+        ("matrix", {"matrix": text, "operation": "det"}),
+        ("evaluate", {"expression": text, "digits": 20}),
+        ("equal", {"left": text, "right": "x"}),
+    ]

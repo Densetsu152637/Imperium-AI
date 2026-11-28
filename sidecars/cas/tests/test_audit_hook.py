@@ -10,7 +10,9 @@ import pytest
 
 from imperium_cas import worker
 from imperium_cas.functions import FUNCTIONS
-from support import MEASUREMENTS, recording, spawn_worker
+from imperium_cas.pool import Limits, Pool
+from imperium_cas.tools import WARM_UP as TOOL_WARM_UP
+from support import MEASUREMENTS, make_spawner, recording, spawn_worker
 from test_hostile import ENTRIES
 from test_worker import call
 
@@ -18,7 +20,7 @@ FORBIDDEN = ("open", "socket", "subprocess", "compile", "exec", "import")
 
 
 # Actions whose exception reaches the worker's own handling (stage 2b's crash wrapper).
-ESCAPES = ("escape", "bad-str", "memory", "rlimits")
+ESCAPES = ("escape", "bad-str", "memory", "rlimits", "ring", "nsimplify")
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +36,9 @@ def probes():
 def test_forbidden_events_end_the_worker_with_refused(probes, action):
     ready, reply, code = probes[action]
     assert ready["ready"]
-    assert reply is None, f"{action} survived the hook: {reply}"
+    # The hook's own last frame names the event, and nothing else.
+    assert reply is not None and set(reply) <= {"ok", "category", "event", "where"}, reply
+    assert reply["category"] == "refused" and reply["event"], f"{action} survived: {reply}"
     assert code == worker.REFUSED
 
 
@@ -86,6 +90,36 @@ def test_describe_never_raises():
     assert worker.describe(ValueError("plain")) == "plain"
 
 
+def test_a_new_polynomial_ring_generates_no_code_under_the_hook(probes):
+    """`nonlinsolve` makes a ring per new set of symbols; SymPy's own `MonomialOps` would `exec`
+    generated source there, which the hook refuses. `nocodegen` replaces it."""
+    _, reply, code = probes["ring"]
+    assert reply == {"ok": True, "ring": True}, (reply, code)
+    assert code == worker.EXIT_OK
+
+
+def test_nsimplify_parses_no_string_under_the_hook(probes):
+    """SymPy reaches `nsimplify` from inside `Expr.equals` and relational simplification; its
+    `mpmath.identify` path would `eval` and `sympify` a string, which `nocodegen` turns off."""
+    _, reply, code = probes["nsimplify"]
+    assert reply is not None and reply.get("ok") is True, (reply, code)
+    assert code == worker.EXIT_OK
+
+
+def test_the_plain_monomial_operations_match_sympy():
+    from sympy.polys.monomials import MonomialOps as Generated
+
+    from imperium_cas.nocodegen import MonomialOps as Plain
+
+    a, b = (3, 0, 2), (1, 2, 2)
+    generated, plain = Generated(3), Plain(3)
+    for name in ("mul", "ldiv", "div", "lcm", "gcd"):
+        assert getattr(generated, name)()(a, b) == getattr(plain, name)()(a, b), name
+        assert getattr(generated, name)()(b, a) == getattr(plain, name)()(b, a), name
+    assert generated.pow()(a, 3) == plain.pow()(a, 3)
+    assert generated.mulpow()(a, b, 2) == plain.mulpow()(a, b, 2)
+
+
 def test_an_allowed_call_survives(probes):
     ready, reply, code = probes["none"]
     assert reply == {"ok": True, "survived": "none"}
@@ -98,12 +132,20 @@ def corpus_inputs() -> list[str]:
     return inputs + ["factorial(25000)", "prime(10^6)", "binomial(10^5, 5*10^4)", "10^99998"]
 
 
+def probe_pool() -> Pool:
+    """Probe workers under their limits (Job Objects on Windows): hostile inputs never run in
+    this process."""
+    return Pool(make_spawner("audit_probe.py"), Limits(cpu_seconds=60, wall_seconds=120))
+
+
 def test_the_corpus_passes_the_real_hook_in_one_worker():
     """Every table entry and corpus line, built inside one worker under the installed hook."""
-    proc = spawn_worker(script="audit_probe.py")
-    ready, reply, code = call(proc, {"action": "corpus", "expressions": corpus_inputs()})
-    assert reply == {"ok": True, "count": len(corpus_inputs())}, (reply, code)
-    assert code == worker.EXIT_OK
+    pool = probe_pool()
+    try:
+        reply = pool.call({"action": "corpus", "expressions": corpus_inputs()})
+    finally:
+        pool.close()
+    assert reply == {"ok": True, "count": len(corpus_inputs())}, reply
 
 
 def test_the_allow_list_never_holds_dangerous_events():
@@ -113,19 +155,41 @@ def test_the_allow_list_never_holds_dangerous_events():
 
 
 def test_measured_events_are_inside_the_allow_list():
-    """Warm up as a worker does, then record every event over the table and the corpus."""
+    """The warm-up's own fixed calls, recorded in this process (small inputs only; the corpus
+    runs in workers above): every event after the warm-up is in the allow-list."""
     previous = sys.get_int_max_str_digits()
     sys.set_int_max_str_digits(worker.MAX_INT_DIGITS)
     try:
         worker.warm_up()
         seen: dict[str, str] = {}
-        for text in corpus_inputs():
+        for name, args in TOOL_WARM_UP:
             with recording() as events:
-                worker.handle({"tool": "build", "expression": text})
+                worker.handle({"tool": name, "args": args})
                 for event in events:
-                    seen.setdefault(event, text[:40])
+                    seen.setdefault(event, name)
     finally:
         sys.set_int_max_str_digits(previous)
     MEASUREMENTS.append(f"audit events in a warmed worker ({sys.platform}): {sorted(seen)}")
     stray = {event: text for event, text in seen.items() if event not in worker.ALLOWED_EVENTS}
-    assert not stray, f"events outside the allow-list (first input that raised each): {stray}"
+    assert not stray, f"events outside the allow-list (first tool that raised each): {stray}"
+
+
+# Inputs CI saw refused (`compile`) on some hash seeds; each runs in several fresh workers, so
+# several seeds, with a recording hook that reports where an event came from.
+SEED_DEPENDENT = [
+    ("simplify", {"expression": "x+1<y+2"}),
+    ("simplify", {"expression": "x>=y"}),
+    ("simplify", {"expression": "x<=y"}),
+    ("equal", {"left": "x_1_2", "right": "x"}),
+]
+
+
+@pytest.mark.parametrize("attempt", range(6))
+def test_seed_dependent_paths_raise_no_event_outside_the_allow_list(attempt):
+    pool = Pool(make_spawner("events_probe.py"), Limits(cpu_seconds=30, wall_seconds=60))
+    try:
+        reply = pool.call({"calls": SEED_DEPENDENT})
+    finally:
+        pool.close()
+    assert reply.get("ok"), reply
+    assert reply["seen"] == [], "\n".join([reply["seen"][0]["event"], *reply["seen"][0]["stack"]])

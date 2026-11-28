@@ -91,7 +91,7 @@ from sympy import (
 )
 
 from .functions import FUNCTIONS
-from .guard import check
+from .guard import check, check_expansion
 from .parse import (
     BinOp,
     Call,
@@ -280,6 +280,10 @@ class Builder:
     """Builds trees for one call. Symbols with the same name are the same `Symbol`."""
 
     assume: dict | None = None
+    # The expansion estimate's limits for this call's tool (`guard.check_expansion`), or `None`
+    # for a tool that does not expand: the most terms, and for `expand` the most characters.
+    max_terms: float | None = None
+    max_chars: float | None = None
 
     def __post_init__(self) -> None:
         given = {} if self.assume is None else self.assume
@@ -360,8 +364,16 @@ class Builder:
 
     def expression(self, text: str, *, expand: bool = False):
         """Parse, guard and build one expression string."""
-        root = parse(text)
-        check(root, expand=expand)
+        try:
+            root = parse(text)
+            check(root, expand=expand)
+            if self.max_terms is not None:
+                check_expansion(
+                    root, max_terms=self.max_terms, max_chars=self.max_chars if expand else None
+                )
+        except CasInputError as exc:
+            exc.source = text  # for the caret line of the error
+            raise
         return self.build(root)
 
     def at(self, mapping) -> dict:
