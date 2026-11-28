@@ -92,7 +92,7 @@ pub struct LocalModelListResult {
     /// `models.local.enabled`: the global switch. False (the default for a new setup) means no
     /// local model is routed to, picked for a session, started, downloaded or installed; the
     /// models below are still listed, each `enabled` showing its own switch. A model runs only
-    /// when this and its own switch are both on. A daemon older than protocol 0.70 does not send
+    /// when this and its own switch are both on. A daemon older than protocol 0.71 does not send
     /// it; clients then read it as on.
     #[serde(default = "local_enabled_default")]
     pub local_enabled: bool,
