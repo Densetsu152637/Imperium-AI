@@ -433,7 +433,10 @@ and `environments.agent_update` (protocol 0.28)
     links in the folder, the safety floor, an inert-extension allowlist, the web domain and
     `robots.txt` rules and the per-agent local-files lock. Not built: downloading through the browser's own session
     (cookies), a download list in the desktop panel, scripted `blob:` downloads, caching search
-    results, and a per-call "fetch fresh" option.
+    results, and a per-call "fetch fresh" option. Planned: a rework of the browser to work like
+    Claude's (a live pane the user can take over, accessibility-tree reads with element
+    references, per-site approval, and enforced rules on credentials, CAPTCHAs and
+    consequential actions) ([plan](plans/browser-claude-parity.md)).
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a
     connection choose which notification topics it receives, only ever narrowing what it may
     receive anyway; and `daemon.socket` (on by default since evaluation runs and plugin approvals need it) also serves the same protocol, with
