@@ -28,7 +28,7 @@ use imperium_protocol::session::{
 };
 use tokio::sync::mpsc;
 
-use crate::{block_on, connect};
+use crate::{block_on, connect, thinking};
 
 pub fn run(
     env: Option<String>,
@@ -38,6 +38,7 @@ pub fn run(
     worktree: Option<Option<String>>,
     subfolder: Option<String>,
     read_only: bool,
+    show_thinking: bool,
 ) -> anyhow::Result<()> {
     // With neither --env nor --project the session starts in the built-in Home environment,
     // which has no project folders to put on a worktree.
@@ -128,6 +129,7 @@ pub fn run(
         let mut lines = read_lines();
         let mut chat = Chat {
             context_summary,
+            show_thinking,
             ..Chat::default()
         };
         chat.prompt();
@@ -207,6 +209,10 @@ enum Flow {
 #[derive(Default)]
 struct Chat {
     context_summary: bool,
+    /// `--show-thinking`: print a model's reasoning, not only its one-line summary.
+    show_thinking: bool,
+    /// A run of reasoning text is being printed (`show_thinking` only).
+    thinking_open: bool,
     busy: bool,
     /// Permission requests and question batches in the order asked; the next line answers the
     /// first.
@@ -778,6 +784,17 @@ impl Chat {
                 std::io::stdout().flush().ok();
             }
             SessionEvent::TextDelta { .. } => {}
+            // Reasoning is one line (or, with --show-thinking, its text too); subagents' stay
+            // out of the terminal, like their replies.
+            SessionEvent::ThinkingDelta { .. } | SessionEvent::ThinkingFinished { .. } if root => {
+                if let Some(output) =
+                    thinking::print_for(self.show_thinking, &mut self.thinking_open, &event)
+                {
+                    print!("{output}");
+                    std::io::stdout().flush().ok();
+                }
+            }
+            SessionEvent::ThinkingDelta { .. } | SessionEvent::ThinkingFinished { .. } => {}
             SessionEvent::ToolStarted { summary, .. } => println!("\n{tag}· {summary}"),
             SessionEvent::PermissionRequested {
                 request_id,

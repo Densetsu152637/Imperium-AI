@@ -39,6 +39,19 @@ pub enum SessionEvent {
     },
     /// A fragment of the agent's reply.
     TextDelta { text: String },
+    /// A fragment of the model's reasoning, streamed as it thinks. It is for display only: a
+    /// client shows it behind a collapsed "Thinking" block, and nothing else reads it (it
+    /// never goes back to a model, into a summary, a title, memory, the search index or a
+    /// notification).
+    ThinkingDelta { text: String },
+    /// The model stopped thinking: its reply began, or the call ended (with tool calls or
+    /// without a reply). One follows each run of `thinking_delta`s, so a turn can hold several
+    /// thinking blocks.
+    ThinkingFinished {
+        /// Time from the run's first fragment to its end.
+        #[ts(type = "number")]
+        duration_ms: u64,
+    },
     /// A tool call is about to run (after any approval).
     ToolStarted {
         call_id: String,

@@ -21,7 +21,11 @@ import type { ToolLoadVia } from "./ToolLoadVia";
 /**
  * Something that happened in a session, in order.
  */
-export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
+export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "thinking_delta", text: string, } | { "type": "thinking_finished", 
+/**
+ * Time from the run's first fragment to its end.
+ */
+duration_ms: number, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
 /**
  * The call's JSON arguments as the model wrote them, truncated for display; absent in
  * history recorded before arguments were sent.

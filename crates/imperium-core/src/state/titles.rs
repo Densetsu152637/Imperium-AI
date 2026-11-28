@@ -165,9 +165,7 @@ pub(super) fn watch(
                         message = Some(text);
                     }
                 }
-                SessionEvent::TextDelta { text } if reply.len() < EXCHANGE_CHARS => {
-                    reply.push_str(&text);
-                }
+                SessionEvent::TextDelta { .. } => collect_reply(&mut reply, event.event),
                 SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. } => break,
                 _ => {}
             }
@@ -187,6 +185,16 @@ pub(super) fn watch(
             tracing::warn!(session = %session_id, %error, "could not record the session's title");
         }
     });
+}
+
+/// Adds the reply text of `event` to what a title is written from: the reply only, never a
+/// model's reasoning (`thinking_delta`), which is display-only.
+fn collect_reply(reply: &mut String, event: SessionEvent) {
+    if let SessionEvent::TextDelta { text } = event
+        && reply.len() < EXCHANGE_CHARS
+    {
+        reply.push_str(&text);
+    }
 }
 
 /// A title written by a model, when one costs nothing to ask and answers sensibly.
@@ -359,6 +367,23 @@ mod tests {
         );
         assert_eq!(from_first_message("hello?"), "Hello");
         assert_eq!(from_first_message("   "), "");
+    }
+
+    #[test]
+    fn the_reply_a_title_is_written_from_leaves_reasoning_out() {
+        let mut reply = String::new();
+        for event in [
+            SessionEvent::ThinkingDelta {
+                text: "zanzibar deliberation".into(),
+            },
+            SessionEvent::ThinkingFinished { duration_ms: 5 },
+            SessionEvent::TextDelta {
+                text: "Fixed it.".into(),
+            },
+        ] {
+            collect_reply(&mut reply, event);
+        }
+        assert_eq!(reply, "Fixed it.");
     }
 
     #[test]

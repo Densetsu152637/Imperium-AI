@@ -38,6 +38,30 @@ per second, cost) followed by that call's `context_breakdown` ([context
 management](#context-management)), and `turn_completed` (token usage, cost, model calls) or
 `turn_failed`.
 
+### Thinking (display only, implemented)
+
+A model that reasons streams its reasoning (`reasoning_content`, or `reasoning` on some
+OpenAI-compatible services) before its reply. The engine passes each fragment on as a
+`thinking_delta` session event and closes the run with `thinking_finished` (`duration_ms`:
+from the run's first fragment to the first reply text, or to the end of the call when it went on
+to tool calls or no reply). A turn can hold several runs, around its tool calls, and each has its
+own pair. Both events are journaled, so a reopened or replayed session shows the same blocks
+and durations. The text is display-only: it is not part of the reply that is stored as the
+assistant message, so it never goes back to a model in a later request, a compaction summary
+or a title prompt, and it is not saved to memory, indexed by session search, put in an export
+(`session.export`) or put in a notification. A
+model client reports reasoning through `ChatClient::stream_deltas` (the default delivers reply text
+only, so a client that does not stream reasoning shows none); the OpenAI-compatible and llama.cpp
+clients do. Anthropic's extended thinking, sent as a `thinking` request, is not mapped yet: its
+text arrives in a field this parser does not read, which is a follow-up. A headless
+`imperium run` result and its prompt hashes carry no thinking.
+
+`imperium chat` prints a run of thinking as one line, `thinking… (10 seconds)` (the duration is
+worded: `less than a second`, `1 second`, `1 minute`, `2 minutes 5 seconds`); `--show-thinking`
+prints the text as it streams above that line. Subagents' thinking stays out of the terminal, as
+their replies do. The desktop app shows each run as a collapsed block
+([07](07-desktop-ui.md#thinking-implemented)).
+
 **Model clients (implemented):** the agent calls its model through a `ChatClient`
 (`imperium-models`), built for the turn from the session's `ChatClients` by the endpoint's `kind`
 ([configuration](10-configuration.md)): it streams a completion with its usage and may offer the
