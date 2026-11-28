@@ -1095,7 +1095,20 @@ and record are kept: `session.list` still returns it, with `archived: true` and 
 live to follow. It takes no messages. `session.control` `archive` archives it and `unarchive`
 resumes it where it left off; both are announced as `session.updated` (unarchiving also as
 `session.created`), and the state is kept in the session's meta file, so it survives restarts.
-`session.delete` deletes an archived session as well. From the CLI: `imperium session archive
+`session.delete` deletes an archived session as well.
+
+**Deleting a session for good (implemented, protocol 0.67):** the desktop app's session menu has
+*Delete…* for every session, archived or not, after a confirmation that names the session. The
+app sends `session.erase { session_id }`, which is the desktop app's alone (the same gate as
+turning auto-merge on: the caller must be the installed app on the local socket, so an agent, a
+mod, a paired phone, another local process or a plain token holder gets `-32005`, and a daemon
+in server mode `-32010`, feature `session_erase`). The daemon stops the session if it runs, then removes everything it stored
+for it: the journal (the transcript), the record, the saved conversation, saved tool results,
+the agents' kept state, attachments, checkpoints and the scratch folder, and announces
+`session.deleted`. It removes nothing else: the session's git worktrees, the project's files and
+every branch stay (`session.delete` with `remove_worktrees` is how those go, from the command line).
+An environment's persistent agent is refused. From the CLI: `imperium session delete <id>` stays
+as it was. Other commands: `imperium session archive
 <id>`, `imperium session unarchive <id>`, and `imperium session list [--archived]`.
 
 Sessions are also archived on their own:

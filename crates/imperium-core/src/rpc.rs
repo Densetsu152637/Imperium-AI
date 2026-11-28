@@ -29,12 +29,13 @@ use imperium_protocol::methods::{
     ProjectListResult, ProjectMessage, ProjectMessageParams, ProjectMessageResult, ScheduleList,
     ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult,
     SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult,
-    SessionDelete, SessionDeleteParams, SessionExport, SessionExportParams, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionRunTool,
-    SessionRunToolParams, SessionRunToolResult, SessionSearch, SessionSearchParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
-    SessionToolResult, SessionToolResultParams, SessionToolResultResult, SessionTools,
-    SessionToolsParams, SessionToolsResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionDelete, SessionDeleteParams, SessionErase, SessionEraseParams, SessionExport,
+    SessionExportParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
+    SessionRespondParams, SessionRunTool, SessionRunToolParams, SessionRunToolResult,
+    SessionSearch, SessionSearchParams, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSubscribeResult, SessionToolResult, SessionToolResultParams,
+    SessionToolResultResult, SessionTools, SessionToolsParams, SessionToolsResult, Shutdown,
+    ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
 use imperium_protocol::methods::{

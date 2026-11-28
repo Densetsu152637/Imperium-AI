@@ -1,3 +1,5 @@
+use imperium_protocol::jsonrpc::server_features;
+
 use super::*;
 
 impl Connection {
@@ -338,6 +340,18 @@ impl Connection {
                 call::<SessionDelete>(c.params.take(), |params: SessionDeleteParams| {
                     self.state
                         .delete_session(&params.session_id, params.remove_worktrees)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
+            // The desktop app's alone (see `SessionErase`): refused on a server before any
+            // caller is looked at, then for every caller that is not the installed app.
+            SessionErase::NAME => {
+                call::<SessionErase>(c.params.take(), |params: SessionEraseParams| {
+                    self.refuse_on_server(server_features::SESSION_ERASE)?;
+                    self.require_desktop_app_for("erase a session", "erase a session")?;
+                    self.state
+                        .erase_session(&params.session_id)
+                        .map(|()| Accepted {})
                         .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
                 })
             }

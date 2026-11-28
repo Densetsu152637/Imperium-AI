@@ -21,6 +21,7 @@ import type { SearchClient } from "../sessions/sessionSearch";
 import { agentOfSession, agentTitle, startedByNote } from "../sessions/agents";
 import { formatAgo } from "../shared/ago";
 import { branchNote, nestBranches } from "../sessions/branches";
+import { deleteItem } from "../sessions/deleteSession";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions/sessions";
 import { SessionSearch } from "./SessionSearch";
 import { statusText } from "./StatusBadge";
@@ -201,6 +202,7 @@ export function SessionsPanel({
   onSelect,
   onSetPinned,
   onSetArchived,
+  onDelete,
   onRename,
   onExport,
   onShowEnvironment,
@@ -219,6 +221,8 @@ export function SessionsPanel({
   onSetPinned: (sessionId: string, pinned: boolean) => void;
   /** Archives a session (`true`) or resumes an archived one. */
   onSetArchived: (sessionId: string, archived: boolean) => void;
+  /** Asks to delete a session for good (the app confirms first); no Delete item without it. */
+  onDelete?: (sessionId: string) => void;
   /** Renames a session; an empty title lets it be titled automatically again. */
   onRename: (sessionId: string, title: string) => void;
   /** Exports a session's transcript (running or archived) as Markdown or JSON; no export items without it. */
@@ -341,6 +345,9 @@ export function SessionsPanel({
                 onSelect: () => env && onShowEnvironment(env.id),
                 disabled: !env || scope?.id === env.id,
               },
+              ...(onDelete
+                ? [{ ...deleteItem(session.summary), icon: Trash, separatorBefore: true, onSelect: () => onDelete(id) }]
+                : []),
             ]}
           />
         </div>

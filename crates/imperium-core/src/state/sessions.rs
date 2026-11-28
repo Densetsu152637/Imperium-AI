@@ -386,6 +386,35 @@ impl DaemonState {
         Ok(result)
     }
 
+    /// Permanently deletes a session, running or archived (`session.erase`): it is stopped, then
+    /// everything stored for it goes, the transcript included (the journal, the saved
+    /// conversation and the branch turns file beside it, on top of what [`Self::delete_session`]
+    /// removes). Only the session's own storage is touched: its git worktrees stay, and so do
+    /// the project's files and every branch. A persistent agent's session is refused.
+    pub fn erase_session(&self, id: &str) -> Result<(), String> {
+        // Taken before the delete forgets it; stopped only once the delete has not refused.
+        let running = self.session(id);
+        // Refuses an id that names no session, so `id` is a known one below.
+        self.delete_session(id, false)?;
+        if let Some(session) = running {
+            session.stop();
+        }
+        let sessions = self.paths.data_dir().join("sessions");
+        for name in [
+            format!("{id}.jsonl"),
+            format!("{id}.messages.json"),
+            format!("{id}.turns.jsonl"),
+        ] {
+            let path = sessions.join(name);
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %path.display(), %error, "could not delete the session's file");
+            }
+        }
+        Ok(())
+    }
+
     /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in
     /// Settings applies to the next one; `None` puts them inside their repositories.
     pub(super) fn worktree_dir(&self) -> Option<PathBuf> {

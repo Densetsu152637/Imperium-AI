@@ -11,6 +11,7 @@ mod browser;
 mod daemon;
 mod mod_frames;
 mod plugin_approval;
+mod session_erase;
 mod store;
 mod update;
 
@@ -120,6 +121,7 @@ fn main() {
             update::update_switch_install,
             plugin_approval::plugin_approve,
             auto_merge::auto_merge_enable,
+            session_erase::session_erase,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

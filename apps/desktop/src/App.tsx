@@ -7,6 +7,7 @@
 // owns the layout and the list of detached panels; see panelWindows.ts.
 
 import { Check, PanelLeft, PanelRight, Plug, Plus, Puzzle, Settings } from "lucide-react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -78,7 +79,9 @@ import {
   type EnvironmentActions,
   type SessionSort,
 } from "./panels/NavigationPanels";
+import { eraseSession } from "./sessions/deleteSession";
 import { exportSession, saveTextFile } from "./sessions/exportSession";
+import { DeleteSessionDialog } from "./panels/DeleteSessionDialog";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
 import { branchRun, comparisonMembers, comparisonOpen } from "./sessions/branches";
@@ -232,6 +235,8 @@ export function App() {
     icons,
   } = useEnvironments(restore ? saved.environment : null, restore && saved.projectView);
   const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
+  // The session a "Delete…" is waiting on the user's confirmation for.
+  const [deleting, setDeleting] = useState<string | null>(null);
   /** The global layout (which panels sit where, which are closed, which are modules) and the environments' own (shapes.ts). */
   const [shapes, setShapes] = useState<Shapes>({
     global: { arrangement: saved.arrangement, hidden: saved.hidden, modules: saved.modules },
@@ -403,6 +408,10 @@ export function App() {
             const { [session_id]: _gone, ...rest } = all;
             return rest;
           });
+          // Whatever showed it closes: its transcript, a subagent's log, a delete asked about it.
+          setSelected((open) => (open === session_id ? null : open));
+          setAgentView((open) => (open?.sessionId === session_id ? null : open));
+          setDeleting((asked) => (asked === session_id ? null : asked));
           return;
         }
         if (notification.method === "session.updated") {
@@ -645,6 +654,13 @@ export function App() {
   const setSessionArchived = (sessionId: string, archived: boolean) => {
     if (!archived) known.current.delete(sessionId);
     control(sessionId, { action: archived ? "archive" : "unarchive" }).catch(report);
+  };
+
+  /** Deletes the session being asked about: only the app's own shell may ask the daemon to (`session_erase`). */
+  const eraseAsked = async () => {
+    if (!deleting) return;
+    if (!isTauri()) throw new Error("A session is deleted only from the desktop app.");
+    await eraseSession(invoke, deleting);
   };
 
   /** Saves a session's transcript as Markdown or JSON through the save dialog (a download in a browser). */
@@ -1186,6 +1202,7 @@ export function App() {
           onSelect={selectSession}
           onSetPinned={setSessionPinned}
           onSetArchived={setSessionArchived}
+          onDelete={setDeleting}
           onRename={renameSession}
           onExport={exportSessionTranscript}
           onShowEnvironment={showEnvironment}
@@ -1748,6 +1765,15 @@ export function App() {
       )}
       <CommandPalette detached={false} />
       {touring && <Tour hold={approvalsWaiting && tourAuto} onEnd={endTour} />}
+      {deleting && sessions[deleting] && (
+        <DeleteSessionDialog
+          key={deleting}
+          title={sessionTitle(sessions[deleting])}
+          archived={!!sessions[deleting].summary.archived}
+          onConfirm={eraseAsked}
+          onClose={() => setDeleting(null)}
+        />
+      )}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
