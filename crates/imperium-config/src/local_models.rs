@@ -1117,8 +1117,15 @@ base_url = "https://example.invalid/v1"
             "its own switch is still on"
         );
         assert!(!models.is_disabled("cloud:coder-1"));
-        // A catalog row of a local model is left out of routing; the hosted row is not.
-        let models = config(&[(user(), LOCAL_TABLE)]).settings().unwrap().models;
+        // A catalog row of a local model is left out of routing while the switch is off; the
+        // hosted row is not. (The row itself counts as local setup, so the switch is set.)
+        let off_table = format!(
+            "{LOCAL_TABLE}
+[models.local]
+enabled = false
+"
+        );
+        let models = config(&[(user(), &off_table)]).settings().unwrap().models;
         assert!(
             !models.row_enabled(&models.catalog[0]),
             "a local row is off"
