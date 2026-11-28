@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 
 use crate::{block_on, connect, thinking};
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     env: Option<String>,
     project: Option<PathBuf>,
