@@ -456,7 +456,7 @@ fn chain(steps: &[(&'static str, Mode)], calls: &Arc<Mutex<Vec<String>>>) -> Web
         .iter()
         .map(|(name, mode)| {
             let provider = Scripted {
-                name: *name,
+                name,
                 mode: *mode,
                 calls: calls.clone(),
             };
