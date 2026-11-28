@@ -2,8 +2,9 @@
 //! Tavily, Kagi, or Exa; the next one answers when one is blocked, fails or finds nothing) and
 //! `web_fetch`, which reads a page as text, from a bounded on-disk cache when it can and only
 //! where `robots.txt` allows. A page that answers with a bot-protection block is reported as
-//! blocked, never read as content; it is then tried through the browser and, last, as an
-//! archived copy. Results carry their URLs so agents can cite sources.
+//! blocked, never read as content; when the user turned on `web.archive_fallback` it is then
+//! tried as an archived copy of a public page. Results carry their URLs so agents can cite
+//! sources.
 
 #![warn(unreachable_pub)]
 
