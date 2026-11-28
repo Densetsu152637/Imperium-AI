@@ -2,6 +2,10 @@ use super::*;
 
 /// How long `erase_session` waits for a stopped session to end its turn before it deletes.
 const ERASE_STOP_WAIT: Duration = Duration::from_secs(10);
+/// How many times `erase_session` sweeps for files a halting agent wrote, and how long it lets
+/// them settle between sweeps.
+const ERASE_SWEEPS: usize = 10;
+const ERASE_SETTLE: Duration = Duration::from_millis(100);
 
 impl DaemonState {
     /// Sessions with a turn running: the user's, and background ones.
@@ -423,28 +427,52 @@ impl DaemonState {
         self.delete_session(id, false)?;
         // Let go of the session: its journal closes with the last holder.
         drop(running);
-        let sessions = self.paths.data_dir().join("sessions");
+        // A stopped agent may still save its state as it halts, after the first removal: sweep
+        // until a sweep finds nothing, so nothing of the session comes back.
         let mut failed = Vec::new();
-        for name in [
-            format!("{id}.jsonl"),
-            format!("{id}.messages.json"),
-            format!("{id}.turns.jsonl"),
-        ] {
-            let path = sessions.join(name);
-            if let Err(error) = std::fs::remove_file(&path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                failed.push(format!("{}: {error}", path.display()));
+        for _ in 0..ERASE_SWEEPS {
+            if !self.sweep_erased(id, &mut failed) {
+                break;
             }
+            tokio::time::sleep(ERASE_SETTLE).await;
         }
         if failed.is_empty() {
             Ok(())
         } else {
+            failed.sort();
+            failed.dedup();
             Err(format!(
-                "the session was deleted, but these files could not be removed: {}",
+                "the session was deleted, but these could not be removed: {}",
                 failed.join("; ")
             ))
         }
+    }
+
+    /// Removes what is left of an erased session's own storage beside its journal; whether
+    /// anything was there. A failure is named in `failed`.
+    fn sweep_erased(&self, id: &str, failed: &mut Vec<String>) -> bool {
+        let sessions = self.paths.data_dir().join("sessions");
+        let journal = sessions.join(format!("{id}.jsonl"));
+        let mut found = false;
+        let mut note = |path: &Path, result: std::io::Result<()>| match result {
+            Ok(()) => found = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failed.push(format!("{}: {error}", path.display())),
+        };
+        for path in [
+            journal.clone(),
+            sessions.join(format!("{id}.messages.json")),
+            sessions.join(format!("{id}.turns.jsonl")),
+        ] {
+            note(&path, std::fs::remove_file(&path));
+        }
+        for path in [
+            imperium_engine::agents_dir(&journal),
+            imperium_engine::results_dir(&journal),
+        ] {
+            note(&path, std::fs::remove_dir_all(&path));
+        }
+        found
     }
 
     /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in
