@@ -10,6 +10,7 @@ import type { ModelListResult, ModelRow } from "@imperium/protocol";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { IconButton } from "../components/IconButton";
+import { Notice } from "../components/Notice";
 import { arrangeModels, markOf } from "../models/modelPrefs";
 import { useModelMarks } from "../settings/settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
@@ -38,7 +39,16 @@ const formatPrice = (row: ModelRow): string =>
     ? "free"
     : `$${row.input_usd_per_mtok ?? 0} / $${row.output_usd_per_mtok ?? 0}`;
 
-export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | null; onConfigure: () => void }) {
+export function ModelsPanel({
+  table,
+  onConfigure,
+  localOn = true,
+}: {
+  table: ModelListResult | null;
+  onConfigure: () => void;
+  /** `models.local.enabled`: while off, local rows show as off and a note says why. */
+  localOn?: boolean;
+}) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; descending: boolean }>({ key: "id", descending: false });
   const [showHidden, setShowHidden] = useState(false);
@@ -108,6 +118,11 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
 
   return (
     <div className="models">
+      {!localOn && table.models.some((row) => row.location === "local") && (
+        <Notice tone="info">
+          Local models are off by default, so the local rows below are off. Turn them on in the Local models panel.
+        </Notice>
+      )}
       <div className="models-toolbar">
         <input
           type="search"

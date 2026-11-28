@@ -42,6 +42,16 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let idle_grace = exit_when_idle(std::env::args().skip(1))?;
     let paths = Paths::from_env()?;
+    // Once: writes `models.local.enabled` explicitly (on for a setup that had local models, else
+    // off) so an unset switch means off from then on.
+    match imperium_config::migrate_local_switch(&paths, std::env::vars()) {
+        Ok(Some(on)) => tracing::info!(
+            enabled = on,
+            "local models: wrote models.local.enabled once (on when local models were already set up, off otherwise)"
+        ),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "could not migrate models.local.enabled"),
+    }
     let config = imperium_config::load(&paths, None, std::env::vars())?;
     for warning in config.warnings() {
         tracing::warn!("{warning}");

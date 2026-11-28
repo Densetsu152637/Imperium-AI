@@ -617,7 +617,9 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                     metadata_card: imperium_local::card::metadata_card(model),
                     draft_in_use,
                     draft_notice,
-                    enabled: !settings.models.is_disabled(&spec),
+                    // The model's own switch: the dialog edits `models.disabled`; the global
+                    // one (`models.local.enabled`) is set in Settings → Local models.
+                    enabled: !settings.models.is_switched_off(&spec),
                     weights_bytes: footprint.weights_bytes,
                     layers: footprint.layers,
                     // What the planner would do with the effective settings: the layers it

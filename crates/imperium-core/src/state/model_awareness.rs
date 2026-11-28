@@ -840,6 +840,129 @@ card = "Good at: creative writing, stories and essays."
         }
 
         #[tokio::test]
+        async fn local_models_off_are_never_offered_routed_or_chosen() {
+            use imperium_config::Tier;
+            use imperium_engine::{TaskRequest, route};
+
+            let home = tempfile::tempdir().unwrap();
+            // Local models are set up (a local row, per-model settings) but the user turned the
+            // global switch off.
+            let config = format!(
+                "{CONFIG}
+[models.local]
+enabled = false
+"
+            );
+            let state = daemon_with(home.path(), &config).await;
+            assert!(!state.settings().models.local.enabled);
+
+            // The catalog sessions route over holds the hosted rows only: neither the local row
+            // nor the local models nobody names.
+            let catalog = state.session_catalog();
+            let ids: Vec<&str> = catalog.iter().map(|row| row.id.as_str()).collect();
+            assert_eq!(ids, ["scholar", "hidden-row"]);
+            assert!(
+                state
+                    .model_entries(&catalog)
+                    .iter()
+                    .all(|entry| !entry.spec.starts_with("llamacpp:"))
+            );
+
+            // Not routed to by name or by tier; the hosted fallback answers.
+            let settings = state.settings();
+            let fallback = state.resolve_model(Some("cloud:hidden-1")).unwrap();
+            for tier in [Tier::Basic, Tier::Standard, Tier::Strong, Tier::Frontier] {
+                for named in [None, Some("coder-row"), Some("llamacpp:writer")] {
+                    let request = TaskRequest {
+                        named,
+                        tier,
+                        ..TaskRequest::default()
+                    };
+                    let routed = route(&catalog, &settings.routing, &fallback, request, None);
+                    assert!(!routed.local, "{named:?} at {tier:?} was routed local");
+                }
+            }
+
+            // Not picked for a session either, and no error beyond saying why.
+            let error = state
+                .resolve_usable_model(Some("llamacpp:mid"))
+                .unwrap_err();
+            assert!(error.to_string().contains("llamacpp:mid"), "{error}");
+            assert!(state.resolve_usable_model(Some("cloud:scholar-1")).is_ok());
+
+            // Turned on, the same models become eligible again.
+            let on = format!(
+                "{CONFIG}
+[models.local]
+enabled = true
+"
+            );
+            let state = daemon_with(home.path(), &on).await;
+            let ids: Vec<String> = state
+                .session_catalog()
+                .iter()
+                .map(|row| row.id.clone())
+                .collect();
+            assert!(ids.iter().any(|id| id == "llamacpp:writer"), "{ids:?}");
+            assert!(state.resolve_usable_model(Some("llamacpp:mid")).is_ok());
+        }
+
+        #[tokio::test]
+        async fn a_resumed_session_on_a_local_model_does_not_start_it_while_local_models_are_off() {
+            let home = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let path = project.path().to_str().unwrap();
+            let resume = |state: &Arc<DaemonState>| {
+                state.create_session_with(
+                    path,
+                    Some("llamacpp:writer"),
+                    crate::state::SessionOptions {
+                        resume_id: Some("s-local".into()),
+                        ..crate::state::SessionOptions::default()
+                    },
+                )
+            };
+            // Off: the session is restored but has no model, so its messages wait; nothing
+            // local is asked for, and its subagents route over the hosted rows only.
+            let off = daemon_with(
+                home.path(),
+                &format!(
+                    "{CONFIG}
+[models.local]
+enabled = false
+"
+                ),
+            )
+            .await;
+            let (session, _) = resume(&off).expect("the resumed session is restored");
+            assert!(session.model().is_none(), "{:?}", session.model());
+            assert!(off.session_catalog().iter().all(|row| !row.model.local));
+            // A new session on that model is refused outright.
+            assert!(
+                off.create_session_with(
+                    path,
+                    Some("llamacpp:writer"),
+                    crate::state::SessionOptions::default()
+                )
+                .is_err()
+            );
+            // On, the same resume keeps its local model.
+            let home_on = tempfile::tempdir().unwrap();
+            let on = daemon_with(
+                home_on.path(),
+                &format!(
+                    "{CONFIG}
+[models.local]
+enabled = true
+"
+                ),
+            )
+            .await;
+            let (session, _) = resume(&on).expect("the resumed session is restored");
+            assert_eq!(session.model().as_deref(), Some("llamacpp:writer"));
+        }
+
+        #[tokio::test]
         async fn disabled_models_are_never_offered_routed_or_escalated_to() {
             use imperium_config::Tier;
             use imperium_engine::{TaskRequest, escalate, route};

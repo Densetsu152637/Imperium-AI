@@ -91,8 +91,8 @@ use imperium_protocol::methods::{
     McpRemove, McpSave, McpSetEnabled, McpTest,
 };
 use imperium_protocol::methods::{
-    ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
-    ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
+    ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelRescan,
+    ModelTest, ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
     RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{

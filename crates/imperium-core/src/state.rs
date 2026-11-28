@@ -956,6 +956,7 @@ impl DaemonState {
                     .map(|folder| folder.display().to_string())
                     .collect(),
                 default_model: settings.models.default.clone(),
+                local_enabled: settings.models.local.enabled,
                 ..crate::local::disabled()
             },
         }

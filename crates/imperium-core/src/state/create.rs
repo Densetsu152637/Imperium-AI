@@ -180,17 +180,36 @@ impl DaemonState {
         if !web.enabled {
             return None;
         }
-        let key = || {
-            let name = &web.api_key.as_ref()?.secret;
+        // A provider's own key, else the shared `web.api_key`.
+        let key = |provider: &str| {
+            let own = match provider {
+                "brave" => web.brave_key.as_ref(),
+                "tavily" => web.tavily_key.as_ref(),
+                "kagi" => web.kagi_key.as_ref(),
+                "exa" => web.exa_key.as_ref(),
+                _ => None,
+            };
+            let name = &own.or(web.api_key.as_ref())?.secret;
             self.secrets.load(name).ok().flatten()
         };
         let config = SearchConfig {
             searxng_url: &web.searxng_url,
             api_key: &key,
         };
-        let provider = SearchProviders::default().build(&web.search, &config);
-        if web.search != "none" && provider.is_none() {
-            tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
+        // `web.search` first, then each `web.search_fallback` once, in order. A provider whose
+        // URL or key is missing is left out with a warning, never with its settings logged.
+        let registry = SearchProviders::default();
+        let mut chain: Vec<(String, Arc<dyn imperium_web::SearchProvider>)> = Vec::new();
+        for name in std::iter::once(&web.search).chain(&web.search_fallback) {
+            if name == "none" || chain.iter().any(|(known, _)| known == name) {
+                continue;
+            }
+            match registry.build(name, &config) {
+                Some(provider) => chain.push((name.clone(), provider)),
+                None => {
+                    tracing::warn!(provider = %name, "web search is not configured completely (URL or key missing)");
+                }
+            }
         }
         let browser = web
             .browser
@@ -208,14 +227,17 @@ impl DaemonState {
                 takeover: Arc::default(),
             });
         Some(WebTools {
-            web: Web::with_options(
-                provider,
+            web: Web::with_chain(
+                chain,
                 FetchOptions {
                     cache_dir: Some(self.paths.cache_dir().join("web")),
                     cache_ttl: Duration::from_secs(web.cache_ttl_s),
                     cache_max_bytes: web.cache_max_mb.saturating_mul(1024 * 1024),
                     respect_robots: web.robots == "respect",
                     robots_fail_closed: web.robots_unreachable == "deny",
+                    archive_base: web
+                        .archive_fallback
+                        .then(|| imperium_web::WAYBACK_URL.to_string()),
                 },
             ),
             allow_domains: web.allow_domains.clone(),
@@ -523,7 +545,24 @@ impl DaemonState {
         } else {
             self.resolve_usable_model(model)
         };
+        // A resumed session on a local model does not start it while local models are off: it
+        // waits for a model like one that never had any, and keeps the recorded model for when
+        // they are turned on again.
+        let mut parked_spec = None;
         let model = match resolved {
+            Ok(model)
+                if eval.is_none()
+                    && options.resume_id.is_some()
+                    && model.local
+                    && self.settings().models.local_off_for(&model.spec) =>
+            {
+                tracing::info!(
+                    model = %model.spec,
+                    "a resumed session's local model is not started: local models are off"
+                );
+                parked_spec = Some(model.spec);
+                None
+            }
             Ok(model) => Some(model),
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
             // No model named and the default is off: the session waits for a model as it does
@@ -742,7 +781,10 @@ impl DaemonState {
         if let Some(eval) = &eval {
             tools = eval.tools.clone();
         }
-        let model_spec = model.as_ref().map(|model| model.spec.clone());
+        let model_spec = model
+            .as_ref()
+            .map(|model| model.spec.clone())
+            .or(parked_spec);
         let effort = options.effort.unwrap_or(self.settings().models.effort);
         let journal_path = self
             .paths

@@ -10,8 +10,9 @@ use imperium_local::runtime::{
 };
 use imperium_protocol::methods::{
     LocalModelList, LocalModelListParams, LocalModelListResult, ModelFolderAdd, ModelFolderParams,
-    ModelFolderRemove, ModelTest, ModelTestParams, ModelUse, ModelUseParams, RuntimeSetServer,
-    RuntimeSetServerParams, RuntimeStatus, RuntimeStatusParams, RuntimeStatusResult,
+    ModelFolderRemove, ModelRescan, ModelRescanParams, ModelTest, ModelTestParams, ModelUse,
+    ModelUseParams, RuntimeSetServer, RuntimeSetServerParams, RuntimeStatus, RuntimeStatusParams,
+    RuntimeStatusResult,
 };
 
 use crate::{block_on, connect};
@@ -63,6 +64,34 @@ pub fn add_folder(path: &Path) -> anyhow::Result<()> {
         print_folders(&listing);
         Ok(())
     })
+}
+
+pub fn rescan() -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let result = client.call::<ModelRescan>(ModelRescanParams {}).await?;
+        print_folders(&result.listing);
+        for id in &result.added {
+            println!("new: {id}");
+        }
+        for id in &result.removed {
+            println!("gone: {id}");
+        }
+        print_local_off_note(&result.listing);
+        Ok(())
+    })
+}
+
+/// What `imperium models` says while `models.local.enabled` is off.
+const LOCAL_OFF_NOTE: &str = "Local models are off by default, so none of these is used until you \
+turn them on: `imperium config set models.local.enabled true` (or Settings -> Local models in \
+the app). Each model also has its own switch (\"Use this model\").";
+
+/// Says that local models are off (the default) and how to turn them on.
+fn print_local_off_note(listing: &LocalModelListResult) {
+    if !listing.local_enabled {
+        println!("\n{LOCAL_OFF_NOTE}");
+    }
 }
 
 pub fn remove_folder(path: &Path) -> anyhow::Result<()> {
@@ -192,6 +221,7 @@ pub fn list() -> anyhow::Result<()> {
         let listing = client
             .call::<LocalModelList>(LocalModelListParams {})
             .await?;
+        print_local_off_note(&listing);
         if !listing.enabled {
             println!("No model folders yet. Add the folder your models are in:\n");
             println!("  imperium models folders add D:/Models\n");
@@ -275,6 +305,13 @@ pub fn list() -> anyhow::Result<()> {
             let speed = model
                 .tokens_per_s
                 .map_or_else(String::new, |rate| format!(", {rate:.1} tok/s"));
+            let state = if model.enabled {
+                state
+            } else if listing.local_enabled {
+                format!("off (switched off); {state}")
+            } else {
+                format!("off (local models are off); {state}")
+            };
             println!(
                 "{:<40} {:>8} {:>7.1} GiB  needs {:>6.1} GiB  {}{}",
                 format!("{}:{}", model.runtime, model.id),
@@ -312,9 +349,23 @@ pub fn list() -> anyhow::Result<()> {
     })
 }
 
+/// Refuses `what` (a download or an install) while local models are off, the same refusal the
+/// daemon gives `models.download` and `runtime.install`.
+pub fn refuse_while_local_off(
+    settings: &imperium_config::Settings,
+    what: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        settings.models.local.enabled,
+        "{what} is refused while local models are off (the default): turn them on first with `imperium config set models.local.enabled true` or in Settings -> Local models"
+    );
+    Ok(())
+}
+
 pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    refuse_while_local_off(&settings, "installing the llama.cpp runtime")?;
     let hardware = probe(&settings.hardware);
     let packs = match pack {
         Some(pack) => vec![pack],
@@ -369,4 +420,26 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installs_and_setups_are_refused_while_local_models_are_off() {
+        let mut settings =
+            imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+                .settings()
+                .unwrap();
+        for what in ["installing the llama.cpp runtime", "setting up vLLM"] {
+            let error = refuse_while_local_off(&settings, what)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(what), "{error}");
+            assert!(error.contains("models.local.enabled true"), "{error}");
+        }
+        settings.models.local.enabled = true;
+        assert!(refuse_while_local_off(&settings, "installing the llama.cpp runtime").is_ok());
+    }
 }
