@@ -138,6 +138,26 @@ resolved once on `.session` (`--col-max`, a registered length) so a rule's own f
 - **Waiting:** the *Working…* line, the core's wait line (spinner, text, elapsed time and one action)
   and steering marks use the same type scale; the spinner and dots stop under reduced motion.
 
+### Thinking (implemented)
+
+A model's reasoning (`thinking_delta` and `thinking_finished`,
+[03](03-agent-engine.md#thinking-display-only-implemented)) is one quiet row in the transcript, and
+in a subagent's log, collapsed by default and never showing its text until it is opened. While
+the model thinks the row reads *Thinking…* with a small pulsing dot and the time so far; once
+the run ends it reads *Thought for 10 seconds* (*less than a second*, *1 second*, *1 minute*,
+*2 minutes 5 seconds*; the same wording as `imperium chat`). The row is a button with
+`aria-expanded`, so Enter and Space open and close it as a click does, and a screen reader
+announces *Thinking* or *Thought for 10 seconds*, not the ticking time. Opening it shows the
+full text, still streaming while the run goes on, under a hairline like a tool call's
+arguments; opening it again hides the text. Each block opens on its own, a block starts closed
+whenever it is drawn, and nothing is remembered between sessions. The text is built into the page
+only while open, so it is in no tooltip, preview, session title or notification, and a turn's
+several runs (around tool calls) are separate rows. A run whose `thinking_finished` never came
+(the daemon died) is closed when its turn ends, fails or pauses, or the next turn starts: it reads
+*Thought for N seconds* from the fragments' own timestamps (`at_ms`, so a replayed session and the
+time shown after reopening do not use this window's clock), or plainly *Thought* when it has none
+(`apps/desktop/src/sessions/thinking.ts`, `components/ThinkingBlock.tsx`).
+
 ### Tool calls (implemented)
 
 Every tool call, the session's own in the transcript and each subagent's in its log

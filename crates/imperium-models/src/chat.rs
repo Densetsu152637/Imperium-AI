@@ -143,7 +143,8 @@ pub struct Completion {
     pub usage: Option<Usage>,
     /// When the first generated text arrived, answer or reasoning. A thinking model streams
     /// its reasoning before the answer and counts it in `completion_tokens`, so generation
-    /// speed is measured from here; the reasoning itself is not kept.
+    /// speed is measured from here; the reasoning itself is not kept (it is streamed to the
+    /// caller as [`StreamDelta::Thinking`]).
     pub first_token: Option<Instant>,
     /// Why the reply ended, from the stream's last choice: `stop`, `tool_calls`, or `length`
     /// when it hit `max_tokens`. Absent when the endpoint does not say.
@@ -239,6 +240,16 @@ fn parse_wait(value: &str) -> Option<u64> {
     None
 }
 
+/// A fragment of a streamed completion as it arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDelta<'a> {
+    /// A fragment of the reply.
+    Text(&'a str),
+    /// A fragment of a thinking model's reasoning (`reasoning_content` or `reasoning`). It is
+    /// for display only: it is not part of [`Completion::text`] and never goes back to a model.
+    Thinking(&'a str),
+}
+
 /// Streams a chat completion, calling `on_text` with each text fragment as it arrives, and
 /// returns the assembled text, tool calls, and usage.
 pub async fn stream_chat(
@@ -259,6 +270,22 @@ pub async fn stream_chat_with(
     request: ChatRequest<'_>,
     extra_body: Option<&serde_json::Value>,
     mut on_text: impl FnMut(&str),
+) -> Result<Completion, ModelError> {
+    stream_chat_deltas(http, endpoint, request, extra_body, |delta| {
+        if let StreamDelta::Text(text) = delta {
+            on_text(text);
+        }
+    })
+    .await
+}
+
+/// [`stream_chat_with`] that also hands over the model's reasoning, as it arrives.
+pub async fn stream_chat_deltas(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    request: ChatRequest<'_>,
+    extra_body: Option<&serde_json::Value>,
+    mut on_delta: impl FnMut(StreamDelta<'_>),
 ) -> Result<Completion, ModelError> {
     let url = format!(
         "{}/chat/completions",
@@ -294,8 +321,12 @@ pub async fn stream_chat_with(
             }
             let chunk: StreamChunk = serde_json::from_str(&payload)
                 .map_err(|error| ModelError::Decode(format!("{error} in {payload}")))?;
-            if let Some(text) = assembler.apply(chunk) {
-                on_text(&text);
+            let fragments = assembler.apply(chunk);
+            if let Some(thinking) = &fragments.thinking {
+                on_delta(StreamDelta::Thinking(thinking));
+            }
+            if let Some(text) = &fragments.text {
+                on_delta(StreamDelta::Text(text));
             }
         }
     }
@@ -440,9 +471,16 @@ struct Assembler {
     finish_reason: Option<String>,
 }
 
+/// What one chunk carried for display: reasoning and reply text.
+#[derive(Debug, Default, PartialEq)]
+struct Fragments {
+    thinking: Option<String>,
+    text: Option<String>,
+}
+
 impl Assembler {
-    /// Applies one chunk and returns its text fragment, if any.
-    fn apply(&mut self, chunk: StreamChunk) -> Option<String> {
+    /// Applies one chunk and returns its reasoning and text fragments, if any.
+    fn apply(&mut self, chunk: StreamChunk) -> Fragments {
         if let Some(usage) = chunk.usage {
             self.usage = Some(Usage {
                 prompt_tokens: usage.prompt_tokens,
@@ -452,7 +490,9 @@ impl Assembler {
                     .map_or(0, |details| details.cached_tokens),
             });
         }
-        let choice = chunk.choices.into_iter().next()?;
+        let Some(choice) = chunk.choices.into_iter().next() else {
+            return Fragments::default();
+        };
         if choice.finish_reason.is_some() {
             self.finish_reason = choice.finish_reason;
         }
@@ -489,9 +529,21 @@ impl Assembler {
                     .push_str(&function.arguments.unwrap_or_default());
             }
         }
-        let text = delta.content.filter(|text| !text.is_empty())?;
-        self.text.push_str(&text);
-        Some(text)
+        // A server that sends the same reasoning under both names must not show it twice:
+        // `reasoning_content` wins when it has text, else `reasoning`.
+        let thinking = delta
+            .reasoning_content
+            .filter(|text| !text.is_empty())
+            .or(delta.reasoning.filter(|text| !text.is_empty()))
+            .unwrap_or_default();
+        let text = delta.content.filter(|text| !text.is_empty());
+        if let Some(text) = &text {
+            self.text.push_str(text);
+        }
+        Fragments {
+            thinking: (!thinking.is_empty()).then_some(thinking),
+            text,
+        }
     }
 
     fn finish(self) -> Completion {
@@ -627,6 +679,79 @@ mod tests {
 
         assert!(streamed.is_empty() && completion.text.is_empty());
         assert!(completion.first_token.is_some_and(|first| first >= before));
+    }
+
+    #[tokio::test]
+    async fn reasoning_streams_as_thinking_deltas_in_order_with_the_reply() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\" think\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ))
+        .await;
+        let mut seen: Vec<(bool, String)> = Vec::new();
+        let completion = stream_chat_deltas(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
+            },
+            None,
+            |delta| match delta {
+                StreamDelta::Thinking(text) => seen.push((true, text.into())),
+                StreamDelta::Text(text) => seen.push((false, text.into())),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                (true, "Let me".to_string()),
+                (true, " think".to_string()),
+                (false, "Done".to_string())
+            ]
+        );
+        // The reasoning is display-only: the assembled reply holds none of it.
+        assert_eq!(completion.text, "Done");
+    }
+
+    #[tokio::test]
+    async fn a_chunk_carrying_both_reasoning_fields_shows_it_once() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Same\",\"reasoning\":\"Same\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\",\"reasoning\":\" next\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ))
+        .await;
+        let mut thought = String::new();
+        stream_chat_deltas(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
+            },
+            None,
+            |delta| {
+                if let StreamDelta::Thinking(text) = delta {
+                    thought.push_str(text);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(thought, "Same next");
     }
 
     #[tokio::test]

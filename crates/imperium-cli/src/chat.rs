@@ -1,7 +1,7 @@
 //! `imperium chat`: an interactive session in the terminal.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -28,8 +28,9 @@ use imperium_protocol::session::{
 };
 use tokio::sync::mpsc;
 
-use crate::{block_on, connect};
+use crate::{block_on, connect, thinking};
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     env: Option<String>,
     project: Option<PathBuf>,
@@ -38,6 +39,7 @@ pub fn run(
     worktree: Option<Option<String>>,
     subfolder: Option<String>,
     read_only: bool,
+    show_thinking: bool,
 ) -> anyhow::Result<()> {
     // With neither --env nor --project the session starts in the built-in Home environment,
     // which has no project folders to put on a worktree.
@@ -128,6 +130,8 @@ pub fn run(
         let mut lines = read_lines();
         let mut chat = Chat {
             context_summary,
+            show_thinking,
+            tty: std::io::stdout().is_terminal(),
             ..Chat::default()
         };
         chat.prompt();
@@ -152,8 +156,17 @@ pub fn run(
                     if notification.method != SESSION_EVENT {
                         continue;
                     }
-                    let params: SessionEventParams = serde_json::from_value(notification.params)
-                        .context("could not read a session event")?;
+                    // A newer daemon may send an event this client does not know; skipping it
+                    // keeps an older chat going (clients ignore unknown session events).
+                    let params = match serde_json::from_value::<SessionEventParams>(notification.params) {
+                        Ok(params) => params,
+                        Err(error) => {
+                            if std::env::var_os("IMPERIUM_DEBUG").is_some() {
+                                eprintln!("debug: skipped a session event this client cannot read: {error}");
+                            }
+                            continue;
+                        }
+                    };
                     if params.session_id == session_id {
                         chat.on_event(params.agent_event);
                     }
@@ -207,6 +220,12 @@ enum Flow {
 #[derive(Default)]
 struct Chat {
     context_summary: bool,
+    /// `--show-thinking`: print a model's reasoning, not only its one-line summary.
+    show_thinking: bool,
+    /// A `thinking…` line is open: its text (`--show-thinking`) or its summary is still to come.
+    thinking_open: bool,
+    /// Standard output is a terminal, so a line can be finished in place.
+    tty: bool,
     busy: bool,
     /// Permission requests and question batches in the order asked; the next line answers the
     /// first.
@@ -747,6 +766,11 @@ impl Chat {
         } else {
             format!("[{agent_id}] ")
         };
+        // Output of another kind never lands on a `thinking…` line still open.
+        if thinking::closes_open_line(self.thinking_open, root, &event) {
+            println!();
+            self.thinking_open = false;
+        }
         match event {
             SessionEvent::TurnStarted { text, .. } if root => {
                 self.busy = true;
@@ -778,6 +802,20 @@ impl Chat {
                 std::io::stdout().flush().ok();
             }
             SessionEvent::TextDelta { .. } => {}
+            // Reasoning is one line (or, with --show-thinking, its text too); subagents' stay
+            // out of the terminal, like their replies.
+            SessionEvent::ThinkingDelta { .. } | SessionEvent::ThinkingFinished { .. } if root => {
+                if let Some(output) = thinking::print_for(
+                    self.show_thinking,
+                    self.tty,
+                    &mut self.thinking_open,
+                    &event,
+                ) {
+                    print!("{output}");
+                    std::io::stdout().flush().ok();
+                }
+            }
+            SessionEvent::ThinkingDelta { .. } | SessionEvent::ThinkingFinished { .. } => {}
             SessionEvent::ToolStarted { summary, .. } => println!("\n{tag}· {summary}"),
             SessionEvent::PermissionRequested {
                 request_id,

@@ -11,7 +11,8 @@ pub mod llamacpp;
 mod sse;
 
 pub use chat::{
-    ChatRequest, Completion, Endpoint, ModelError, ReasoningStyle, stream_chat, stream_chat_with,
+    ChatRequest, Completion, Endpoint, ModelError, ReasoningStyle, StreamDelta, stream_chat,
+    stream_chat_deltas, stream_chat_with,
 };
 pub use client::{
     ChatClient, ChatClientBuilder, ChatClients, ChatFuture, DEFAULT_KIND, LlamaCpp,

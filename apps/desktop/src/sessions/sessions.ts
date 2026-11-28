@@ -24,6 +24,7 @@ import { environmentById } from "../environments/byId";
 import { applyKnowledge, emptyKnowledge, type KnowledgeState } from "./knowledge";
 import { modelAliases, modelName } from "../models/modelNames";
 import { applyBrowserView, applyPreviewEvent, type BrowserDriver, type BrowserMirror } from "./preview";
+import { closeThinking, foldThinking, type ThinkingEntry } from "./thinking";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
 
 export { taskTitle };
@@ -39,6 +40,8 @@ type EntryBody =
   /** A steering message that joined the running turn; `paused` lists the subagents it paused. */
   | { kind: "steer"; text: string; paused: string[]; attachments?: Attachment[] }
   | { kind: "assistant"; text: string }
+  /** The model's reasoning, shown collapsed (see thinking.ts). */
+  | ThinkingEntry
   | ToolEntry
   | {
       kind: "permission";
@@ -237,6 +240,9 @@ export function sessionTitle(session: SessionState): string {
 /** Applies one event to a transcript; returns a new array (inputs are never mutated). `tasks`
  * names subagents in the lines that mention them. */
 function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<string, TaskState> = {}): Entry[] {
+  // A thinking block still open when its turn ends, fails or pauses, or the next one starts, never got
+  // its `thinking_finished` (the daemon died): it is closed with what its own timestamps say.
+  if (["turn_started", "turn_completed", "turn_failed", "paused"].includes(event.type)) entries = closeThinking(entries);
   const next = [...entries];
   const last = next.at(-1);
   switch (event.type) {
@@ -255,6 +261,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<s
       if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: last.text + event.text };
       else next.push({ kind: "assistant", text: event.text });
       break;
+    case "thinking_delta":
+    case "thinking_finished":
+      return foldThinking(entries, event);
     case "tool_started":
       next.push({
         kind: "tool",

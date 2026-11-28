@@ -21,7 +21,17 @@ import type { ToolLoadVia } from "./ToolLoadVia";
 /**
  * Something that happened in a session, in order.
  */
-export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
+export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "thinking_delta", text: string, 
+/**
+ * When the fragment was produced, in milliseconds since the Unix epoch; a client
+ * takes a run's start and, if the daemon died before `thinking_finished`, its end
+ * from these. Absent from a client that does not send it.
+ */
+at_ms?: number, } | { "type": "thinking_finished", 
+/**
+ * Time from the run's first fragment to its end.
+ */
+duration_ms: number, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
 /**
  * The call's JSON arguments as the model wrote them, truncated for display; absent in
  * history recorded before arguments were sent.

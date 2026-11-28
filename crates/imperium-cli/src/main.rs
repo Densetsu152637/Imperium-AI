@@ -22,6 +22,7 @@ mod resources;
 mod schedule;
 mod session;
 mod settings;
+mod thinking;
 mod vllm;
 mod workflow;
 mod workspaces;
@@ -90,6 +91,10 @@ enum Command {
         /// commands run only under isolation.tier = os or container.
         #[arg(long, conflicts_with = "worktree")]
         read_only: bool,
+        /// Print a thinking model's reasoning as it streams. Without it a run of thinking is one
+        /// line, `thinking… (10 seconds)`.
+        #[arg(long)]
+        show_thinking: bool,
     },
     /// Manage sessions (also `sessions`).
     #[command(alias = "sessions")]
@@ -913,6 +918,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             worktree,
             subfolder,
             read_only,
+            show_thinking,
         } => chat::run(
             env,
             project,
@@ -921,6 +927,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
             subfolder,
             read_only,
+            show_thinking,
         ),
         Command::Session { command } => match command {
             SessionCommand::List { archived } => session::list(archived),
