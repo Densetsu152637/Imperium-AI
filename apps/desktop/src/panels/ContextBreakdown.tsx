@@ -1,5 +1,6 @@
-// What each agent's model read on its latest call: a bar coloured by category against the context
-// window, and a table listing every category in words, so nothing depends on colour alone.
+// What each agent's model read on its latest call: one bar from 0 to the configured maximum in
+// three regions (the request by category, the pre-allocated buffer, what is unallocated), and a
+// table listing every region and category in words, so nothing depends on colour alone.
 
 import { useState } from "react";
 
@@ -10,17 +11,24 @@ import { Select } from "../components/Select";
 import {
   ROOT,
   breakdownUsed,
-  describeUse,
   formatCount,
+  formatTokens,
   type ContextBreakdown as Breakdown,
   type SessionState,
 } from "../sessions/sessions";
+import { contextRegions, type MaxSource } from "../sessions/contextRegions";
 import { ModelName } from "../components/ModelName";
 
 const METHODS: Record<TokenCountMethod, string> = {
   exact: "Exact, counted with the model's tokenizer",
   calibrated: "Calibrated to the provider's count",
   estimated: "Estimated; the provider reported no usage",
+};
+
+const MAX_NOTES: Record<MaxSource, string> = {
+  configured: "",
+  window: " The model table sets no context_window, so the maximum is the context window the model reports.",
+  unknown: " The maximum is unknown (set context_window in the model table), so the bar spans what is allocated.",
 };
 
 /** Root first, then subagents in task order (t1, t2, …, t10). */
@@ -35,7 +43,7 @@ function agentLabel(session: SessionState, agentId: string): string {
   return title ? `${title.length > 48 ? `${title.slice(0, 47)}…` : title} (${agentId})` : agentId;
 }
 
-/** A share of the window (or, when it is unknown, of the request) as a percentage. */
+/** A share of the maximum (or, when it is unknown, of what is allocated) as a percentage. */
 const percent = (tokens: number, of: number): string => (of > 0 ? `${((tokens * 100) / of).toFixed(1)}%` : "—");
 
 export function ContextBreakdownView({ session }: { session: SessionState }) {
@@ -64,19 +72,38 @@ export function ContextBreakdownView({ session }: { session: SessionState }) {
 }
 
 function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
-  const used = breakdownUsed(breakdown);
-  const limit = breakdown.contextWindow;
-  // Without a known window the bar and shares describe the request itself.
-  const scale = limit ?? Math.max(used, 1);
-  const free = limit === null ? null : Math.max(limit - used, 0);
+  const regions = contextRegions({
+    used: breakdownUsed(breakdown),
+    configuredWindow: breakdown.configuredWindow,
+    contextWindow: breakdown.contextWindow,
+    reservedOutput: breakdown.reservedOutput,
+    allocatedContext: breakdown.allocatedContext,
+  });
+  const { used, buffer, unallocated, allocated, max, overflow } = regions;
+  const scale = Math.max(max, 1);
+  const known = regions.maxSource !== "unknown";
   // A negative overhead (text the template dropped) has no width; the table still lists it.
   const drawn = breakdown.categories.filter((category) => category.tokens > 0);
+  const summary = `${formatTokens(used)} used / ${formatTokens(allocated)} allocated${
+    known ? ` / ${formatTokens(max)} max` : ""
+  } tokens`;
+  const bufferWhy = [
+    breakdown.reservedOutput ? `${formatCount(breakdown.reservedOutput)} reserved for the reply` : null,
+    breakdown.allocatedContext ? `${formatCount(breakdown.allocatedContext)} held by the local server` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
 
   return (
     <>
       <p className="context-use">
-        <strong>{describeUse(breakdown)}</strong>
-        {limit !== null && <span className="muted"> · {percent(used, limit)} of the window</span>}
+        <strong>{summary}</strong>
+        {known && (
+          <span className="muted">
+            {" · "}
+            {percent(used, max)} used, {percent(allocated, max)} allocated
+          </span>
+        )}
         <span className="muted">
           {" · "}
           <ModelName name={breakdown.model} />
@@ -85,7 +112,7 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
       <div
         className="context-bar"
         role="img"
-        aria-label={`${describeUse(breakdown)}; the table below lists each category`}
+        aria-label={`${summary}; ${formatCount(buffer)} tokens pre-allocated buffer, ${formatCount(unallocated)} unallocated; the table below lists each region`}
       >
         {drawn.map((category) => (
           <span
@@ -95,20 +122,27 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
             title={`${category.label}: ${formatCount(category.tokens)} tokens`}
           />
         ))}
-        {free !== null && free > 0 && (
+        {buffer > 0 && (
+          <span
+            className="context-segment ctx-buffer"
+            style={{ flexGrow: buffer }}
+            title={`Pre-allocated buffer: ${formatCount(buffer)} tokens`}
+          />
+        )}
+        {unallocated > 0 && (
           <span
             className="context-segment ctx-free"
-            style={{ flexGrow: free }}
-            title={`Free space: ${formatCount(free)} tokens`}
+            style={{ flexGrow: unallocated }}
+            title={`Unallocated: ${formatCount(unallocated)} tokens`}
           />
         )}
       </div>
       <table className="table compact context-table">
         <thead>
           <tr>
-            <th scope="col">Category</th>
+            <th scope="col">Region and category</th>
             <th scope="col" className="num">Tokens</th>
-            <th scope="col" className="num">{limit === null ? "Of request" : "Of window"}</th>
+            <th scope="col" className="num">{known ? "Of maximum" : "Of allocated"}</th>
           </tr>
         </thead>
         <tbody>
@@ -122,28 +156,48 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
               <td className="num">{percent(category.tokens, scale)}</td>
             </tr>
           ))}
-          {free !== null && (
-            <tr>
-              <th scope="row">
-                <span className="context-swatch ctx-free" aria-hidden="true" />
-                Free space
-              </th>
-              <td className="num">{formatCount(free)}</td>
-              <td className="num">{percent(free, scale)}</td>
-            </tr>
-          )}
         </tbody>
         <tfoot>
           <tr>
-            <th scope="row">In the request</th>
+            <th scope="row">Used (in the request)</th>
             <td className="num">{formatCount(used)}</td>
             <td className="num">{percent(used, scale)}</td>
+          </tr>
+          <tr>
+            <th scope="row">
+              <span className="context-swatch ctx-buffer" aria-hidden="true" />
+              Pre-allocated buffer
+            </th>
+            <td className="num">{formatCount(buffer)}</td>
+            <td className="num">{percent(buffer, scale)}</td>
+          </tr>
+          <tr>
+            <th scope="row">Allocated (used + buffer)</th>
+            <td className="num">{formatCount(allocated)}</td>
+            <td className="num">{percent(allocated, scale)}</td>
+          </tr>
+          {known && (
+            <tr>
+              <th scope="row">
+                <span className="context-swatch ctx-free" aria-hidden="true" />
+                Unallocated
+              </th>
+              <td className="num">{formatCount(unallocated)}</td>
+              <td className="num">{percent(unallocated, scale)}</td>
+            </tr>
+          )}
+          <tr>
+            <th scope="row">{known ? "Maximum" : "Maximum (unknown)"}</th>
+            <td className="num">{known ? formatCount(max) : "—"}</td>
+            <td className="num">{known ? percent(max, scale) : "—"}</td>
           </tr>
         </tfoot>
       </table>
       <p className="context-method muted">
         {METHODS[breakdown.method]}. {formatCount(breakdown.cachedTokens)} prompt tokens served from cache.
-        {limit === null && " The context window is unknown; set context_window in the model table."}
+        {bufferWhy && ` The buffer is ${bufferWhy}.`}
+        {overflow > 0 && ` The request is ${formatCount(overflow)} tokens over the maximum.`}
+        {MAX_NOTES[regions.maxSource]}
       </p>
     </>
   );

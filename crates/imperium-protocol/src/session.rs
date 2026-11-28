@@ -140,6 +140,23 @@ pub enum SessionEvent {
         /// Prompt tokens served from the provider's cache.
         #[ts(type = "number")]
         cached_tokens: u64,
+        /// The context window the model table's row sets for the model (its `context_window`),
+        /// the most the view shows the context filling to. Absent when the row sets none; a
+        /// client then falls back to `context_window`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        configured_window: Option<u64>,
+        /// Tokens held back for the reply: the `max_tokens` the call was sent with. Absent when
+        /// the call set no cap (hosted models usually set none).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        reserved_output_tokens: Option<u64>,
+        /// Tokens of context a local server holds for this agent (its slot's `n_ctx`, within
+        /// the `--ctx-size` pool), used or not. Absent for hosted models and when the server
+        /// reported none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        allocated_context: Option<u64>,
     },
     /// The agent replaced its plan.
     PlanUpdated { plan: Plan },
@@ -1013,12 +1030,71 @@ mod tests {
             }],
             prompt_tokens: None,
             cached_tokens: 0,
+            configured_window: None,
+            reserved_output_tokens: None,
+            allocated_context: None,
         };
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(value["type"], "context_breakdown");
         assert_eq!(value["method"], "exact");
         assert_eq!(value["categories"][0]["tokens"], -3);
         assert_eq!(value["prompt_tokens"], serde_json::Value::Null);
+        // The allocation fields are left out when unknown, so an older client sees the old event.
+        for key in [
+            "configured_window",
+            "reserved_output_tokens",
+            "allocated_context",
+        ] {
+            assert!(value.get(key).is_none(), "{key} is omitted when absent");
+        }
+    }
+
+    #[test]
+    fn context_breakdowns_carry_the_allocation_and_read_without_it() {
+        let event = SessionEvent::ContextBreakdown {
+            model: "llamacpp:q".into(),
+            context_window: Some(8192),
+            method: TokenCountMethod::Exact,
+            categories: Vec::new(),
+            prompt_tokens: Some(1200),
+            cached_tokens: 0,
+            configured_window: Some(32768),
+            reserved_output_tokens: Some(2048),
+            allocated_context: Some(8192),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["configured_window"], 32768);
+        assert_eq!(value["reserved_output_tokens"], 2048);
+        assert_eq!(value["allocated_context"], 8192);
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(value).unwrap(),
+            event
+        );
+
+        // An event journaled by a daemon before 0.69 has none of the three.
+        let old = serde_json::json!({
+            "type": "context_breakdown",
+            "model": "m",
+            "context_window": null,
+            "method": "estimated",
+            "categories": [],
+            "prompt_tokens": null,
+            "cached_tokens": 0,
+        });
+        let read: SessionEvent = serde_json::from_value(old).unwrap();
+        let SessionEvent::ContextBreakdown {
+            configured_window,
+            reserved_output_tokens,
+            allocated_context,
+            ..
+        } = read
+        else {
+            panic!("a context breakdown");
+        };
+        assert_eq!(
+            (configured_window, reserved_output_tokens, allocated_context),
+            (None, None, None)
+        );
     }
 }
 

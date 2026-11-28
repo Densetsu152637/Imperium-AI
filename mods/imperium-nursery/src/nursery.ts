@@ -2,7 +2,7 @@
 // through the routing in route.ts, or by hand for the extra pets. The view only reads it.
 //
 // Two modes. `session`: the selected session's agents, one pet each. `nursery`: your pet (always
-// there, hears every session), one pet per unarchived session, and the extra pets you put in.
+// there, hears the selected session only), one pet per unarchived session, and the extra pets you put in.
 
 import type { SessionEvent, SessionSnapshot } from "@imperium/mod-sdk";
 
@@ -92,6 +92,8 @@ export class Nursery {
   private sessionIds = new Set<string>();
   private titles = new Map<string, string>();
   private retired = new Set<string>();
+  /** The session your pet follows now (null: none). */
+  private residentFollows: string | null = null;
   private serial = 0;
   onChange: () => void = () => {};
   /** The `play` setting: free pets now and then play with each other. */
@@ -120,6 +122,11 @@ export class Nursery {
   constructor(mode: "session" | "nursery", deps: Deps) {
     this.mode = mode;
     this.deps = deps;
+  }
+
+  /** Whether your pet hears this session: only the one selected in the app, and only while it is live. */
+  private followed(sessionId: string): boolean {
+    return sessionId === this.selected && this.liveSessions.has(sessionId);
   }
 
   /** The session the session nursery shows now, or null. */
@@ -202,7 +209,7 @@ export class Nursery {
         this.send(own, step.events, now);
         changed = true;
       }
-      if (resident && (this.liveSessions.has(step.sessionId) || !this.sessionIds.has(step.sessionId))) {
+      if (resident && this.followed(step.sessionId)) {
         if (child) resident.review[scoped(step.sessionId, child)] = reviewer;
         if (step.overlay) resident.overlayEnds[scoped(step.sessionId, step.overlay.source)] = now + step.overlay.ms;
         this.endPlayFor(resident.key);
@@ -246,14 +253,25 @@ export class Nursery {
   }
 
   /**
-   * Your pet follows every unarchived session; each of them has a pet of its own. Persistent
-   * agent sessions are left out: they run in the background and have no pet.
+   * Each unarchived session has a pet of its own, driven only by that session. Your pet follows
+   * just the session selected in the app, so no session's activity moves another session's pet.
+   * Persistent agent sessions are left out: they run in the background and have no pet.
    */
   private nurserySnapshots(sessions: SessionSnapshot[], now: number): void {
     const live = sessions.filter((s) => !s.archived && !s.persistent);
     this.liveSessions = new Set(live.map((s) => s.sessionId));
     const resident = this.entries.get(RESIDENT);
     const heard = new Set<string>();
+    // When the followed session changes, nothing the old one made (a one-shot still playing, an
+    // overlay, a reviewer mark) may carry over: your pet starts afresh.
+    const follows = this.selected !== null && this.liveSessions.has(this.selected) ? this.selected : null;
+    if (resident && follows !== this.residentFollows) {
+      resident.arbiter = dispatch(initial(now, hash(resident.key)), { type: "start" }, now, this.deps.envFor(resident.petId, resident.kind));
+      resident.overlayEnds = {};
+      resident.review = {};
+      resident.cache = null;
+    }
+    this.residentFollows = follows;
     live.forEach((s, i) => {
       const key = sessionKey(s.sessionId);
       let entry = this.entries.get(key);
@@ -273,7 +291,7 @@ export class Nursery {
         ids.add(src);
         if (!root) entry.review[src] = isReviewer("", ag.brief);
         this.send(entry, repair(entry.arbiter, src, ag.status, !root), now);
-        if (resident) {
+        if (resident && this.followed(s.sessionId)) {
           const mine = scoped(s.sessionId, src);
           heard.add(mine);
           if (!root) resident.review[mine] = isReviewer("", ag.brief);
@@ -284,8 +302,13 @@ export class Nursery {
       for (const src of Object.keys(entry.arbiter.sources)) if (src !== "main" && !ids.has(src)) this.send(entry, [{ type: "end", source: src }], now);
     });
     if (resident) {
-      // Whatever the app no longer lists (a subagent, an archived or deleted session) is over.
-      for (const src of Object.keys(resident.arbiter.sources)) if (src !== "main" && !heard.has(src)) this.send(resident, [{ type: "end", source: src }], now);
+      // Whatever it no longer follows (a subagent, another session after the selection moved, an archived or deleted session) is over.
+      for (const src of Object.keys(resident.arbiter.sources)) {
+        if (src === "main" || heard.has(src)) continue;
+        this.send(resident, [{ type: "end", source: src }], now);
+        delete resident.overlayEnds[src];
+        delete resident.review[src];
+      }
     }
     // An archived or deleted session's pet walks out; if it comes back in time it simply stays.
     for (const entry of this.entries.values()) {
