@@ -456,7 +456,8 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 /// decides that too. `imperium pack add-source|accept|remove-source …` adds a pack source,
 /// pins a pack the agents will then be instructed by, or drops one (an agent could `--hash` its
 /// own accept), so a person decides those as well; `check`, `diff` and `reject` change nothing
-/// that is in force. `imperium runtime vllm setup|remove …` downloads and installs software
+/// that is in force. `imperium runtime install|update` downloads llama.cpp and
+/// `imperium runtime vllm setup|remove …` downloads and installs software
 /// (a package environment or a Docker image) or deletes it, so a person decides that too;
 /// `status` changes nothing. `imperium plugin marketplace add`, `plugin install|update|enable`
 /// and `config set|unset` of `extensions.disabled_plugins` or `extensions.plugin_dirs` bring
@@ -772,6 +773,10 @@ mod tests {
             "imperium --remote box models pull owner/repo --quant Q4_K_M",
             "imperium runtime install",
             "imperium runtime install cuda12",
+            "imperium runtime update",
+            "imperium runtime update --yes",
+            "imperium --remote box runtime update",
+            "imperium.exe runtime update",
             "imperium config undo 12",
             "imperium config set web.search brave",
             "imperium config set web.search_fallback '[\"tavily\"]'",
@@ -804,6 +809,7 @@ mod tests {
             "imperium runtime vllm status",
             "imperium runtime vllm",
             "imperium runtime status",
+            "imperium runtime candidates",
             "imperium vllm setup",
             "imperium plugin",
             "imperium plugin marketplace list",

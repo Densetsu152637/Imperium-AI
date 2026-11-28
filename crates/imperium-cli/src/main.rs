@@ -743,24 +743,46 @@ enum PackCommand {
 
 #[derive(Debug, Subcommand)]
 enum RuntimeCommand {
-    /// Download llama.cpp's own build for this machine from its GitHub release, verified
-    /// against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12,
-    /// Vulkan, CPU) when one does not run here.
+    /// Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp,
+    /// verified against the release's SHA-256 digests; falls back to the next build (CUDA 13,
+    /// CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when
+    /// the latest has no build that runs. Shows the size and asks first.
     Install {
         /// Build to install, such as `windows-x64-vulkan`; defaults to the configured backend
         /// (`runtime.llamacpp.backend`), or the best that runs on this machine.
         #[arg(long)]
         pack: Option<String>,
+        /// Approve the download without asking.
+        #[arg(long)]
+        yes: bool,
     },
-    /// Show whether llama-server runs and sees the GPU, and what to do when it does not.
+    /// Update llama.cpp to its latest release: downloads it beside the build in use, verified
+    /// against the release's SHA-256 digests, checks that it starts and sees the GPU, then
+    /// switches to it and keeps the old build for rollback (`imperium runtime use --build
+    /// <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build
+    /// goes in a sibling folder that is then used instead, and your folder is never touched.
+    /// Shows the size and asks first.
+    Update {
+        /// Approve the download without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show whether llama-server runs and sees the GPU, and what to do when it does not; also
+    /// whether a newer llama.cpp is available (looked for at most once a day).
     Status,
     /// List the llama-server executables found on this machine, including unpacked downloads
     /// in the home and Downloads folders. None is run until you adopt one with
     /// `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`.
     Candidates,
-    /// Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back
-    /// to the installed runtime.
-    Use { path: Option<PathBuf> },
+    /// Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an
+    /// installed llama.cpp build (a rollback to the one kept before an update); with neither,
+    /// go back to the installed runtime.
+    Use {
+        path: Option<PathBuf>,
+        /// An installed llama.cpp build such as `b12180`.
+        #[arg(long, conflicts_with = "path")]
+        build: Option<String>,
+    },
     /// The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is
     /// downloaded unless you run `setup` and confirm.
     Vllm {
@@ -1069,8 +1091,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         },
         Command::Runtime {
-            command: RuntimeCommand::Install { pack },
-        } => local::install_runtime(pack),
+            command: RuntimeCommand::Install { pack, yes },
+        } => local::install_runtime(pack, yes),
+        Command::Runtime {
+            command: RuntimeCommand::Update { yes },
+        } => local::update_runtime(yes),
         Command::Runtime {
             command: RuntimeCommand::Status,
         } => local::runtime_status(),
@@ -1078,8 +1103,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: RuntimeCommand::Candidates,
         } => local::runtime_candidates(),
         Command::Runtime {
-            command: RuntimeCommand::Use { path },
-        } => local::use_server(path),
+            command: RuntimeCommand::Use { path, build },
+        } => local::use_server(path, build),
         Command::Runtime {
             command:
                 RuntimeCommand::Vllm {

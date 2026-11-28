@@ -78,10 +78,13 @@ read again, so such a save never brings an old value back.
 | `models.test` `{model, prompt?}` | `imperium models test <id>` | Loads the model if needed (as any session would, through the supervisor) and sends one short prompt; returns the reply, completion tokens, seconds, tokens per second (llama.cpp's own measurement when it reports one), and the load wait, or why it failed. Works for hosted models too |
 | `models.bench` `{model?, cold?}`, `models.bench_results` `{model?}`, `models.bench_cancel` `{run_id}` | `imperium models bench [<id>] [--results] [--warm]` | The [local model benchmark](#local-model-benchmark-implemented): starts a run (one run at a time), lists saved results and this session's runs, stops a run |
 | `models.add_endpoint` `{id, base_url, api_key?, model?, make_default}` | — | Writes `[endpoints.<id>]` with the key as a keychain reference (`<id>-api-key`), optionally making `<id>:<model>` the default |
-| `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
+| `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness); also `update_check` (the last daily check, [updates](#llamacpp-updates)) and `offers` (the downloads on offer, none started) |
 | `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
+| (CLI only) | `imperium runtime use --build <bNNNNN>` | Rolls back (or forward) to an installed llama.cpp build, such as the one kept before an update; nothing is downloaded |
 | (CLI only) | `imperium runtime vllm setup\|status\|remove` | The managed vLLM environment ([backends](#runtimes)); runs on this machine, not through the daemon |
-| `runtime.install` | `imperium runtime install` | Installs llama.cpp's own build for this machine from its GitHub release in the background with `runtime.install_progress` notifications, falling back to the next build when one does not run ([runtimes](#runtimes)); new loads use it unless a custom server is set |
+| `runtime.install` | `imperium runtime install [--yes]` | Installs llama.cpp's latest release build for this machine in the background with `runtime.install_progress` notifications, falling back to the next build when one does not run, and to the pinned release when the latest has none that runs ([runtimes](#runtimes)); the call is the user's yes (the CLI shows the size and source and asks first); new loads use it unless a custom server is set |
+| `runtime.check_update` `{force?}` | (`imperium runtime status` and `update`) | Looks for a newer llama.cpp release (`ggml-org/llama.cpp`'s latest, not the pinned one), at most once a day unless `force`, and says what updating would download, how much, and where it would go ([updates](#llamacpp-updates)); downloads nothing |
+| `runtime.update` | `imperium runtime update [--yes]` | Installs the latest verified release beside the build in use, smoke-tests it, and switches to it with `runtime.install_progress` notifications; for a `custom_path` outside Imperium's folders it goes in a sibling folder instead ([updates](#llamacpp-updates)). The call is the user's yes |
 | `runtime.update_external` | — | Runs the package manager's upgrade of the `llama-server` in use (winget, scoop, Chocolatey, Homebrew; the llama.cpp package only) in the background with `runtime.update_progress` notifications; refused while a model is loaded from it ([updates](#llamacpp-updates)) |
 
 `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` set with `config.set`
@@ -210,10 +213,13 @@ desktop shows a card ([07](07-desktop-ui.md)); `imperium chat` prints the sugges
 
 ## Runtimes
 
-**Implemented:** `imperium runtime install [--pack <id>]` (and `runtime.install`, *Install
-llama.cpp* in the app) installs llama.cpp's own release build from
-[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) at the ref pinned in
-`runtimes/llama-cpp.env`:
+**Implemented:** `imperium runtime install [--pack <id>] [--yes]` (and `runtime.install`,
+*Install llama.cpp* in the app) installs llama.cpp's own release build from
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases): the latest release, or,
+when that cannot be read or has no build that runs here, the ref pinned in
+`runtimes/llama-cpp.env` (the release Imperium was tested with). It shows the source, the build
+and its size, and asks first (`--yes` approves it for a script); the app's button shows the same
+before it downloads:
 
 - **Which build.** For `runtime.llamacpp.backend = "auto"` the builds are tried best first: on
   an NVIDIA GPU CUDA 13 (driver 580 or newer), then CUDA 12 (driver 525 or newer, x64), then
@@ -224,9 +230,11 @@ llama.cpp* in the app) installs llama.cpp's own release build from
   (`cudart-llama-bin-win-cuda-13.5-x64.zip`), unpacked beside `llama-server`.
 - **Download and verification.** The release is read from the GitHub API, and each asset is
   downloaded through its API URL with `Accept: application/octet-stream` (the
-  `github.com/.../releases/download` links have returned 504 for hours at a time). Every asset
-  is checked against the SHA-256 `digest` GitHub publishes for it; an asset without one, or
-  with a different hash, is refused and nothing is replaced.
+  `github.com/.../releases/download` links have returned 504 for hours at a time). Only
+  `https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/<id>` addresses are used, and
+  a release tag must be a plain `b<digits>` build (it names a folder). Every asset is checked
+  against the SHA-256 `digest` GitHub publishes for it; an asset without one, or with a
+  different hash, is refused and nothing is replaced.
 - **Unpacking.** Each archive (`.zip` or `.tar.gz`) is unpacked into a staging folder, writing
   only regular files, folders and links beneath it. A zip entry with an absolute path, a `..`
   component, a drive prefix or a NUL is refused, as is a zip symlink or any non-regular zip
@@ -246,12 +254,13 @@ llama.cpp* in the app) installs llama.cpp's own release build from
   A build that does not start is removed and the next one tried; one that starts but does not
   see the GPU is kept only if no later build does better. A failed download stops the install.
 - **Where.** `<data>/runtimes/llama.cpp/<ref>/imperium-runtime-llama.cpp-<build>/bin/`, with an
-  `imperium-runtime.json` recording the assets and digests. The first installed build of the
-  list above is used.
+  `imperium-runtime.json` recording the assets and digests. `<data>/runtimes/llama.cpp/active.json`
+  names the release new loads use and the one kept before it; the first installed build of the
+  list above, in that release, is used.
 
 **Which `llama-server` is used**, in order: `runtime.llamacpp.custom_path`; an installed build
-(of the pinned release, else of the newest earlier release still installed, until the pinned
-one is); otherwise, while `runtime.llamacpp.find_existing` is on (the default), a
+(of the release `active.json` names, else of the pinned release, else of the newest earlier
+release still installed); otherwise, while `runtime.llamacpp.find_existing` is on (the default), a
 `llama-server` already on this machine that starts and whose `--help` lists every flag Imperium
 passes (`--kv-unified-per-slot`, `--no-cache-idle-slots`, ...). The daemon looks for one in the
 background when it starts and whenever the server is changed; `runtime.status` reports it as
@@ -278,31 +287,57 @@ source `detected` and the app says so on the runtime card. Installing a build re
   sees another GPU, then one that could not say, then a CPU-only one; among equals the newest
   build (the number in `--version`), then the first found.
 
-**Installed when first needed.** With `runtime.llamacpp.auto_install` on (the default) and no
-custom path, the daemon installs llama.cpp's build for this machine by itself (as
-`runtime.install` would, with the same progress notifications, verification, and fallback)
-the first time a runtime is needed: when a llama.cpp model is about to load, or when the Local
-models panel opens (`runtime.status`); never when the app starts. It does so when no usable
-`llama-server` is installed or found (the load waits for the install and then goes ahead), and
-in the background when the one found runs on the CPU only although this machine has a GPU a
-build supports (the GPU build is used from the next load; with `backend = "cpu"` it is not).
-An automatic install is tried once per daemon run; after a failure the load fails with *No
-llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing
-llama-server (or run `imperium runtime install`)* and the reason, and *Install official build*
-tries again. With `auto_install` off, a missing runtime fails the load with that message, and
-the session model selector warns before a llama.cpp model is chosen.
+**Offered when first needed, never downloaded unasked.** With local models on
+(`models.local.enabled`) and no custom path, when no usable `llama-server` is installed or
+found (or only a CPU one on a machine with a GPU a build supports, or Imperium's build is for
+an earlier release than the pinned one), `runtime.status` lists an offer (`offers`, runtime
+`llamacpp`) saying what it would download, from where (`github.com/ggml-org/llama.cpp`) and,
+once a release has been read, how many MiB, and the app shows a *Download llama.cpp* button; in
+a terminal `imperium runtime status` prints the same with the command that approves it
+(`imperium runtime install`, which shows the size and asks). When a Hugging Face model folder
+(`vllm:<id>`) is listed and no vLLM is set up, a second offer (runtime `vllm`) names
+`imperium runtime vllm setup`, which prints what it needs and asks before it downloads
+anything. `runtime.llamacpp.auto_install` (on by default) decides whether the llama.cpp offer is
+made; it never installs by itself. A load that finds no runtime fails with *No llama.cpp
+runtime yet — open Local models → Runtime to install one or choose an existing llama-server
+(or run `imperium runtime install`)*, adds that Imperium does not download llama.cpp without
+the user's approval, and waits only for an installation the user already started. Nothing is
+offered, checked or downloaded while local models are off.
 
 ### llama.cpp updates
 
-llama.cpp has no updater of its own, so llama.cpp updates with Imperium:
+llama.cpp has no updater of its own, so Imperium updates it, only when the user says so:
 
-- **Imperium's build.** Builds live under the release ref Imperium pins, so when an update
-  pins a newer release, the earlier build stays in use and the pinned one is installed (as
-  above) the next time a local model is needed. Models already loaded keep the earlier build;
-  new loads use the new one. The new build must start and list every flag Imperium passes, or
-  it is removed and the earlier build stays (a rollback). One earlier release is kept until a
-  model has loaded with the new build; then it is deleted (left for later while a model still
-  holds its files).
+- **The check.** `runtime.check_update` reads the latest release of `ggml-org/llama.cpp` (not
+  the pinned one) from GitHub's API: at most once a day (the answer is kept in
+  `<data>/runtimes/llama.cpp/update-check.json`), only while local models are on, and not at
+  all with `runtime.llamacpp.check_updates` off (a user's own `force` still asks). A failed
+  check is not repeated for an hour. `imperium runtime status` and the Local models panel then
+  show *update available: bNNNNN* with the download's size and where it would go. A check
+  downloads nothing, and an update is never started by a check, by opening the app, or by a
+  model load.
+- **Imperium's build.** `imperium runtime update` (and the panel's *Update to bNNNNN* button,
+  `runtime.update`) shows the source, the build for this machine (CUDA 13, CUDA 12, Vulkan,
+  then CPU: the same order as an install, but never trading a GPU build for the CPU's), its
+  size and where it goes, and asks (`--yes` approves it). It installs the latest release side
+  by side under `<data>/runtimes/llama.cpp/<bNNNNN>/` through the same download, SHA-256
+  verification and guarded unpacking as an install (a mismatch or a missing digest refuses it
+  and changes nothing), runs `llama-server --version`, `--help` (every flag Imperium passes)
+  and `--list-devices`, and only then switches `active.json` to it. A build that does not start,
+  lacks a flag, or does not see a GPU the machine has is removed and the next is tried; if none
+  passes, the update fails and the build in use is still the one in use. Models already loaded
+  keep the old build; new loads use the new one. The old build stays for rollback
+  (`imperium runtime use --build <old>`, which switches back without downloading) and at most
+  two builds are kept: the one in use and the one before it.
+- **A `llama-server` of the user's own** (`runtime.llamacpp.custom_path`, outside Imperium's
+  folders, in a folder named like `b12823` or `llama-...`): `runtime.update` downloads the
+  latest verified release into a *sibling* folder in the same parent (for
+  `D:/AI-Models/llama.cpp/b12823/bin/llama-server.exe` that is
+  `D:/AI-Models/llama.cpp/b12900/bin/llama-server.exe`), smoke-tests it as above, and only then
+  points `custom_path` at it. The folder the user named is never written to, replaced or
+  deleted, and a sibling that already exists is never replaced (the update stops). A
+  `llama-server` in a folder not named like a llama.cpp build has no sibling to use; the
+  refusal says to run `imperium runtime use` (no path) to go back to Imperium's own build.
 - **Package-manager installs** (winget `ggml.llamacpp`, scoop, Chocolatey, Homebrew): when the
   build number in `llama-server --version` is older than the pinned release's (or the server
   lacks a flag Imperium passes), `runtime.status` offers an update (`update`, action
@@ -1574,8 +1609,9 @@ server. Downloads the user starts by hand (`models.download`, the panel's form) 
 installs the user asks for are the user's own calls, and the desktop disables them while the
 switch is off so the order is: turn local models on, then set them up.
 
-While the switch is off, `models.download`, `runtime.install` and `runtime.update_external` (and
-`imperium models pull`, `imperium runtime install`, `imperium runtime vllm setup`) are refused
+While the switch is off, `models.download`, `runtime.install`, `runtime.update`,
+`runtime.check_update` and `runtime.update_external` (and `imperium models pull`,
+`imperium runtime install`, `imperium runtime update`, `imperium runtime vllm setup`) are refused
 with a message saying how to turn local models on, and the daemon never installs or updates a
 runtime by itself, so opening the Local models panel downloads nothing. A resumed session whose
 model is local does not start it while the switch is off: it is restored without a model (its
@@ -1585,8 +1621,10 @@ models are on again, and its subagents route over hosted models only.
 Turning it **on** is the user's call: an agent's `imperium config set models.local.enabled <not
 false>` is a dangerous command (the [safety floor](05-tools-and-isolation.md) asks the person
 each time, like the other runtime settings), as are `imperium config undo` (which may undo the
-change that turned it off), `imperium models pull` and `imperium runtime install` (setup that
-only makes sense once local models are on); turning it off, `unset` and reading stay open to
+change that turned it off), `imperium models pull`, `imperium runtime install` and
+`imperium runtime update` (setup that only makes sense once local models are on, and downloads
+the user decides; an agent's `imperium runtime install|update` and `imperium runtime vllm
+setup` always ask the person); turning it off, `unset` and reading stay open to
 agents.
 
 `models.rescan` (protocol 0.70; `imperium models folders rescan`; the Local models panel's

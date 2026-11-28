@@ -3339,10 +3339,11 @@ Inference runtimes
 Usage: imperium runtime [OPTIONS] <COMMAND>
 
 Commands:
-  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
-  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  install     Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
+  update      Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
-  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  use         Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
   help        Print this message or the help of the given subcommand(s)
 
@@ -3354,7 +3355,7 @@ Options:
           Print help
 
 ===== imperium runtime install =====
-Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
 
 Usage: imperium runtime install [OPTIONS]
 
@@ -3365,11 +3366,29 @@ Options:
       --remote <REMOTE>
           Talk to a remote daemon connected with `imperium remote connect`
 
+      --yes
+          Approve the download without asking
+
+  -h, --help
+          Print help
+
+===== imperium runtime update =====
+Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+
+Usage: imperium runtime update [OPTIONS]
+
+Options:
+      --remote <REMOTE>
+          Talk to a remote daemon connected with `imperium remote connect`
+
+      --yes
+          Approve the download without asking
+
   -h, --help
           Print help
 
 ===== imperium runtime status =====
-Show whether llama-server runs and sees the GPU, and what to do when it does not
+Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
 
 Usage: imperium runtime status [OPTIONS]
 
@@ -3393,7 +3412,7 @@ Options:
           Print help
 
 ===== imperium runtime use =====
-Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
 
 Usage: imperium runtime use [OPTIONS] [PATH]
 
@@ -3402,6 +3421,9 @@ Arguments:
           
 
 Options:
+      --build <BUILD>
+          An installed llama.cpp build such as `b12180`
+
       --remote <REMOTE>
           Talk to a remote daemon connected with `imperium remote connect`
 
@@ -3514,20 +3536,26 @@ Print this message or the help of the given subcommand(s)
 Usage: imperium runtime help [COMMAND]
 
 Commands:
-  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
-  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  install     Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
+  update      Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
-  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  use         Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
   help        Print this message or the help of the given subcommand(s)
 
 ===== imperium runtime help install =====
-Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
 
 Usage: imperium runtime help install
 
+===== imperium runtime help update =====
+Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+
+Usage: imperium runtime help update
+
 ===== imperium runtime help status =====
-Show whether llama-server runs and sees the GPU, and what to do when it does not
+Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
 
 Usage: imperium runtime help status
 
@@ -3537,7 +3565,7 @@ List the llama-server executables found on this machine, including unpacked down
 Usage: imperium runtime help candidates
 
 ===== imperium runtime help use =====
-Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
 
 Usage: imperium runtime help use
 
@@ -4646,19 +4674,25 @@ Inference runtimes
 Usage: imperium help runtime [COMMAND]
 
 Commands:
-  install     Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
-  status      Show whether llama-server runs and sees the GPU, and what to do when it does not
+  install     Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
+  update      Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+  status      Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
   candidates  List the llama-server executables found on this machine, including unpacked downloads in the home and Downloads folders. None is run until you adopt one with `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`
-  use         Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+  use         Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
   vllm        The managed vLLM environment for Hugging Face model folders (`vllm:<id>`). Nothing is downloaded unless you run `setup` and confirm
 
 ===== imperium help runtime install =====
-Download llama.cpp's own build for this machine from its GitHub release, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here
+Download llama.cpp's latest release for this machine from github.com/ggml-org/llama.cpp, verified against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here, and to Imperium's pinned release when the latest has no build that runs. Shows the size and asks first
 
 Usage: imperium help runtime install
 
+===== imperium help runtime update =====
+Update llama.cpp to its latest release: downloads it beside the build in use, verified against the release's SHA-256 digests, checks that it starts and sees the GPU, then switches to it and keeps the old build for rollback (`imperium runtime use --build <old>`). For a llama-server you chose with `imperium runtime use <path>` the new build goes in a sibling folder that is then used instead, and your folder is never touched. Shows the size and asks first
+
+Usage: imperium help runtime update
+
 ===== imperium help runtime status =====
-Show whether llama-server runs and sees the GPU, and what to do when it does not
+Show whether llama-server runs and sees the GPU, and what to do when it does not; also whether a newer llama.cpp is available (looked for at most once a day)
 
 Usage: imperium help runtime status
 
@@ -4668,7 +4702,7 @@ List the llama-server executables found on this machine, including unpacked down
 Usage: imperium help runtime candidates
 
 ===== imperium help runtime use =====
-Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back to the installed runtime
+Use an existing llama-server (runtime.llamacpp.custom_path), or with `--build` an installed llama.cpp build (a rollback to the one kept before an update); with neither, go back to the installed runtime
 
 Usage: imperium help runtime use
 

@@ -1,4 +1,6 @@
-//! `imperium models local|folders|use|test` and `imperium runtime install|status|use`.
+//! `imperium models local|folders|use|test` and `imperium runtime install|update|status|use`.
+//! Nothing is downloaded without the user's yes: `install` and `update` show the size and
+//! source and ask first (or take `--yes`), and refuse while local models are off.
 
 use std::path::Path;
 
@@ -6,13 +8,16 @@ use anyhow::Context;
 use imperium_config::Paths;
 use imperium_local::hardware::probe;
 use imperium_local::runtime::{
-    GITHUB_API, LLAMA_CPP_REPOSITORY, install, llama_cpp_ref, packs_for,
+    GITHUB_API, fetch_latest, fetch_release, install, llama_cpp_ref, packs_for, use_build,
 };
+use imperium_local::runtime_release::{SOURCE, plan};
 use imperium_protocol::methods::{
     LocalModelList, LocalModelListParams, LocalModelListResult, ModelFolderAdd, ModelFolderParams,
     ModelFolderRemove, ModelRescan, ModelRescanParams, ModelTest, ModelTestParams, ModelUse,
-    ModelUseParams, RuntimeSetServer, RuntimeSetServerParams, RuntimeStatus, RuntimeStatusParams,
-    RuntimeStatusResult,
+    ModelUseParams, RUNTIME_INSTALL_PROGRESS, RuntimeCheckUpdate, RuntimeCheckUpdateParams,
+    RuntimeDownloadOffer, RuntimeInstallJob, RuntimeSetServer, RuntimeSetServerParams,
+    RuntimeStatus, RuntimeStatusParams, RuntimeStatusResult, RuntimeUpdate, RuntimeUpdateCheck,
+    RuntimeUpdateParams,
 };
 
 use crate::{block_on, connect};
@@ -169,11 +174,57 @@ fn print_runtime(status: &RuntimeStatusResult) {
             println!("  {candidate}");
         }
     }
+    if let Some(check) = &status.update_check {
+        print_update_available(check);
+    }
+    print_offers(&status.offers);
+}
+
+/// "update available: bNNNNN" when the last check found a newer llama.cpp.
+fn print_update_available(check: &RuntimeUpdateCheck) {
+    if !check.available {
+        return;
+    }
+    let latest = check.latest.as_deref().unwrap_or("a newer build");
+    match &check.current {
+        Some(current) => println!("\nupdate available: {latest} (you have {current})"),
+        None => println!("\nupdate available: {latest}"),
+    }
+    let size = check.bytes.map_or_else(String::new, |bytes| {
+        format!(", {:.0} MiB", bytes as f64 / MIB)
+    });
+    let target = match (check.target.as_str(), &check.target_dir) {
+        ("beside", Some(dir)) => format!(" into a new folder beside yours ({dir})"),
+        _ => String::new(),
+    };
+    println!(
+        "  `imperium runtime update` downloads it from {}{size}{target} after asking; nothing is \
+         downloaded until you say yes",
+        check.source
+    );
+}
+
+/// The downloads on offer: what, from where, how big, and the command that approves each.
+fn print_offers(offers: &[RuntimeDownloadOffer]) {
+    for offer in offers {
+        println!("\n{}", offer.message);
+        let size = offer.bytes.map_or_else(String::new, |bytes| {
+            format!(", {:.0} MiB", bytes as f64 / MIB)
+        });
+        println!(
+            "  from {}{size}; approve with `{}`",
+            offer.source, offer.command
+        );
+    }
 }
 
 pub fn runtime_status() -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
+        // The daily check (cached; none when it is off or local models are off).
+        let _ = client
+            .call::<RuntimeCheckUpdate>(RuntimeCheckUpdateParams { force: false })
+            .await;
         let status = client.call::<RuntimeStatus>(RuntimeStatusParams {}).await?;
         print_runtime(&status);
         Ok(())
@@ -200,7 +251,23 @@ Adopt one with `imperium runtime use <path>`."
     })
 }
 
-pub fn use_server(path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+pub fn use_server(path: Option<std::path::PathBuf>, build: Option<String>) -> anyhow::Result<()> {
+    if let Some(build) = build {
+        // A rollback (or going forward again) to a build already installed: nothing is
+        // downloaded. The daemon is told to go back to the installed runtime so the build
+        // chosen here is the one used.
+        let paths = Paths::from_env()?;
+        use_build(paths.data_dir(), &build).map_err(anyhow::Error::msg)?;
+        println!("Imperium now uses llama.cpp {build}; the build used before it is kept.");
+        return block_on(async {
+            let (mut client, _) = connect().await?;
+            let status = client
+                .call::<RuntimeSetServer>(RuntimeSetServerParams { path: None })
+                .await?;
+            print_runtime(&status);
+            Ok(())
+        });
+    }
     let path = path.as_deref().map(absolute).transpose()?;
     block_on(async {
         let (mut client, _) = connect().await?;
@@ -362,7 +429,39 @@ pub fn refuse_while_local_off(
     Ok(())
 }
 
-pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
+/// Says what installing `packs` downloads (the latest release, else the pinned one: what
+/// [`install`] fetches) and asks for the yes; false when it was not given.
+async fn approve_install(
+    http: &reqwest::Client,
+    packs: &[String],
+    yes: bool,
+) -> anyhow::Result<bool> {
+    let release = match fetch_latest(http, GITHUB_API).await {
+        Ok(release) => release,
+        Err(error) => {
+            println!(
+                "could not read llama.cpp's latest release ({error}); trying the pinned {}",
+                llama_cpp_ref()
+            );
+            fetch_release(http, GITHUB_API, llama_cpp_ref())
+                .await
+                .context("could not read llama.cpp's release from GitHub")?
+        }
+    };
+    let planned = plan(&release, packs, GITHUB_API)
+        .with_context(|| format!("llama.cpp {} cannot be installed here", release.tag_name))?;
+    println!(
+        "llama.cpp {} from {SOURCE}: the {} build, {:.0} MiB to download, verified against the \
+         release's SHA-256 digests (tried in order: {})",
+        planned.release,
+        planned.pack,
+        planned.bytes as f64 / MIB,
+        packs.join(", ")
+    );
+    crate::vllm::confirm("Download and install it?", yes)
+}
+
+pub fn install_runtime(pack: Option<String>, yes: bool) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
     refuse_while_local_off(&settings, "installing the llama.cpp runtime")?;
@@ -371,11 +470,6 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         Some(pack) => vec![pack],
         None => packs_for(&settings.runtime.llamacpp.backend, &hardware),
     };
-    println!(
-        "installing llama.cpp {} from {LLAMA_CPP_REPOSITORY} (trying {})",
-        llama_cpp_ref(),
-        packs.join(", ")
-    );
     // Whole percents, printed as they change.
     let shown = std::sync::Mutex::new((String::new(), u64::MAX));
     let progress = |pack: &str, done: u64, total: u64| {
@@ -393,8 +487,15 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         println!("  {percent}%");
     };
     block_on(async {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        if !approve_install(&http, &packs, yes).await? {
+            println!("Nothing was downloaded.");
+            return Ok(());
+        }
         let installed = install(
-            &reqwest::Client::new(),
+            &http,
             GITHUB_API,
             paths.data_dir(),
             &packs,
@@ -406,8 +507,12 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         for skipped in &installed.skipped {
             println!("passed over {skipped}");
         }
+        // New loads use it from now on; the build used before stays for rollback.
+        imperium_local::runtime::activate(paths.data_dir(), &installed.release)
+            .context("the build was installed but could not be switched to")?;
         println!(
-            "installed {} ({})",
+            "installed {} {} ({}); the build used before it is kept for rollback",
+            installed.release,
             installed.pack,
             installed.server.display()
         );
@@ -422,6 +527,94 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
     })
 }
 
+/// `imperium runtime update`: the daemon looks for the latest release, this shows what it
+/// would download and where it would go, asks, and follows the update to its end.
+pub fn update_runtime(yes: bool) -> anyhow::Result<()> {
+    let paths = Paths::from_env()?;
+    let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    refuse_while_local_off(&settings, "updating the llama.cpp runtime")?;
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let check = client
+            .call::<RuntimeCheckUpdate>(RuntimeCheckUpdateParams { force: true })
+            .await?;
+        if !check.available {
+            println!(
+                "{}",
+                check
+                    .message
+                    .as_deref()
+                    .unwrap_or("llama.cpp is up to date.")
+            );
+            return Ok(());
+        }
+        let latest = check.latest.as_deref().unwrap_or("the latest release");
+        let size = check.bytes.map_or_else(String::new, |bytes| {
+            format!(", {:.0} MiB", bytes as f64 / MIB)
+        });
+        println!(
+            "llama.cpp {latest} (you have {}) from {}: the {} build{size}, verified against the \
+             release's SHA-256 digests",
+            check.current.as_deref().unwrap_or("none"),
+            check.source,
+            check.pack.as_deref().unwrap_or("best"),
+        );
+        match (check.target.as_str(), &check.target_dir) {
+            ("beside", Some(dir)) => println!(
+                "It goes in a new folder beside yours ({dir}); your folder is left as it is and \
+                 Imperium uses the new one once it starts and sees the GPU"
+            ),
+            (_, Some(dir)) => println!(
+                "It goes in {dir}; the build in use is kept for rollback (`imperium runtime use \
+                 --build <old>`) and is used until the new one starts and sees the GPU"
+            ),
+            _ => {}
+        }
+        if !crate::vllm::confirm("Download and install it?", yes)? {
+            println!("Nothing was downloaded.");
+            return Ok(());
+        }
+        let job = client.call::<RuntimeUpdate>(RuntimeUpdateParams {}).await?;
+        follow_job(&mut client, job).await
+    })
+}
+
+/// Prints an installation's progress (whole tens of percents) until it ends; an error when it
+/// failed.
+async fn follow_job(
+    client: &mut imperium_client::Client,
+    mut job: RuntimeInstallJob,
+) -> anyhow::Result<()> {
+    let mut shown = u64::MAX;
+    loop {
+        let percent = (job.done_bytes * 100)
+            .checked_div(job.total_bytes)
+            .unwrap_or(0);
+        match job.state.as_str() {
+            "done" => {
+                println!("{}", job.message.as_deref().unwrap_or("done"));
+                return Ok(());
+            }
+            "failed" => anyhow::bail!(
+                "the update failed: {}",
+                job.message.as_deref().unwrap_or("no reason given")
+            ),
+            _ if percent / 10 != shown => {
+                shown = percent / 10;
+                println!("{}: {percent}%", job.pack);
+            }
+            _ => {}
+        }
+        job = loop {
+            let notification = client.next_notification().await?;
+            if notification.method == RUNTIME_INSTALL_PROGRESS {
+                break serde_json::from_value(notification.params)
+                    .context("could not read the update's progress")?;
+            }
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +625,11 @@ mod tests {
             imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
                 .settings()
                 .unwrap();
-        for what in ["installing the llama.cpp runtime", "setting up vLLM"] {
+        for what in [
+            "installing the llama.cpp runtime",
+            "updating the llama.cpp runtime",
+            "setting up vLLM",
+        ] {
             let error = refuse_while_local_off(&settings, what)
                 .unwrap_err()
                 .to_string();

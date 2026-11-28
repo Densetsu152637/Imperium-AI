@@ -76,6 +76,16 @@ impl Connection {
                     crate::onboarding::install_runtime(Arc::clone(&self.state))
                 })
             }
+            RuntimeCheckUpdate::NAME => call_later::<RuntimeCheckUpdate, _>(
+                c.params.take(),
+                c.later,
+                |params: RuntimeCheckUpdateParams| {
+                    crate::llama_runtime::check_update(Arc::clone(&self.state), params.force)
+                },
+            ),
+            RuntimeUpdate::NAME => call_later::<RuntimeUpdate, _>(c.params.take(), c.later, |_| {
+                crate::llama_runtime::update(Arc::clone(&self.state))
+            }),
             RuntimeUpdateExternal::NAME => {
                 call_later::<RuntimeUpdateExternal, _>(c.params.take(), c.later, |_| {
                     crate::llama_runtime::update_external(Arc::clone(&self.state))

@@ -482,6 +482,9 @@ async fn nothing_downloads_or_installs_while_local_models_are_off() {
         ("models.download", json!({"repo": "owner/tiny-GGUF"})),
         ("runtime.install", json!({})),
         ("runtime.update_external", json!({})),
+        ("runtime.update", json!({})),
+        ("runtime.check_update", json!({})),
+        ("runtime.check_update", json!({"force": true})),
     ] {
         let error = call(&mut socket, method, params).await.unwrap_err();
         assert_eq!(error["code"], -32602, "{method}: {error}");
@@ -494,10 +497,13 @@ async fn nothing_downloads_or_installs_while_local_models_are_off() {
         );
     }
     // Reading the runtime's state (what opening the Local models panel does) answers and
-    // installs nothing: no install job is started behind it.
-    call(&mut socket, "runtime.status", json!({}))
+    // installs nothing: no install job is started behind it, and nothing is offered or checked.
+    let status = call(&mut socket, "runtime.status", json!({}))
         .await
         .unwrap();
+    assert_eq!(status["offers"], json!([]), "{status}");
+    assert!(status["update_check"].is_null(), "{status}");
+    assert!(status["install"].is_null(), "{status}");
     let error = call(&mut socket, "runtime.install", json!({}))
         .await
         .unwrap_err();
@@ -538,4 +544,59 @@ async fn after_the_migration_a_folder_added_later_leaves_local_models_off() {
     assert!(!daemon.settings().models.local.enabled);
     let listing = call(&mut socket, "models.local", json!({})).await.unwrap();
     assert_eq!(listing["local_enabled"], false);
+}
+
+/// A `llama-server` at `folders` (created under `root`) that `runtime.set_server` adopts, in a
+/// daemon with local models on.
+async fn adopt(
+    root: &Path,
+    folders: &str,
+    home: &Path,
+) -> (Socket, Arc<imperium_core::DaemonState>) {
+    let (mut socket, daemon) = start_daemon(home, "[models.local]\nenabled = true\n").await;
+    let folder = root.join(folders);
+    std::fs::create_dir_all(&folder).unwrap();
+    let server = folder.join(format!("llama-server{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&server, b"not really a server").unwrap();
+    call(
+        &mut socket,
+        "runtime.set_server",
+        json!({"path": server.display().to_string()}),
+    )
+    .await
+    .unwrap();
+    (socket, daemon)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_is_refused_for_installs_that_are_updated_another_way_before_any_request() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    // A package manager's install is upgraded by that package manager, never by Imperium.
+    let (mut socket, daemon) =
+        adopt(root.path(), "scoop/apps/llama.cpp/current", home.path()).await;
+    let error = call(&mut socket, "runtime.update", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(error["code"], -32602, "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("was installed with scoop"), "{message}");
+    assert!(message.contains("scoop"), "{message}");
+    // Nothing started, and the setting still names the user's server.
+    assert!(daemon.settings().runtime.llamacpp.custom_path.is_some());
+    let status = call(&mut socket, "runtime.status", json!({}))
+        .await
+        .unwrap();
+    assert!(status["install"].is_null(), "{status}");
+
+    // A llama-server in a folder that is not a llama.cpp build has no sibling to update into.
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, _daemon) = adopt(root.path(), "mytools", home.path()).await;
+    let error = call(&mut socket, "runtime.update", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(error["code"], -32602, "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("not in a llama.cpp folder"), "{message}");
+    assert!(message.contains("imperium runtime use"), "{message}");
 }

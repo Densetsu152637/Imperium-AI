@@ -7,7 +7,7 @@ export type RuntimeInfo = {
  */
 pack: string, server_path: string, installed: boolean, llama_cpp_ref: string, 
 /**
- * `runtime.llamacpp.auto_install`: with none installed, the official build is fetched the
- * first time a model is loaded.
+ * `runtime.llamacpp.auto_install`: with none installed, the official build is offered for
+ * download the first time a model is loaded; it waits for the user's yes.
  */
 auto_install: boolean, };

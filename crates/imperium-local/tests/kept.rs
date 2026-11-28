@@ -182,6 +182,7 @@ fn settings(swap_cache_mb: u64) -> LlamaCppSettings {
         find_existing: true,
         auto_install: false,
         update_external: "off".into(),
+        check_updates: false,
         idle_unload_s: 900,
         context: 4096.into(),
         parallel: 2,

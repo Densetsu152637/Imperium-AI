@@ -565,6 +565,7 @@ mod tests {
             find_existing: true,
             auto_install: false,
             update_external: "off".into(),
+            check_updates: false,
             idle_unload_s,
             context: 4096.into(),
             parallel: 2,

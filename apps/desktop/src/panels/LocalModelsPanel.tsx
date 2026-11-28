@@ -17,6 +17,7 @@ import type {
   ModelUseResult,
   RuntimeInstallJob,
   RuntimeStatusResult,
+  RuntimeUpdateCheck,
   RuntimeUpdateJob,
 } from "@imperium/protocol";
 import { Badge } from "../components/Badge";
@@ -33,12 +34,16 @@ import { ModelSetup } from "./ModelSetup";
 import { HOUSE_MODELS, approxSize } from "../models/houseModels";
 import {
   LOCAL_OFF_NOTE,
+  downloadSummary,
   localEnabled,
+  offersOf,
   offReason,
   rowIsOff,
   runRescan,
   setLocalEnabled,
   setModelEnabled,
+  sizeText,
+  updateAvailable,
   type Call,
   type RescanState,
 } from "../models/localModels";
@@ -279,9 +284,10 @@ function shortPath(path: string): string {
 /**
  * The llama.cpp runtime: which `llama-server` is used (yours, one found on this computer, or
  * Imperium's build), its backend and whether it sees the GPU, updates, and how to change it.
- * Opening it is a first need of a runtime: with none usable the daemon installs the official
- * build (unless `runtime.llamacpp.auto_install` is off) and its progress shows here.
- * `onChanged` runs once the server in use may have changed, so the model listing follows.
+ * Nothing is downloaded without a yes: a download or an update first shows its source and size
+ * (the confirmation below), and only its button starts it; progress shows here. The daily check
+ * for a newer release downloads nothing. `onChanged` runs once the server in use may have
+ * changed, so the model listing follows.
  */
 function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: () => void }) {
   const [status, setStatus] = useState<RuntimeStatusResult | null>(null);
@@ -290,6 +296,9 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   const [install, setInstall] = useState<RuntimeInstallJob | null>(null);
   const [update, setUpdate] = useState<RuntimeUpdateJob | null>(null);
   const [candidate, setCandidate] = useState("");
+  // A download waiting for the user's yes: what it is, shown with its source and size first.
+  const [pending, setPending] = useState<"install" | "update" | null>(null);
+  const [asking, setAsking] = useState(false);
   // The server last reported, so the model listing is refreshed when it changes.
   const usedRef = useRef<string | null>(null);
 
@@ -312,7 +321,11 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   };
 
   useEffect(() => {
-    void check();
+    // The daily check for a newer release (cached by the daemon; it downloads nothing), then the status.
+    void client
+      .call<RuntimeUpdateCheck>("runtime.check_update", { force: false })
+      .catch(() => undefined)
+      .then(() => check());
     const off = client.onNotification((notification) => {
       if (notification.method === "runtime.install_progress") {
         const job = notification.params as RuntimeInstallJob;
@@ -347,6 +360,31 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   };
   const startUpdate = () => {
     client.call<RuntimeUpdateJob>("runtime.update_external").then(setUpdate, (failure) => setError(message(failure)));
+  };
+  // Shows what would be downloaded (reading the release first when its size is not known) and
+  // waits for the yes.
+  const ask = async (what: "install" | "update") => {
+    setPending(what);
+    if (status?.update_check?.bytes != null) return;
+    setAsking(true);
+    try {
+      await client.call<RuntimeUpdateCheck>("runtime.check_update", { force: true });
+      await check();
+    } catch (failure) {
+      setError(message(failure));
+      setPending(null);
+    } finally {
+      setAsking(false);
+    }
+  };
+  const approve = async () => {
+    const what = pending;
+    setPending(null);
+    if (what === "update") {
+      client.call<RuntimeInstallJob>("runtime.update").then(setInstall, (failure) => setError(message(failure)));
+    } else if (what === "install") {
+      await useOfficial();
+    }
   };
 
   const ready = status?.runs && !status.problem;
@@ -396,10 +434,42 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
           {status.installed && <p>{status.summary}</p>}
           {!status.installed && status.source === "pack" && (
             <p>
-              {status.auto_install
-                ? `No llama.cpp runtime yet. Imperium downloads llama.cpp ${status.llama_cpp_ref} for this computer (${status.suggested_pack}) from ggml-org/llama.cpp on GitHub, verified against its checksums, the first time a local model is needed.`
-                : "No llama.cpp runtime yet, and automatic installation is off: install the official build, or choose a llama-server you already have."}
+              No llama.cpp runtime yet. Imperium never downloads one without your approval: install the official build for this computer (
+              {status.suggested_pack}), which shows its source and size first, or choose a llama-server you already have.
             </p>
+          )}
+          {offersOf(status).map((offer) => (
+            <div className="runtime-update" key={offer.runtime}>
+              <p>{offer.message}</p>
+              {offer.runtime === "llamacpp" ? (
+                <button className="primary small" onClick={() => void ask("install")} disabled={installing || asking || checking}>
+                  <Download aria-hidden="true" /> Download llama.cpp{sizeText(offer.bytes) ? ` (${sizeText(offer.bytes)})` : ""}
+                </button>
+              ) : (
+                <p className="muted">
+                  Approve it from a terminal with <code>{offer.command}</code>; it shows what it needs and asks before downloading.
+                </p>
+              )}
+            </div>
+          ))}
+          {updateAvailable(status.update_check) && (
+            <div className="runtime-update">
+              <p className="update-warning">{updateAvailable(status.update_check)}</p>
+              <button className="small" onClick={() => void ask("update")} disabled={installing || asking || checking}>
+                <Download aria-hidden="true" /> Update to {status.update_check?.latest}
+              </button>
+            </div>
+          )}
+          {pending && (
+            <div className="runtime-update" role="group" aria-label="Confirm download">
+              <p>{downloadSummary(status.update_check)}</p>
+              <button className="primary small" onClick={() => void approve()} disabled={asking || installing}>
+                <Download aria-hidden="true" /> Download and install
+              </button>
+              <button className="small" onClick={() => setPending(null)}>
+                Cancel
+              </button>
+            </div>
           )}
           {status.problem && status.installed && <Notice tone="warn">{status.problem}</Notice>}
           {status.update && (
@@ -411,7 +481,7 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
                 </button>
               )}
               {status.update.action === "use_managed" && (
-                <button className="small" onClick={() => void useOfficial()} disabled={installing || checking}>
+                <button className="small" onClick={() => void ask("install")} disabled={installing || asking || checking}>
                   <Download aria-hidden="true" /> Use Imperium's build instead
                 </button>
               )}
@@ -436,9 +506,9 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
           <div className="models-toolbar">
             <button
               className={status.source === "pack" && !status.installed ? "primary small" : "small"}
-              onClick={() => void useOfficial()}
-              disabled={installing}
-              title={`Downloads llama.cpp ${status.llama_cpp_ref} for this computer from ggml-org/llama.cpp on GitHub, verified against its checksums`}
+              onClick={() => void ask("install")}
+              disabled={installing || asking}
+              title="Shows what it downloads from ggml-org/llama.cpp on GitHub (source and size) and asks before downloading"
             >
               <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} official build (
               {status.suggested_pack})

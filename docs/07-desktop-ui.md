@@ -1941,12 +1941,18 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   its build number (with the release Imperium uses when it is older), and a verdict (*ready*,
   *check*, *not ready*) with the problem and what to do in words, such as *llama-server can't
   see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old for this build*.
-  With no runtime it says Imperium downloads the official build the first time a local model is
-  needed (opening the panel counts, so the install usually starts there, with a progress bar
-  from `runtime.install_progress`), or, with `runtime.llamacpp.auto_install` off, that it must
-  be installed or chosen. *Use detected…* is a choice list of the other `llama-server`
-  executables found on this computer, with *Use this*; *Install official build* installs
-  llama.cpp's build for this machine (falling back to the next build when one does not run);
+  With no runtime it offers a *Download llama.cpp* button: Imperium never downloads one without
+  a yes, so the button (and *Install official build*, and every *Update*) first shows what it
+  would download, from where (`github.com/ggml-org/llama.cpp`) and how many MiB, with *Download
+  and install* and *Cancel*, and only then starts, with a progress bar from
+  `runtime.install_progress`; a vLLM model folder with no vLLM set up shows its offer with the
+  command that sets it up (`imperium runtime vllm setup`). *Use detected…* is a choice list of
+  the other `llama-server` executables found on this computer, with *Use this*; *Install
+  official build* installs llama.cpp's latest build for this machine (falling back to the next
+  build when one does not run); when the daily check found a newer release the card says
+  *Update available: bNNNNN (you have bNNNNN)* with *Update to bNNNNN*, which installs it
+  beside the build in use (or, for a llama-server you chose, in a sibling folder, leaving your
+  folder as it is);
   *Choose file…* opens the native file picker for your own; *Stop using my llama-server* drops
   a custom server. When an update is available
   ([llama.cpp updates](04-models-and-routing.md#llamacpp-updates)) the card says so: *Update*
@@ -1969,9 +1975,10 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
 - **Benchmark.** [Settings → Models](#local-model-benchmark-implemented) can measure each local
   model's load time and speed on this machine.
 - **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
-  Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`)
-  and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as
-  well.
+  Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`,
+  which only offers the download), *Check for llama.cpp updates*
+  (`runtime.llamacpp.check_updates`) and *Update a package-manager llama.cpp*
+  (`runtime.llamacpp.update_external`) are there as well.
 
 **Stop and resume (implemented):** while the agent or any subagent works, the session header
 shows **Stop**. Ctrl+. (⌘. on macOS) does the same, and on a stopped session it resumes. Stop

@@ -66,6 +66,10 @@ auto_install = true
 # when it is older than the llama.cpp release Imperium pins: off, ask (offer an Update button),
 # or auto (run the package manager's upgrade while no model is loaded from it).
 update_external = "ask"
+# Look for a newer llama.cpp release once a day (a small request to GitHub, only while local
+# models are on) and show "update available" in `imperium runtime status` and Local models.
+# Nothing is downloaded by a check; `imperium runtime update` and the Update button ask first.
+check_updates = true
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
 # Most tokens one agent may use on a local model: "auto" (what the model was trained for, capped
@@ -2094,6 +2098,10 @@ pub struct LlamaCppSettings {
     /// is older than the pinned llama.cpp release.
     #[serde(default = "default_update_external")]
     pub update_external: String,
+    /// Look for a newer llama.cpp release at most once a day (while local models are on) and
+    /// show it; a check downloads nothing.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
     pub idle_unload_s: u64,
     /// Most tokens one agent may use on a local model: `auto` or a number.
     pub context: ContextLimit,

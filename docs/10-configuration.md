@@ -152,7 +152,8 @@ listed; edit them in the file.
 | `runtime.llamacpp.slots` (or `max_slots`) | the larger of `16` and `parallel` | Default `--parallel` of each model: most calls one server decodes at once, `1`-`256`. Slots share one KV pool and reserve none of their own, so the ceiling is high and the pool never grows with it. A CPU-pinned model defaults to `1` |
 | `runtime.llamacpp.pool_tokens` | none | Fixes the tokens of KV cache all slots of a model share (`--ctx-size` with `--kv-unified`), at least `context`; it never grows, and is cut to what fits beside the weights on the GPU when it does not. Unset, the pool starts at 16384 tokens (or what the first call needs) and grows on demand up to the context. The planner counts the KV cache once, for the pool |
 | `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, package managers, LM Studio, fixed llama.cpp checkout folders; [where](04-models-and-routing.md#runtimes)) that starts and supports the flags Imperium passes, preferring one that sees the GPU. Unpacked downloads in the home or Downloads folder are only listed as candidates, never run until adopted with `custom_path` |
-| `runtime.llamacpp.auto_install` | `true` | With no `custom_path` and no usable `llama-server` (or only a CPU build on a machine with a GPU, or Imperium's build of an earlier release), download and verify llama.cpp's official build for this machine the first time a local model is needed ([runtimes](04-models-and-routing.md#runtimes)) |
+| `runtime.llamacpp.auto_install` | `true` | With no `custom_path` and no usable `llama-server` (or only a CPU build on a machine with a GPU, or Imperium's build of an earlier release), offer llama.cpp's official build for this machine the first time a local model is needed. It is only offered: nothing is downloaded until the user approves it in Local models or with `imperium runtime install` ([runtimes](04-models-and-routing.md#runtimes)) |
+| `runtime.llamacpp.check_updates` | `true` | Look for a newer llama.cpp release at most once a day (a small request to GitHub, only while local models are on) and show *update available* in `imperium runtime status` and Local models. A check downloads nothing; `imperium runtime update` and the *Update* button ask first, and install beside the build in use (or, for a `custom_path`, in a sibling folder) ([updates](04-models-and-routing.md#llamacpp-updates)) |
 | `runtime.llamacpp.update_external` | `ask` | A `llama-server` installed with winget, scoop, Chocolatey, or Homebrew that is older than the pinned release: `off`, `ask` (offer *Update*), or `auto` (run the package manager's upgrade while no model is loaded from it) ([updates](04-models-and-routing.md#llamacpp-updates)) |
 | `runtime.llamacpp.cache_type` | `f16` | Default KV cache type of keys and values: `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, or `q5_1` |
 | `runtime.llamacpp.flash_attn` | `auto` | `--flash-attn`: `auto`, `on`, or `off`; a quantised V cache type needs `on` or `auto` |
@@ -444,7 +445,8 @@ base_url = "http://192.168.1.20:8000/v1"
 backend = "auto"          # auto | cpu | cuda12 | cuda13 | vulkan | rocm | metal
 custom_path = ""
 find_existing = true      # use a llama-server already on this machine until one is installed
-auto_install = true       # install the official build the first time a local model needs one
+auto_install = true       # offer the official build the first time a local model needs one (never downloaded unasked)
+check_updates = true      # look for a newer llama.cpp release once a day (downloads nothing)
 update_external = "ask"   # off | ask | auto: package-manager llama.cpp updates
 idle_unload_s = 900
 context = "auto"          # most tokens one agent may use, or a number

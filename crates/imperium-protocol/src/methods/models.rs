@@ -246,8 +246,8 @@ pub struct RuntimeInfo {
     pub server_path: String,
     pub installed: bool,
     pub llama_cpp_ref: String,
-    /// `runtime.llamacpp.auto_install`: with none installed, the official build is fetched the
-    /// first time a model is loaded.
+    /// `runtime.llamacpp.auto_install`: with none installed, the official build is offered for
+    /// download the first time a model is loaded; it waits for the user's yes.
     #[serde(default)]
     pub auto_install: bool,
 }
@@ -486,8 +486,8 @@ pub struct RuntimeStatusResult {
     /// The backend models run on, in words: `CUDA 13`, `CUDA`, `Vulkan`, `Metal`, `ROCm`, or
     /// `CPU` (an installed build's, else the GPUs the server lists).
     pub backend: String,
-    /// `runtime.llamacpp.auto_install`: the official build is installed by itself the first
-    /// time a local model needs one and none usable is there.
+    /// `runtime.llamacpp.auto_install`: the official build is offered for download the first
+    /// time a local model needs one and none usable is there; it waits for the user's yes.
     pub auto_install: bool,
     /// The llama.cpp build number of the server in use (from `--version`), when known.
     #[ts(type = "number | null")]
@@ -507,7 +507,109 @@ pub struct RuntimeStatusResult {
     pub update: Option<RuntimeUpdateOffer>,
     /// The latest package-manager update since the daemon started.
     pub update_job: Option<RuntimeUpdateJob>,
+    /// The newest llama.cpp release and whether it is newer than the server in use, as the last
+    /// daily check read it (`runtime.check_update` makes one); null before the first.
+    #[serde(default)]
+    pub update_check: Option<RuntimeUpdateCheck>,
+    /// Downloads on offer, none started: each waits for the user's yes (the Download button,
+    /// or the command it names). Empty while local models are off.
+    #[serde(default)]
+    pub offers: Vec<RuntimeDownloadOffer>,
 }
+
+/// `runtime.check_update`: looks for a newer llama.cpp release on GitHub (`ggml-org/llama.cpp`,
+/// the latest release, not the pinned one) and says what updating the server in use would
+/// download and where it would go. At most one request a day unless `force`, and none when
+/// `runtime.llamacpp.check_updates` is off (then only `force` asks). It downloads nothing.
+/// Refused while local models are off.
+#[derive(Debug)]
+pub struct RuntimeCheckUpdate;
+
+impl Method for RuntimeCheckUpdate {
+    const NAME: &'static str = "runtime.check_update";
+    type Params = RuntimeCheckUpdateParams;
+    type Result = RuntimeUpdateCheck;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeCheckUpdateParams {
+    /// Ask GitHub now, whatever the last check and the setting say (the user asked).
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// What the check for a newer llama.cpp found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeUpdateCheck {
+    /// `runtime.llamacpp.check_updates`: the daily check is on.
+    pub enabled: bool,
+    /// Unix seconds of the last check that reached GitHub; null before the first.
+    #[ts(type = "number | null")]
+    pub checked_at: Option<u64>,
+    /// The newest release, such as `b12900`; null before the first check.
+    pub latest: Option<String>,
+    /// The release of the server in use, such as `b12823`, when known.
+    pub current: Option<String>,
+    /// `latest` is a newer build than `current`.
+    pub available: bool,
+    /// Where updating would put it: `managed` (beside Imperium's other builds; the one in use
+    /// stays for rollback), `beside` (a new folder next to the llama.cpp folder
+    /// `runtime.llamacpp.custom_path` names, which is never modified), or `unsupported` (this
+    /// install is updated another way; `message` says how).
+    #[ts(type = "\"managed\" | \"beside\" | \"unsupported\"")]
+    pub target: String,
+    /// The folder the new build would be installed in.
+    pub target_dir: Option<String>,
+    /// The build it would install, such as `windows-x64-cuda13`.
+    pub pack: Option<String>,
+    /// Bytes it would download, with its runtime libraries; null when not known.
+    #[ts(type = "number | null")]
+    pub bytes: Option<u64>,
+    /// Where it is downloaded from, over HTTPS and verified against the release's SHA-256 digests.
+    pub source: String,
+    /// What to do, or why no update is offered, in words.
+    pub message: Option<String>,
+}
+
+/// A download Imperium offers and waits for a yes to: llama.cpp when local models are on and
+/// no runtime is there, or vLLM when a Hugging Face model folder needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeDownloadOffer {
+    /// What it sets up: `llamacpp` or `vllm`.
+    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    pub runtime: String,
+    /// Where it comes from.
+    pub source: String,
+    /// What it downloads and why, in words.
+    pub message: String,
+    /// Bytes to download when known (llama.cpp's, from the last check of the latest release).
+    #[ts(type = "number | null")]
+    pub bytes: Option<u64>,
+    /// The command that approves it from a terminal; it shows the size and asks first.
+    pub command: String,
+}
+
+/// `runtime.update`: installs the latest verified llama.cpp release beside the build in use and
+/// switches to it once it starts and sees the GPU, reporting `runtime.install_progress`. For
+/// Imperium's own build the old build stays for rollback (at most two are kept); for a
+/// `runtime.llamacpp.custom_path` the new build goes in a sibling folder and `custom_path` is
+/// pointed at it, and the folder it named is left as it was. The call is the user's yes:
+/// clients show the size and source first. Refused while local models are off.
+#[derive(Debug)]
+pub struct RuntimeUpdate;
+
+impl Method for RuntimeUpdate {
+    const NAME: &'static str = "runtime.update";
+    type Params = RuntimeUpdateParams;
+    type Result = RuntimeInstallJob;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeUpdateParams {}
 
 /// How the `llama-server` in use can be brought up to date.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
