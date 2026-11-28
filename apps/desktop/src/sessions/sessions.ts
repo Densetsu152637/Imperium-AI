@@ -504,7 +504,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
         categories: event.categories,
         promptTokens: event.prompt_tokens,
         cachedTokens: event.cached_tokens,
-        // Absent from a daemon before protocol 0.69 and from older journals.
+        // Absent from a daemon before protocol 0.71 and from older journals.
         configuredWindow: event.configured_window ?? null,
         reservedOutput: event.reserved_output_tokens ?? null,
         allocatedContext: event.allocated_context ?? null,
