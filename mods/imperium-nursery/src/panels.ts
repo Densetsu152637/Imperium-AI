@@ -195,7 +195,7 @@ async function sessionPanel(ctx: ModContext): Promise<void> {
 }
 
 /**
- * The Nursery, which is also the pet panel: your pet (always in, hearing every session), one pet
+ * The Nursery, which is also the pet panel: your pet (always in, following the selected session), one pet
  * per unarchived session (its environment's pet, else the "Pets" setting), and extra pets you
  * put in and take out.
  */
@@ -298,12 +298,13 @@ async function nurseryPanel(ctx: ModContext): Promise<void> {
   bar.append(more);
 
   ctx.sessions.subscribe((event) => nursery.event(event, Date.now()));
-  ctx.sessions.onChange((list) => {
+  ctx.sessions.onChange((list, sel) => {
     sessions = list;
-    nursery.snapshots(sessions, null, Date.now());
+    nursery.snapshots(sessions, sel, Date.now());
   });
-  sessions = await ctx.sessions.list();
-  nursery.snapshots(sessions, null, Date.now());
+  let selected: string | null;
+  [sessions, selected] = await Promise.all([ctx.sessions.list(), ctx.sessions.selected()]);
+  nursery.snapshots(sessions, selected, Date.now());
   refresh();
 
   loop.add(room);
