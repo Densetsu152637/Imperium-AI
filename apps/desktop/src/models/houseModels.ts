@@ -97,6 +97,8 @@ export type ModelInventory = {
   defaultModel: string | null;
   /** Whether the daemon has reported both model lists; until then nothing is known to be missing. */
   loaded: boolean;
+  /** `models.local.enabled`; absent counts as on. The house models are local, so none is suggested while it is off. */
+  localEnabled?: boolean;
 };
 
 /** True when the user has any model at all: then the suggestion never shows. */
@@ -105,14 +107,15 @@ export const hasAnyModel = (inventory: ModelInventory): boolean =>
 
 /**
  * The house models to suggest: none before the model lists have loaded, once the user has
- * dismissed the suggestion or has any model, and none when the catalogue is empty.
+ * dismissed the suggestion, has any model, or has local models off (the default), and none
+ * when the catalogue is empty.
  */
 export function houseModelSuggestion(
   inventory: ModelInventory,
   dismissed: boolean,
   catalogue: readonly HouseModel[] = HOUSE_MODELS,
 ): HouseModel[] {
-  if (!inventory.loaded || dismissed || hasAnyModel(inventory)) return [];
+  if (!inventory.loaded || dismissed || hasAnyModel(inventory) || inventory.localEnabled === false) return [];
   return [...catalogue];
 }
 

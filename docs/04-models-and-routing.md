@@ -72,6 +72,7 @@ read again, so such a save never brings an old value back.
 | --- | --- | --- |
 | `models.add_folder` `{path}` | `imperium models folders add <path>` | Adds an absolute folder to `models.folders` (once), scans at once (starting the local runtime if it was not running), returns `models.local` |
 | `models.remove_folder` `{path}` | `imperium models folders remove <path>` | Removes it and scans again; nothing in the folder is touched |
+| `models.rescan` | `imperium models folders rescan` | Scans the model folders and the download folder again and returns the listing with `found`, `added` and `removed` ([local models off by default](#local-models-are-off-by-default-implemented): it lists models as off and starts nothing) |
 | `models.local` | `imperium models folders`, `imperium models local` | Also reports `configured_folders` (removable), `default_model`, and per model `repo`, `mmproj`, and `problem` |
 | `models.use` `{model}` | `imperium models use <id>` | Sets `models.default` from a local model id (`llamacpp:<id>`), a model-table id (its spec), or a spec |
 | `models.test` `{model, prompt?}` | `imperium models test <id>` | Loads the model if needed (as any session would, through the supervisor) and sends one short prompt; returns the reply, completion tokens, seconds, tokens per second (llama.cpp's own measurement when it reports one), and the load wait, or why it failed. Works for hosted models too |
@@ -1531,6 +1532,68 @@ permissions as before.
 
 Notices appear where the task starts, in the same place as other session notices (the desktop
 app's session view, `imperium chat`); there is no protocol change.
+
+## Local models are off by default (implemented)
+
+Local models (llama.cpp, vLLM) are **off until the user turns them on**. Nothing local is
+downloaded, installed, started or chosen by routing before that; hosted models work as before. The
+local models, the runtimes and the house-model choices stay visible in every configuration surface
+(the desktop's Local models and Models panels and Settings, `imperium config`, `imperium models`),
+shown as *off*, so they can be set up first.
+
+Two levels, and a local model runs only when both are on:
+
+- **Global switch** `models.local.enabled` (Settings → Local models; `imperium config set
+  models.local.enabled true`; applied at once, no restart). Unset means off. So that existing
+  setups keep working, the daemon runs a **one-time migration** at its first start of the
+  version that introduced the switch: with `models.local.enabled` unset in every layer, it
+  writes it into the user's `config.toml` explicitly, `true` when local models were set up on
+  purpose before (a model folder, a download folder with models in it, such as `<data>/models`, a
+  local model in `[[models.catalog]]`, a `[runtime.llamacpp.models.<id>]` table, a custom
+  `llama-server`, or a local `models.default`), else `false`, and records
+  `models.local.migrated = true` so it never runs again (it logs what it wrote). A value the
+  user set explicitly is kept. From then on nothing is inferred: `config unset`, `models folders
+  add`, a `download_dir` and the like cannot turn local models on, only setting the switch
+  does. (Until the migration has run, a config read without the marker, as in a test, is
+  interpreted the way the migration would write it.)
+- **Each model's own switch**: *Use this model*, that is `models.disabled` and a row's `enabled`
+  ([disabled models](#disabled-models-implemented)). `models.local` rows carry both: `enabled` is
+  what may run (own switch and global switch together) and `own_enabled` the model's own switch
+  alone; the listing's `local_enabled` is the global one.
+
+The rule is `ModelSettings::is_disabled`, the one the disabled-models list already uses, so with
+the switch off no local model is routed to or escalated to, offered by `list_models`, the
+OpenAI-compatible API or a picker, selected for a session, made `models.default`
+(`models.use`, `config.set` refuse with a message saying local models are off) or loaded by
+`models.test`; a model-table row with `location = "local"` (or a `llamacpp:` / `vllm:` spec) is
+left out of routing the same way. Routing and the house-model first run skip local models
+without errors: first run suggests no house model while the switch is off, and download
+suggestions (`models.suggest_downloads`) offer nothing. Scanning is not starting: `models.rescan`
+and the folder methods still read the folders and list what they find (as off), and start no
+server. Downloads the user starts by hand (`models.download`, the panel's form) and runtime
+installs the user asks for are the user's own calls, and the desktop disables them while the
+switch is off so the order is: turn local models on, then set them up.
+
+While the switch is off, `models.download`, `runtime.install` and `runtime.update_external` (and
+`imperium models pull`, `imperium runtime install`, `imperium runtime vllm setup`) are refused
+with a message saying how to turn local models on, and the daemon never installs or updates a
+runtime by itself, so opening the Local models panel downloads nothing. A resumed session whose
+model is local does not start it while the switch is off: it is restored without a model (its
+messages wait, as for a session that never had one), keeps the recorded model for when local
+models are on again, and its subagents route over hosted models only.
+
+Turning it **on** is the user's call: an agent's `imperium config set models.local.enabled <not
+false>` is a dangerous command (the [safety floor](05-tools-and-isolation.md) asks the person
+each time, like the other runtime settings), as are `imperium config undo` (which may undo the
+change that turned it off), `imperium models pull` and `imperium runtime install` (setup that
+only makes sense once local models are on); turning it off, `unset` and reading stay open to
+agents.
+
+`models.rescan` (protocol 0.70; `imperium models folders rescan`; the Local models panel's
+Rescan button) scans `models.folders` and the download folder again and returns the listing with
+`found` (how many models), `added` and `removed` (ids that appeared or went since the last scan).
+A plain `models.local` only reads the last scan, so a file dropped into a folder is not found by
+it; the Rescan button used to call that read and so appeared to do nothing.
 
 ## Disabled models (implemented)
 

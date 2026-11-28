@@ -341,7 +341,13 @@ async fn slow_hub(delay: Duration) -> String {
 async fn a_running_download_holds_the_daemon_until_it_ends() {
     let data = tempfile::tempdir().unwrap();
     let hub = slow_hub(Duration::from_secs(3)).await;
-    let daemon = daemon_with("", data.path());
+    // Downloads are refused while local models are off (the default).
+    let daemon = daemon_with(
+        "[models.local]
+enabled = true
+",
+        data.path(),
+    );
     daemon.use_hub(imperium_local::hf::Hub::new(hub, None));
     daemon.start_lifetime(Some(Duration::from_millis(500)));
     let endpoint = serve(&daemon).await;

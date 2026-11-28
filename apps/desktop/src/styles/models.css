@@ -602,3 +602,47 @@ tr.model-hidden-group button {
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+/* Local models: the global switch card, the house models listed as off, and the rescan status. */
+.local-switch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.local-switch p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.local-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.house-off {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.house-off li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.rescan-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
