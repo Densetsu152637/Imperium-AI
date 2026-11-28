@@ -406,11 +406,11 @@ async fn a_command_asks_even_when_the_user_allows_commands() {
         ..
     } = fixture_with(
         "run_command",
-        json!({"command": "echo x > ran.txt"}),
+        json!({"command": "mkdir ran-marker"}),
         "ask",
         r#"
         [permissions]
-        rules = [{ tool = "run_command", action = "allow" }]
+        rules = [{ tool = "run_command", pattern = "mkdir", action = "allow" }]
         "#,
     )
     .await;
@@ -450,7 +450,7 @@ async fn a_command_asks_even_when_the_user_allows_commands() {
     }
     fixing.await.unwrap();
     assert!(asked, "the command ran without an approval request");
-    assert!(!exists_under(_dir.path(), "ran.txt"));
+    assert!(!exists_under(_dir.path(), "ran-marker"));
     let session = daemon.session(&session_id.expect("a session id")).unwrap();
     assert_eq!(session.permission_mode(), imperium_api::PermissionMode::Ask);
 }
@@ -524,11 +524,11 @@ async fn the_same_allow_rule_runs_the_command_without_the_ask_mode() {
         ..
     } = fixture_with(
         "run_command",
-        json!({"command": "echo x > ran.txt"}),
+        json!({"command": "mkdir ran-marker"}),
         "ask",
         r#"
         [permissions]
-        rules = [{ tool = "run_command", action = "allow" }]
+        rules = [{ tool = "run_command", pattern = "mkdir", action = "allow" }]
         "#,
     )
     .await;
@@ -546,7 +546,7 @@ async fn the_same_allow_rule_runs_the_command_without_the_ask_mode() {
         .await;
     assert!(ok, "{summary}");
     assert!(
-        clone.join("ran.txt").exists(),
+        clone.join("ran-marker").is_dir(),
         "the allow rule did not run the command"
     );
 }
