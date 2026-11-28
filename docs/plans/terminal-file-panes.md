@@ -821,9 +821,10 @@ estimates of changed lines, tests included; a stage that grows past about 800 li
     bomb ran uncapped. It filled the pids cgroup the runner's agent lives in (`pids.max` about
     19,000), the agent's Go runtime died on `newosproc`, and the agent shut the runner down. The
     bomb now runs under bash, counts the user's tasks (threads, which `RLIMIT_NPROC` counts),
-    exits before forking if the limit did not take, and the test fails if the bomb outgrows its
-    cap. A test also checks that a process sharing the daemon's session and process group outlives
-    `end` unstopped.
+    exits before forking if the limit did not take or it runs as root (where `RLIMIT_NPROC` is not
+    enforced), and the test fails if the bomb outgrows its cap. A test also checks that a process
+    sharing the daemon's session and process group outlives `end` unstopped; its fork loop is
+    bounded and its sibling is reaped on every exit path.
   - **Known window:** a Ctrl+C that reaches the supervisor between its `exec` and the handlers
     being installed (milliseconds) has the default action and ends it; the test sends the Ctrl+C
     once the supervisor reports its handlers in place. The supervisor's poll also wakes every
