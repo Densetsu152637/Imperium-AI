@@ -3017,6 +3017,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-ratio-host"
+version = "0.2.0"
+dependencies = [
+ "imperium-api",
+ "imperium-memory",
+ "imperium-models",
+ "imperium-policy",
+ "ratio-lang",
+ "serde_json",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "imperium-script"
 version = "0.2.0"
 dependencies = [
@@ -5158,6 +5172,59 @@ name = "rangemap"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
+
+[[package]]
+name = "ratio-check"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
+dependencies = [
+ "ratio-names",
+ "ratio-syntax",
+]
+
+[[package]]
+name = "ratio-eval"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
+dependencies = [
+ "ratio-check",
+ "ratio-ir",
+]
+
+[[package]]
+name = "ratio-ir"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
+dependencies = [
+ "ratio-check",
+ "ratio-names",
+ "ratio-syntax",
+]
+
+[[package]]
+name = "ratio-lang"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
+dependencies = [
+ "ratio-check",
+ "ratio-eval",
+ "ratio-ir",
+ "ratio-names",
+ "ratio-syntax",
+]
+
+[[package]]
+name = "ratio-names"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
+dependencies = [
+ "ratio-syntax",
+]
+
+[[package]]
+name = "ratio-syntax"
+version = "0.1.0"
+source = "git+https://github.com/Densetsu152637/Ratio?rev=7e73f9dcc21ce14f41c119a92e163df364e27439#7e73f9dcc21ce14f41c119a92e163df364e27439"
 
 [[package]]
 name = "raw-window-handle"
@@ -8760,6 +8827,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b04655dc7bf4abd8ebe23dac6bef20fceea52a29ad19e37a4101b3951d7e8b45"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df2575690b2a3eccad509fe7898cdde32a5afca06a06449ff4dcfb318c7b7281"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.2.0+zstd.1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3f4089cda6dda4dc43c43dd9f8964140064fd2f752f3da46c3a483c3c175160"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zvariant"
