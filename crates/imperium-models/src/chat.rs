@@ -529,11 +529,13 @@ impl Assembler {
                     .push_str(&function.arguments.unwrap_or_default());
             }
         }
-        let thinking: String = [&delta.reasoning_content, &delta.reasoning]
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
+        // A server that sends the same reasoning under both names must not show it twice:
+        // `reasoning_content` wins when it has text, else `reasoning`.
+        let thinking = delta
+            .reasoning_content
+            .filter(|text| !text.is_empty())
+            .or(delta.reasoning.filter(|text| !text.is_empty()))
+            .unwrap_or_default();
         let text = delta.content.filter(|text| !text.is_empty());
         if let Some(text) = &text {
             self.text.push_str(text);
@@ -718,6 +720,38 @@ mod tests {
         );
         // The reasoning is display-only: the assembled reply holds none of it.
         assert_eq!(completion.text, "Done");
+    }
+
+    #[tokio::test]
+    async fn a_chunk_carrying_both_reasoning_fields_shows_it_once() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Same\",\"reasoning\":\"Same\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\",\"reasoning\":\" next\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ))
+        .await;
+        let mut thought = String::new();
+        stream_chat_deltas(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens: None,
+                effort: None,
+            },
+            None,
+            |delta| {
+                if let StreamDelta::Thinking(text) = delta {
+                    thought.push_str(text);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(thought, "Same next");
     }
 
     #[tokio::test]

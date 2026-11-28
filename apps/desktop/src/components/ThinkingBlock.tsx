@@ -3,7 +3,7 @@
 // not in the page until it is opened; each block opens on its own, and nothing is remembered.
 
 import { ChevronRight } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { formatElapsed } from "../sessions/agentView";
 import type { ThinkingEntry } from "../sessions/thinking";
@@ -24,8 +24,10 @@ function useNow(active: boolean): number {
 export function ThinkingBlock({ entry }: { entry: ThinkingEntry }) {
   const [open, setOpen] = useState(false);
   const bodyId = useId();
-  const view = thinkingView(entry.durationMs, open);
+  const view = thinkingView(entry.durationMs, entry.ended, open);
   const now = useNow(view.live);
+  // The run's own start time; this window's clock only when the event carried none.
+  const seen = useRef(Date.now());
   return (
     <div className={`thinking${view.live ? " live" : ""}`}>
       {/* A real button: Enter and Space toggle it, and it carries aria-expanded. The ticking time is
@@ -45,7 +47,7 @@ export function ThinkingBlock({ entry }: { entry: ThinkingEntry }) {
         {view.live && <span className="thinking-pulse" aria-hidden="true" />}
         {view.live && (
           <span className="thinking-elapsed" aria-hidden="true">
-            {formatElapsed(now - entry.startedAt)}
+            {formatElapsed(now - (entry.startedAt ?? seen.current))}
           </span>
         )}
       </button>

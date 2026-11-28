@@ -152,7 +152,10 @@ full text, still streaming while the run goes on, under a hairline like a tool c
 arguments; opening it again hides the text. Each block opens on its own, a block starts closed
 whenever it is drawn, and nothing is remembered between sessions. The text is built into the page
 only while open, so it is in no tooltip, preview, session title or notification, and a turn's
-several runs (around tool calls) are separate rows
+several runs (around tool calls) are separate rows. A run whose `thinking_finished` never came
+(the daemon died) is closed when its turn ends, fails or pauses, or the next turn starts: it reads
+*Thought for N seconds* from the fragments' own timestamps (`at_ms`, so a replayed session and the
+time shown after reopening do not use this window's clock), or plainly *Thought* when it has none
 (`apps/desktop/src/sessions/thinking.ts`, `components/ThinkingBlock.tsx`).
 
 ### Tool calls (implemented)

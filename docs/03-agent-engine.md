@@ -56,9 +56,12 @@ clients do. Anthropic's extended thinking, sent as a `thinking` request, is not 
 text arrives in a field this parser does not read, which is a follow-up. A headless
 `imperium run` result and its prompt hashes carry no thinking.
 
-`imperium chat` prints a run of thinking as one line, `thinking… (10 seconds)` (the duration is
-worded: `less than a second`, `1 second`, `1 minute`, `2 minutes 5 seconds`); `--show-thinking`
-prints the text as it streams above that line. Subagents' thinking stays out of the terminal, as
+`imperium chat` prints `thinking…` as soon as a run begins and, on a terminal, finishes that same
+line with ` (10 seconds)` when it ends (the duration is worded: `less than a second`, `1 second`,
+`1 minute`, `2 minutes 5 seconds`); piped, it prints the whole line `thinking… (10 seconds)` once,
+at the end. `--show-thinking` prints the text as it streams after `thinking…`, and the summary
+line after it. `thinking_delta` carries the `at_ms` of its fragment, so a client can time a run
+whose `thinking_finished` never came (the daemon died mid-run). Subagents' thinking stays out of the terminal, as
 their replies do. The desktop app shows each run as a collapsed block
 ([07](07-desktop-ui.md#thinking-implemented)).
 

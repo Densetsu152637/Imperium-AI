@@ -155,7 +155,7 @@ async fn reasoning_streams_then_finishes_before_the_reply_and_is_journaled() {
     let thought: String = seen
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::ThinkingDelta { text } => Some(text.as_str()),
+            SessionEvent::ThinkingDelta { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();

@@ -1,7 +1,7 @@
 //! `imperium chat`: an interactive session in the terminal.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -131,6 +131,7 @@ pub fn run(
         let mut chat = Chat {
             context_summary,
             show_thinking,
+            tty: std::io::stdout().is_terminal(),
             ..Chat::default()
         };
         chat.prompt();
@@ -155,8 +156,17 @@ pub fn run(
                     if notification.method != SESSION_EVENT {
                         continue;
                     }
-                    let params: SessionEventParams = serde_json::from_value(notification.params)
-                        .context("could not read a session event")?;
+                    // A newer daemon may send an event this client does not know; skipping it
+                    // keeps an older chat going (clients ignore unknown session events).
+                    let params = match serde_json::from_value::<SessionEventParams>(notification.params) {
+                        Ok(params) => params,
+                        Err(error) => {
+                            if std::env::var_os("IMPERIUM_DEBUG").is_some() {
+                                eprintln!("debug: skipped a session event this client cannot read: {error}");
+                            }
+                            continue;
+                        }
+                    };
                     if params.session_id == session_id {
                         chat.on_event(params.agent_event);
                     }
@@ -212,8 +222,10 @@ struct Chat {
     context_summary: bool,
     /// `--show-thinking`: print a model's reasoning, not only its one-line summary.
     show_thinking: bool,
-    /// A run of reasoning text is being printed (`show_thinking` only).
+    /// A `thinking…` line is open: its text (`--show-thinking`) or its summary is still to come.
     thinking_open: bool,
+    /// Standard output is a terminal, so a line can be finished in place.
+    tty: bool,
     busy: bool,
     /// Permission requests and question batches in the order asked; the next line answers the
     /// first.
@@ -788,9 +800,12 @@ impl Chat {
             // Reasoning is one line (or, with --show-thinking, its text too); subagents' stay
             // out of the terminal, like their replies.
             SessionEvent::ThinkingDelta { .. } | SessionEvent::ThinkingFinished { .. } if root => {
-                if let Some(output) =
-                    thinking::print_for(self.show_thinking, &mut self.thinking_open, &event)
-                {
+                if let Some(output) = thinking::print_for(
+                    self.show_thinking,
+                    self.tty,
+                    &mut self.thinking_open,
+                    &event,
+                ) {
                     print!("{output}");
                     std::io::stdout().flush().ok();
                 }

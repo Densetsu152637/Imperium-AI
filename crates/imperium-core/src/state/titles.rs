@@ -375,6 +375,7 @@ mod tests {
         for event in [
             SessionEvent::ThinkingDelta {
                 text: "zanzibar deliberation".into(),
+                at_ms: None,
             },
             SessionEvent::ThinkingFinished { duration_ms: 5 },
             SessionEvent::TextDelta {

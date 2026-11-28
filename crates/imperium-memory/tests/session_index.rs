@@ -492,6 +492,7 @@ fn a_models_reasoning_is_never_indexed() {
                 "root",
                 SessionEvent::ThinkingDelta {
                     text: "zanzibar secret deliberation".into(),
+                    at_ms: None,
                 },
             ),
             event("root", SessionEvent::ThinkingFinished { duration_ms: 1200 }),

@@ -352,6 +352,7 @@ impl Agent {
                             id,
                             SessionEvent::ThinkingDelta {
                                 text: text.to_string(),
+                                at_ms: Some(imperium_api::time::unix_ms()),
                             },
                         );
                     }

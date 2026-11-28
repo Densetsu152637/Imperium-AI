@@ -21,24 +21,39 @@ pub fn duration_words(duration_ms: u64) -> String {
     }
 }
 
-/// What the terminal prints for a root agent's thinking event, or nothing. `open` says that a
-/// run's text is being printed (`show_text` only): the run's first fragment starts with
-/// `thinking… `, and its end puts the one-line summary on a fresh line.
-pub fn print_for(show_text: bool, open: &mut bool, event: &SessionEvent) -> Option<String> {
+/// What the terminal prints for a root agent's thinking event, or nothing.
+///
+/// The first fragment of a run prints `thinking…` at once, so the user sees the model is
+/// thinking; `open` says that line is still open. On a terminal the run's end finishes that same
+/// line with ` (10 seconds)`. Piped (`tty` false), nothing is printed until the end, which
+/// writes the whole `thinking… (10 seconds)` as a line of its own. With `show_text`
+/// (`--show-thinking`) the line is followed by the text as it streams, and the end writes the
+/// summary line after it.
+pub fn print_for(
+    show_text: bool,
+    tty: bool,
+    open: &mut bool,
+    event: &SessionEvent,
+) -> Option<String> {
     match event {
-        SessionEvent::ThinkingDelta { text } if show_text => {
-            let lead = if std::mem::replace(open, true) {
-                ""
-            } else {
-                "\nthinking… "
-            };
-            Some(format!("{lead}{text}"))
+        SessionEvent::ThinkingDelta { text, .. } => {
+            let first = !*open;
+            *open = *open || show_text || tty;
+            match (show_text, first, tty) {
+                (true, true, _) => Some(format!("\nthinking… {text}")),
+                (true, false, _) => Some(text.clone()),
+                (false, true, true) => Some("\nthinking…".to_string()),
+                _ => None,
+            }
         }
         SessionEvent::ThinkingFinished { duration_ms } => {
-            let line = format!("thinking… ({})", duration_words(*duration_ms));
-            // The summary starts on a fresh line, after any text that was shown.
-            *open = false;
-            Some(format!("\n{line}\n"))
+            let words = duration_words(*duration_ms);
+            let in_place = std::mem::take(open) && tty && !show_text;
+            Some(if in_place {
+                format!(" ({words})\n")
+            } else {
+                format!("\nthinking… ({words})\n")
+            })
         }
         _ => None,
     }
@@ -69,42 +84,90 @@ mod tests {
     }
 
     fn delta(text: &str) -> SessionEvent {
-        SessionEvent::ThinkingDelta { text: text.into() }
+        SessionEvent::ThinkingDelta {
+            text: text.into(),
+            at_ms: None,
+        }
+    }
+
+    fn finished(duration_ms: u64) -> SessionEvent {
+        SessionEvent::ThinkingFinished { duration_ms }
+    }
+
+    /// What a run of events prints, joined.
+    fn run(show_text: bool, tty: bool, events: &[SessionEvent]) -> String {
+        let mut open = false;
+        events
+            .iter()
+            .filter_map(|event| print_for(show_text, tty, &mut open, event))
+            .collect()
     }
 
     #[test]
-    fn collapsed_it_prints_one_line_and_never_the_text() {
+    fn on_a_terminal_the_line_opens_at_once_and_ends_in_place() {
         let mut open = false;
-        assert_eq!(print_for(false, &mut open, &delta("secret plan")), None);
+        // Printed on the first fragment, before any duration is known; later ones add nothing.
         assert_eq!(
-            print_for(
-                false,
-                &mut open,
-                &SessionEvent::ThinkingFinished {
-                    duration_ms: 10_000
-                }
-            ),
-            Some(String::from("\nthinking… (10 seconds)\n"))
+            print_for(false, true, &mut open, &delta("secret plan")),
+            Some("\nthinking…".to_string())
+        );
+        assert_eq!(print_for(false, true, &mut open, &delta("more")), None);
+        assert_eq!(
+            print_for(false, true, &mut open, &finished(10_000)),
+            Some(" (10 seconds)\n".to_string())
+        );
+        assert!(!open);
+        assert_eq!(
+            run(false, true, &[delta("secret plan"), finished(1000)]),
+            "\nthinking… (1 second)\n"
         );
     }
 
     #[test]
-    fn shown_it_prints_the_text_then_the_same_line() {
+    fn piped_it_prints_one_whole_line_at_the_end() {
         let mut open = false;
-        let mut out = String::new();
-        for event in [
-            delta("let me "),
-            delta("think"),
-            SessionEvent::ThinkingFinished { duration_ms: 1000 },
-        ] {
-            out.push_str(&print_for(true, &mut open, &event).unwrap_or_default());
-        }
-        assert_eq!(out, "\nthinking… let me think\nthinking… (1 second)\n");
-        assert!(!open);
-        // The next run starts its own lead again.
+        assert_eq!(print_for(false, false, &mut open, &delta("secret")), None);
         assert_eq!(
-            print_for(true, &mut open, &delta("again")),
+            run(false, false, &[delta("secret"), finished(10_000)]),
+            "\nthinking… (10 seconds)\n"
+        );
+    }
+
+    #[test]
+    fn collapsed_it_never_prints_the_text() {
+        for tty in [true, false] {
+            let out = run(false, tty, &[delta("secret plan"), finished(5000)]);
+            assert!(!out.contains("secret"), "{out}");
+        }
+    }
+
+    #[test]
+    fn shown_it_prints_the_text_then_the_summary_line() {
+        for tty in [true, false] {
+            assert_eq!(
+                run(
+                    true,
+                    tty,
+                    &[delta("let me "), delta("think"), finished(1000)]
+                ),
+                "\nthinking… let me think\nthinking… (1 second)\n"
+            );
+        }
+        // The next run starts its own line again.
+        let mut open = false;
+        print_for(true, true, &mut open, &delta("a"));
+        print_for(true, true, &mut open, &finished(1));
+        assert_eq!(
+            print_for(true, true, &mut open, &delta("again")),
             Some("\nthinking… again".into())
+        );
+    }
+
+    #[test]
+    fn a_finish_without_a_start_is_still_one_line() {
+        assert_eq!(
+            run(false, true, &[finished(2000)]),
+            "\nthinking… (2 seconds)\n"
         );
     }
 }

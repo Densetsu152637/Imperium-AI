@@ -883,6 +883,7 @@ mod tests {
                 "root",
                 SessionEvent::ThinkingDelta {
                     text: "zanzibar deliberation".into(),
+                    at_ms: None,
                 },
             ),
         );
